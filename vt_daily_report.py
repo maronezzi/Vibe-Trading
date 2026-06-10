@@ -203,9 +203,12 @@ def format_report(report: dict, close_info: dict) -> str:
             exit_price = t['exit_price'] or "-"
             exit_reason = t['exit_reason'] or "ABERTO"
             entry_time = t['entry_time'].split(" ")[1][:5] if t['entry_time'] else "?"
+            # Horário real de saída (não o motivo)
+            exit_time = t['exit_time'].split(" ")[1][:5] if t['exit_time'] else "?"
             lines.append(
-                f"{i}. {icon} {t['symbol']} {t['direction']} @ {t['entry_price']} → {exit_price} | "
-                f"R$ {pnl:+.2f} | {exit_reason} | {entry_time}"
+                f"{i}. {icon} {t['symbol']} {t['direction']} | "
+                f"{entry_time} @ {t['entry_price']} → {exit_time} @ {exit_price} | "
+                f"R$ {pnl:+.2f} | {exit_reason}"
             )
         
         if len(report["trades"]) > 10:
