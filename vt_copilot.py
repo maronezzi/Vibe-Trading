@@ -94,8 +94,8 @@ def restart_autotrader():
                    capture_output=True, timeout=10)
     
     # Matar processos MT5 pendurados
-    subprocess.run("pgrep -f 'mt5_executor|mt5_resolve' | xargs -r kill -9",
-                   shell=True, capture_output=True, timeout=10)
+    subprocess.run(["pkill", "-9", "-f", "mt5_executor|mt5_resolve"],
+                   capture_output=True, timeout=10)
     
     import time
     time.sleep(3)
@@ -157,7 +157,7 @@ def reconcile_orphans():
             try:
                 tick_data = _run_wine(EXECUTOR_WIN, "tick", trade["symbol"])
                 current_price = tick_data.get("bid", trade["entry_price"])
-            except:
+            except Exception:
                 current_price = trade["entry_price"]
             
             # Calcular PnL básico
@@ -166,8 +166,8 @@ def reconcile_orphans():
             else:
                 pnl_pts = trade["entry_price"] - current_price
             
-            # Converter pra R$ (WIN: R$ 5/pt, WDO: R$ 1/pt)
-            multiplier = 5 if "WIN" in trade["symbol"] else 1
+            # Converter pra R$ (WIN: R$ 0.20/pt, WDO: R$ 1.00/pt)
+            multiplier = 0.20 if "WIN" in trade["symbol"] else 1.00
             net_pnl = pnl_pts * multiplier
             
             conn.execute("""
@@ -386,7 +386,7 @@ def evaluate_and_pause():
     if pause_file.exists():
         try:
             active_pauses = json.loads(pause_file.read_text())
-        except:
+        except Exception:
             pass
 
     today = datetime.now().strftime("%Y-%m-%d")
@@ -437,7 +437,7 @@ def evaluate_and_pause():
     # Salvar pausas
     try:
         pause_file.write_text(json.dumps(active_pauses, indent=2))
-    except:
+    except Exception:
         pass
 
     return paused
@@ -494,7 +494,7 @@ def _restore_pauses_if_needed():
 
     try:
         active_pauses = json.loads(pause_file.read_text())
-    except:
+    except Exception:
         return
 
     if not active_pauses:

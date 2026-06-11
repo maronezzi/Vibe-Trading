@@ -198,10 +198,12 @@ def calculate_atr(bars: list, period: int = 14) -> float:
 def calculate_ema(bars: list, period: int) -> float:
     if not bars or len(bars) < period:
         return 0
-    seed = sum(b["close"] for b in bars[:period]) / period
+    # bars are newest-first; reverse to process chronologically
+    chronological = list(reversed(bars))
+    seed = sum(b["close"] for b in chronological[:period]) / period
     ema = seed
     multiplier = 2 / (period + 1)
-    for b in bars[:period]:
+    for b in chronological[period:]:
         ema = b["close"] * multiplier + ema * (1 - multiplier)
     return ema
 
@@ -850,6 +852,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     trail_on = pos["trail_on"]
     bar_count = pos["bar_count"]
     trade_log_id = pos["trade_log_id"]
+    point_val = 0.001 if "WDO" in symbol else 1.0  # WDO=R$0.001/pt, WIN=R$1/pt
 
     tick_data = tick(symbol)
     if not tick_data or tick_data.get("bid", 0) == 0:
@@ -880,47 +883,44 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         pos["trail_on"] = True
         log(f"[TRAIL] Ativado trailing {symbol} | Lucro: {profit_pts:.0f} pts ({profit_pts/atr:.1f}x ATR)")
 
+    old_sl = pos.get("sl_pts", 0)
     if trail_on:
         trail_dist = trail_dist_cfg * atr
-        old_sl = pos["sl_pts"]
         if direction == "BUY":
             new_sl = best - trail_dist
             if new_sl > entry_price - sl_pts:
-                pos["sl_pts"] = int(best - new_sl)
+                pos["sl_pts"] = int(entry_price - new_sl)  # distance from entry to new SL
         else:
             new_sl = best + trail_dist
             if new_sl < entry_price + sl_pts:
-                pos["sl_pts"] = int(new_sl - entry_price)
-        
-        # Enviar modify SL pro MT5 se mudou
-        if pos["sl_pts"] != old_sl:
-            try:
-                from mt5_orchestrator import modify_sl
-                result = modify_sl(symbol, pos["entry_ticket"], pos["sl_pts"])
-                if result.get("status") == "ok":
-                    log(f"[TRAIL] SL atualizado no MT5: {symbol} ticket={pos['entry_ticket']} → SL={pos['sl_pts']} pts")
-                else:
-                    log(f"[TRAIL] Falha modify SL: {result.get('error', '?')}")
-            except Exception as e:
-                log(f"[TRAIL] Erro modify SL: {e}")
+                pos["sl_pts"] = int(new_sl - entry_price)  # distance from entry to new SL
 
-    # ===== BOLLINGER: Take Profit na banda oposta =====
+    # ===== BOLLINGER: Tight trailing na banda oposta =====
     if strategy == "BOLLINGER":
         bb_mid = pos.get("bb_mid", 0)
         if bb_mid > 0:
-            # Pra LONG: se preço passou da média E já tem lucro, apertar trailing
-            # Pra SHORT: se preço voltou pra média E já tem lucro, apertar trailing
             if direction == "BUY" and current_price >= bb_mid and profit_pts > 0:
-                # Forçar trailing mais apertado (0.3x ATR ao invés de 0.5x)
                 tight_dist = 0.3 * atr
                 new_sl = best - tight_dist
                 if new_sl > entry_price - sl_pts:
-                    pos["sl_pts"] = int(best - new_sl)
+                    pos["sl_pts"] = int(entry_price - new_sl)
             elif direction == "SELL" and current_price <= bb_mid and profit_pts > 0:
                 tight_dist = 0.3 * atr
                 new_sl = best + tight_dist
                 if new_sl < entry_price + sl_pts:
                     pos["sl_pts"] = int(new_sl - entry_price)
+
+    # Enviar modify SL pro MT5 se mudou (after both trailing + BB tight)
+    if pos["sl_pts"] != old_sl:
+        try:
+            from mt5_orchestrator import modify_sl
+            result = modify_sl(symbol, pos["entry_ticket"], pos["sl_pts"])
+            if result.get("status") == "ok":
+                log(f"[TRAIL] SL atualizado no MT5: {symbol} ticket={pos['entry_ticket']} → SL={pos['sl_pts']} pts")
+            else:
+                log(f"[TRAIL] Falha modify SL: {result.get('error', '?')}")
+        except Exception as e:
+            log(f"[TRAIL] Erro modify SL: {e}")
 
     # Verificar se posição ainda existe no MT5
     status_data = status()
@@ -930,10 +930,11 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     if str(pos["entry_ticket"]) not in mt5_tickets:
         log(f"[FECHADO PELO SERVIDOR] {symbol} | Ticket {pos['entry_ticket']}")
 
-        profit = 0
-        for p in mt5_positions:
-            if str(p.get("comment", "")).startswith("VibeTrading"):
-                profit = p.get("profit", 0)
+        # Estimate PnL from price difference (position no longer in MT5)
+        if direction == "BUY":
+            profit = (current_price - entry_price) * point_val
+        else:
+            profit = (entry_price - current_price) * point_val
 
         exit_result = log_exit(
             trade_log_id,

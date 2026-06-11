@@ -55,6 +55,7 @@ def calc_rsi(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0).rolling(period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+    loss = loss.replace(0, 1e-10)
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
@@ -68,10 +69,11 @@ def calc_adx(df, period=14):
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low - close.shift(1)).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.rolling(period).mean()
+    atr = tr.rolling(period).mean().replace(0, 1e-10)
     plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
     minus_di = 100 * (minus_dm.rolling(period).mean() / atr)
-    dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di))
+    di_sum = (plus_di + minus_di).replace(0, 1e-10)
+    dx = 100 * ((plus_di - minus_di).abs() / di_sum)
     adx = dx.rolling(period).mean()
     return adx, plus_di, minus_di
 

@@ -14,6 +14,7 @@ Uso:
 
 import sys
 import os
+import subprocess
 import json
 import sqlite3
 from datetime import datetime, date
@@ -49,7 +50,7 @@ def close_remaining_positions() -> dict:
         try:
             data = json.loads(result["raw_stdout"].split("\n")[0])
             return {"closed": data.get("closed", 0), "message": f"Fechou {data.get('closed', 0)} posição(ões)"}
-        except:
+        except Exception:
             pass
     
     return {"closed": len(positions), "message": f"Fechou {len(positions)} posição(ões)"}
@@ -154,7 +155,7 @@ def format_report(report: dict, close_info: dict) -> str:
         lines.append(f"• Saldo: R$ {acc.get('balance', 0):,.2f}")
         lines.append(f"• Equity: R$ {acc.get('equity', 0):,.2f}")
         lines.append("")
-    except:
+    except Exception:
         pass
     
     # Fechamento de posições
@@ -226,10 +227,10 @@ def format_report(report: dict, close_info: dict) -> str:
 
 def send_telegram(message: str):
     """Envia mensagem pro grupo Telegram via hermes."""
-    # Escapa aspas duplas
-    escaped = message.replace('"', '\\"')
-    cmd = f'hermes send -t "telegram:{TELEGRAM_GROUP}" "{escaped}"'
-    os.system(cmd)
+    subprocess.run(
+        ["hermes", "send", "-t", f"telegram:{TELEGRAM_GROUP}", message],
+        capture_output=True, timeout=30
+    )
 
 
 def main():

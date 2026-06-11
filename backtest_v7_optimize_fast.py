@@ -44,14 +44,15 @@ def calc_vwap(df, p=20):
     return (t*v).rolling(p).sum()/v.rolling(p).sum()
 def calc_rsi(df, p=14):
     d=df["close"].diff(); g=d.where(d>0,0).rolling(p).mean(); l=(-d.where(d<0,0)).rolling(p).mean()
+    l=l.replace(0,1e-10)
     return 100-(100/(1+g/l))
 def calc_adx(df, p=14):
     h,l,c=df["high"],df["low"],df["close"]
     pd_=h.diff(); md=-l.diff()
     pd_=pd_.where((pd_>md)&(pd_>0),0); md=md.where((md>pd_)&(md>0),0)
     tr=pd.concat([h-l,(h-c.shift(1)).abs(),(l-c.shift(1)).abs()],axis=1).max(axis=1)
-    a=tr.rolling(p).mean(); pdi=100*(pd_.rolling(p).mean()/a); mdi=100*(md.rolling(p).mean()/a)
-    dx=100*((pdi-mdi).abs()/(pdi+mdi)); return dx.rolling(p).mean(), pdi, mdi
+    a=tr.rolling(p).mean(); a=a.replace(0,1e-10); pdi=100*(pd_.rolling(p).mean()/a); mdi=100*(md.rolling(p).mean()/a)
+    di_sum=(pdi+mdi).replace(0,1e-10); dx=100*((pdi-mdi).abs()/di_sum); return dx.rolling(p).mean(), pdi, mdi
 def calc_ema(df, p): return df["close"].ewm(span=p, adjust=False).mean()
 
 def _stats(equity, trade_log, daily_pnl_dict, cash, capital, n_trades, n_wins, n_long, n_short, n_sl, n_trail, n_close, gw, gl):

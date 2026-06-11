@@ -258,7 +258,7 @@ def _try_send(symbol: str, side: str, volume: float, sl_pts: int, tp_pts, commen
         if "Invalid stops" in str(result.comment):
             last_err = result.comment
             log(f"⚠️ {side} {symbol} Invalid stops (sl={sl_price} cur_sl_pts={cur_sl_pts}). Dobrando...", "WARN")
-            cur_sl_pts = cur_sl_pts * 2
+            cur_sl_pts = min(cur_sl_pts * 2, sl_pts * 3)  # Cap at 3x original SL
             time.sleep(0.1)
             continue
 
@@ -414,9 +414,6 @@ def cmd_modify(symbol, ticket, new_sl_pts):
         log(f"❌ Falha modify SL {ticket}: {error_msg}", "ERROR")
         print(json.dumps({"error": error_msg}))
         return False
-
-    print(json.dumps({"closed": closed, "total": total}))
-    return closed == total
 
 
 def cmd_tick(symbol):
