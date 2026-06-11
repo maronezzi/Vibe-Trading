@@ -34,11 +34,30 @@ sys.path.insert(0, str(Path(__file__).parent))
 from vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary
 from mt5_orchestrator import status, buy, sell, close, close_all, tick, resolve_symbol, _run_wine, EXECUTOR_WIN
 from vt_config_loader import load_config
+from vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
 
 # ===== CONFIGURAÇÃO =====
 # Config carregada do vt_config.json com hot reload
 # Para alterar parâmetros: edite vt_config.json ou use save_params/save_full_config
 CONFIG = load_config()
+
+# Funções utilitárias passadas para as estratégias plugins
+_strategy_utils = {}
+
+
+def _init_strategy_utils():
+    """Inicializa o dict de utils para as estratégias (chamado no startup)."""
+    global _strategy_utils
+    _strategy_utils = {
+        "calculate_vwap": calculate_vwap,
+        "calculate_ema": calculate_ema,
+        "calculate_rsi": calculate_rsi,
+        "calculate_adx": calculate_adx,
+        "calculate_bollinger": calculate_bollinger,
+        "calculate_atr": calculate_atr,
+        "get_market_regime": get_market_regime,
+        "calc_sl": _calc_sl,
+    }
 
 
 class SessionState:
@@ -366,12 +385,19 @@ def check_and_trade():
             if pos:
                 manage_position(symbol, tf, pos, atr, strategy, params)
             else:
-                if strategy == "VWAP":
-                    check_entry_vwap(symbol, tf, last_close, atr, bar_ts=last_bar_ts, bars=bars, params=params)
-                elif strategy == "EMA_CROSSOVER":
-                    check_entry_ema_crossover(symbol, tf, last_close, atr, bar_ts=last_bar_ts, bars=bars, params=params)
+                # Dispatch dinâmico de estratégia
+                strategy_func = get_strategy_func(strategy)
+                if strategy_func:
+                    result = strategy_func(symbol, tf, last_close, atr,
+                                           bar_ts=last_bar_ts, bars=bars,
+                                           params=params, utils=_strategy_utils)
+                    if result:
+                        _execute_entry(symbol, tf, result["direction"],
+                                       last_close, result["sl_pts"], atr,
+                                       last_bar_ts, strategy=strategy,
+                                       **result.get("info", {}))
                 else:
-                    check_entry_bollinger(symbol, tf, last_close, atr, bar_ts=last_bar_ts, bars=bars, params=params)
+                    log(f"[ERRO] Estratégia '{strategy}' não encontrada")
 
 
 def check_entry_vwap(symbol: str, tf: str, price: float,
@@ -1156,6 +1182,8 @@ def recover_open_positions():
 def run_daemon():
     global CONFIG
     init_db()
+    _init_strategy_utils()
+    load_strategies()
     state.started_at = datetime.now()
 
     # Log das estratégias
@@ -1188,8 +1216,9 @@ def run_daemon():
 
     while True:
         try:
-            # Hot reload config — recarrega se vt_config.json mudou
+            # Hot reload config + strategies
             CONFIG = load_config()
+            reload_strategies()
 
             if is_close_time() and not state.closed:
                 close_all_and_report()

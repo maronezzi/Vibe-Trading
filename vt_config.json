@@ -1,7 +1,7 @@
 {
-  "_version": 3,
-  "_updated_at": "2026-06-11T06:10:26.846880",
-  "_updated_by": "test_restore",
+  "_version": 5,
+  "_updated_at": "2026-06-11T06:33:44.795119",
+  "_updated_by": "hot_reload_test_restore",
   "_notes": "Config centralizada. Autotrader hot-reloada automaticamente.",
   "start_hour": 9,
   "start_minute": 5,
