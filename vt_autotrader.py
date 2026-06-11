@@ -77,6 +77,8 @@ class SessionState:
         self.daily_trade_by_symbol = {}  # {symbol: count}
         self.consecutive_losses = {}      # per-symbol tracking: {symbol: count}
         self.max_consecutive_losses = 3   # halt after N consecutive losses per symbol
+        self.resolved_symbols = {}        # cache: {"WDO": "WDON26", "WIN": "WINM26"}
+        self.resolved_day = ""            # dia do cache (reseta a cada dia)
 
     def to_dict(self):
         return {
@@ -350,7 +352,15 @@ def check_and_trade():
         return
 
     for symbol_root in CONFIG["symbols"]:
-        symbol = resolve_symbol(symbol_root)
+        # Cache resolved symbol por dia (evita flip entre WDON26/WDOQ26)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        if state.resolved_day != today_str or symbol_root not in state.resolved_symbols:
+            symbol = resolve_symbol(symbol_root)
+            if symbol:
+                state.resolved_symbols[symbol_root] = symbol
+                state.resolved_day = today_str
+                log(f"[RESOLVE] {symbol_root} → {symbol} (cached pro dia)")
+        symbol = state.resolved_symbols.get(symbol_root)
         if not symbol:
             log(f"[WARN] Não resolveu símbolo {symbol_root}")
             continue
