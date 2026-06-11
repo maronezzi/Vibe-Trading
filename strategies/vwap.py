@@ -1,6 +1,9 @@
 """
-Estratégia VWAP — Mean-reversion com filtro de tendência.
+Estratégia VWAP — Trend-continuation com filtro VWAP + EMA.
 Para WDO (mercado trending).
+
+Compra quando preço > VWAP (trend up) e EMA rápida > lenta.
+Vende quando preço < VWAP (trend down) e EMA rápida < lenta.
 
 Parâmetros (via vt_config.json → wdo):
   vwap_period, vwap_buy_threshold, vwap_sell_threshold

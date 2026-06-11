@@ -3,7 +3,7 @@ vt_strategy_loader — Carrega estratégias de trading dinamicamente.
 
 Cada arquivo em strategies/ é um plugin com:
   STRATEGY_NAME = "NOME_DA_ESTRATEGIA"
-  def check_entry(symbol, tf, price, atr, bar_ts, bars, params) -> dict | None
+  def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils) -> dict | None
 
 Retorno:
   None = sem sinal
@@ -13,10 +13,11 @@ Uso:
     from vt_strategy_loader import load_strategies, get_strategy_func
     strategies = load_strategies()
     func = get_strategy_func("VWAP")
-    result = func(symbol, tf, price, atr, bar_ts, bars, params)
+    result = func(symbol, tf, price, atr, bar_ts, bars, params, utils)
 """
 
 import importlib
+import importlib.util
 import logging
 from pathlib import Path
 
@@ -27,11 +28,32 @@ STRATEGIES_DIR = Path(__file__).parent / "strategies"
 # Cache: nome → módulo
 _strategies: dict = {}
 _loaded = False
+_file_mtimes: dict = {}  # path → mtime (para detecção de mudanças)
+
+
+def _get_file_mtimes() -> dict:
+    """Retorna {path: mtime} de todos os .py em strategies/."""
+    mtimes = {}
+    if STRATEGIES_DIR.exists():
+        for py_file in STRATEGIES_DIR.glob("*.py"):
+            if not py_file.name.startswith("_"):
+                mtimes[str(py_file)] = py_file.stat().st_mtime
+    return mtimes
+
+
+def _files_changed() -> bool:
+    """Verifica se algum arquivo em strategies/ mudou desde o último load."""
+    global _file_mtimes
+    current = _get_file_mtimes()
+    if current != _file_mtimes:
+        _file_mtimes = current
+        return True
+    return False
 
 
 def load_strategies(force: bool = False) -> dict:
     """Carrega todas as estratégias de strategies/."""
-    global _strategies, _loaded
+    global _strategies, _loaded, _file_mtimes
 
     if _loaded and not force:
         return _strategies
@@ -73,6 +95,7 @@ def load_strategies(force: bool = False) -> dict:
             log.error(f"Erro ao carregar estratégia {module_name}: {e}")
 
     _loaded = True
+    _file_mtimes = _get_file_mtimes()
     log.info(f"Total: {len(_strategies)} estratégias carregadas")
     return _strategies
 
@@ -98,7 +121,10 @@ def list_strategies() -> list:
 
 
 def reload_strategies() -> dict:
-    """Força reload de todas as estratégias (para quando AGI cria nova)."""
-    global _loaded
-    _loaded = False
-    return load_strategies(force=True)
+    """Reload inteligente: só recarrega se arquivos mudaram."""
+    if _files_changed():
+        log.info("[STRATEGIES] Arquivos mudaram — recarregando...")
+        global _loaded
+        _loaded = False
+        return load_strategies(force=True)
+    return _strategies

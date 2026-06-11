@@ -392,10 +392,12 @@ def check_and_trade():
                                            bar_ts=last_bar_ts, bars=bars,
                                            params=params, utils=_strategy_utils)
                     if result:
+                        info = result.get("info", {})
+                        info.pop("strategy", None)  # evita conflito com kwarg
                         _execute_entry(symbol, tf, result["direction"],
                                        last_close, result["sl_pts"], atr,
                                        last_bar_ts, strategy=strategy,
-                                       **result.get("info", {}))
+                                       **info)
                 else:
                     log(f"[ERRO] Estratégia '{strategy}' não encontrada")
 
