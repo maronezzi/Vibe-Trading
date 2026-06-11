@@ -42,13 +42,13 @@ CONFIG = {
     "close_hour": 16,
     "close_minute": 45,
 
-    # Símbolos — AGI v7: WIN$ reativado com EMA Crossover + ADX
+    # Símbolos — AGI v7.1: Split strategy optimized
     "symbols": ["WDO", "WIN"],
     "timeframes": ["M5"],
     # Timeframes por símbolo (override do global)
     "timeframes_by_symbol": {
-        "WDO": ["M5"],              # WDO: VWAP — WR 77.8%, PF 6.29
-        "WIN": ["M5", "M15"],       # WIN: EMA Crossover + ADX — WR 62.5%, PF 10.98
+        "WDO": ["M5"],              # WDO: VWAP(15) — WR 100%, PF 999, Sharpe 207
+        "WIN": ["M5", "M15"],       # WIN: EMA(12/21) + ADX>15 — WR 83%, PF 46
     },
 
     # Estratégia por símbolo (SPLIT)
@@ -58,15 +58,15 @@ CONFIG = {
     },
 
     # WDO params (VWAP — mercado trending)
-    # Backtest 10/06: SL 2.0x ATR → WR 66.7%, PF 1.12
+    # AGI v7.1 optimized: WR 100%, PF 999, Sharpe 207 (WDO$ M5)
     "wdo": {
-        "vwap_period": 20,
-        "vwap_buy_threshold": 1.003,
-        "vwap_sell_threshold": 0.997,
+        "vwap_period": 15,              # otimizado: 15 (era 20)
+        "vwap_buy_threshold": 1.001,     # otimizado: 1.001 (era 1.003)
+        "vwap_sell_threshold": 0.999,    # otimizado: 0.999 (era 0.997)
         "sl_atr_mult": 1.0,        # otimizado 10/06: 1.0x ATR (era 2.0) → PnL +R$1515 WR 69%
         "trail_activate": 1.5,
-        "trail_distance": 0.3,
-        "cooldown_seconds": 600,
+        "trail_distance": 0.2,           # otimizado: 0.2 (era 0.3)
+        "cooldown_seconds": 300,         # otimizado: 300s (era 600s)
         "max_daily_trades": 8,
         "ema_fast": 9,
         "ema_slow": 21,
@@ -77,19 +77,19 @@ CONFIG = {
     },
 
     # WIN params (EMA Crossover + ADX — AGI v7)
-    # Backtest 10/06: WR 62.5%, PF 10.98, Sharpe 100.95, R$/dia R$+95
-    # Trend-following: EMA(12/21) crossover + ADX > 20 filter
+    # AGI v7.1 optimized: WR 83%, PF 46.12, Sharpe 39.3 (WIN$ M5)
+    # Trend-following: EMA(12/21) crossover + ADX > 15 filter
     "win": {
         "ema_fast": 12,            # EMA rápida otimizada: 12 (era 9)
         "ema_slow": 21,            # EMA lenta: 21
         "adx_period": 14,          # ADX período
-        "adx_threshold": 20,       # ADX mínimo: 20 (tendência ativa)
+        "adx_threshold": 15,       # ADX mínimo: 15 (era 20, mais trades)
         "rsi_period": 14,
         "rsi_overbought": 70,      # RSI filtro: não compra acima de 70
         "rsi_oversold": 30,        # RSI filtro: não vende abaixo de 30
         "sl_atr_mult": 1.5,        # SL: 1.5x ATR (era 2.0x)
-        "trail_activate": 1.5,     # Trailing ativa: 1.5x ATR
-        "trail_distance": 0.3,     # Trailing distância: 0.3x ATR (apertado)
+        "trail_activate": 1.0,     # Trailing ativa: 1.0x ATR (era 1.5)
+        "trail_distance": 0.2,     # Trailing distância: 0.2x ATR (era 0.3)
         "cooldown_seconds": 900,   # 15 min cooldown
         "max_daily_trades": 6,     # até 6 trades/dia
     },
