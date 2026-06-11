@@ -1,69 +1,75 @@
 {
-  "_version": 11,
-  "_updated_at": "2026-06-11T17:17:18.901107",
-  "_updated_by": "agi_17h_v3",
-  "_notes": "Config centralizada. Autotrader hot-reloada automaticamente.",
-  "start_hour": 9,
-  "start_minute": 5,
-  "close_hour": 16,
-  "close_minute": 45,
-  "symbols": [
-    "WDO",
-    "WIN"
-  ],
-  "timeframes": [
-    "M5"
-  ],
-  "timeframes_by_symbol": {
-    "WDO": [
-      "M5"
+    "_version": 12,
+    "_updated_at": "2026-06-11T18:00:00",
+    "_updated_by": "sl_protection",
+    "_notes": "Anti-drawdown: breakeven 15min, time-trail 30min, max 120min",
+    "start_hour": 9,
+    "start_minute": 5,
+    "close_hour": 16,
+    "close_minute": 45,
+    "symbols": [
+        "WDO",
+        "WIN"
     ],
-    "WIN": [
-      "M5",
-      "M15"
-    ]
-  },
-  "strategy": {
-    "WDO": "VWAP",
-    "WIN": "STRONG_TREND"
-  },
-  "wdo": {
-    "vwap_period": 20,
-    "vwap_buy_threshold": 1.002,
-    "vwap_sell_threshold": 0.998,
-    "sl_atr_mult": 1.0,
-    "trail_activate": 1.5,
-    "trail_distance": 0.5,
-    "cooldown_seconds": 300,
-    "max_daily_trades": 8,
-    "ema_fast": 9,
-    "ema_slow": 21,
-    "rsi_period": 14,
-    "rsi_overbought": 85,
-    "rsi_oversold": 15,
-    "trend_min_spread": 0
-  },
-  "win": {
-    "ema_fast": 9,
-    "ema_slow": 21,
-    "adx_period": 14,
-    "adx_threshold": 30,
-    "rsi_period": 14,
-    "rsi_overbought": 80,
-    "rsi_oversold": 20,
-    "sl_atr_mult": 1.5,
-    "trail_activate": 1.5,
-    "trail_distance": 0.5,
-    "cooldown_seconds": 600,
-    "max_daily_trades": 10,
-    "trend_min_spread": 0.001
-  },
-  "volume": 1,
-  "magic": 555501,
-  "check_interval": 30,
-  "bars_count": 30,
-  "resolved_symbols": {
-    "WDO": "WDON26",
-    "WIN": "WINM26"
-  }
+    "timeframes": [
+        "M5"
+    ],
+    "timeframes_by_symbol": {
+        "WDO": [
+            "M5"
+        ],
+        "WIN": [
+            "M5",
+            "M15"
+        ]
+    },
+    "strategy": {
+        "WDO": "VWAP",
+        "WIN": "STRONG_TREND"
+    },
+    "wdo": {
+        "vwap_period": 20,
+        "vwap_buy_threshold": 1.002,
+        "vwap_sell_threshold": 0.998,
+        "sl_atr_mult": 1.0,
+        "trail_activate": 1.5,
+        "trail_distance": 0.5,
+        "cooldown_seconds": 300,
+        "max_daily_trades": 8,
+        "ema_fast": 9,
+        "ema_slow": 21,
+        "rsi_period": 14,
+        "rsi_overbought": 85,
+        "rsi_oversold": 15,
+        "trend_min_spread": 0,
+        "breakeven_minutes": 15,
+        "time_trail_minutes": 30,
+        "max_position_minutes": 120
+    },
+    "win": {
+        "ema_fast": 9,
+        "ema_slow": 21,
+        "adx_period": 14,
+        "adx_threshold": 30,
+        "rsi_period": 14,
+        "rsi_overbought": 80,
+        "rsi_oversold": 20,
+        "sl_atr_mult": 1.5,
+        "trail_activate": 1.5,
+        "trail_distance": 0.5,
+        "cooldown_seconds": 600,
+        "max_daily_trades": 10,
+        "trend_min_spread": 0.001,
+        "breakeven_minutes": 20,
+        "time_trail_minutes": 45,
+        "max_position_minutes": 120
+    },
+    "volume": 1,
+    "magic": 555501,
+    "check_interval": 30,
+    "bars_count": 30,
+    "resolved_symbols": {
+        "WDO": "WDON26",
+        "WIN": "WINM26"
+    }
 }

@@ -801,6 +801,7 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             "trade_log_id": trade_id,
             "strategy": strategy,
             "bb_mid": kwargs.get("bb_mid", 0),
+            "entry_time": datetime.now(),
         }
 
         # Cooldown
@@ -824,7 +825,13 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
 
 
 def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strategy: str = "VWAP", params: dict = None):
-    """Gerencia trailing stop e verifica saídas."""
+    """Gerencia trailing stop e verifica saídas.
+
+    Proteções anti-drawdown:
+    1. Breakeven: após breakeven_minutes sem trailing, move SL pra entry + custo
+    2. Time trailing: após time_trail_minutes, aperta trailing mesmo sem trail_activate
+    3. Max position: após max_position_minutes, trailing agressivo (0.3x ATR)
+    """
     if params is None:
         params = CONFIG["wdo"] if "WDO" in symbol else CONFIG["win"]
     key = f"{symbol}_{tf}"
@@ -859,25 +866,67 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     else:
         profit_pts = entry_price - best
 
-    # Trailing
+    # Tempo de posição em minutos (check_interval = 30s por padrão)
+    check_interval = CONFIG.get("check_interval", 30)
+    pos_minutes = bar_count * check_interval / 60
+
+    # Parâmetros de proteção temporal
+    breakeven_min = params.get("breakeven_minutes", 15)
+    time_trail_min = params.get("time_trail_minutes", 30)
+    max_pos_min = params.get("max_position_minutes", 120)
     trail_act = params.get("trail_activate", 1.5)
     trail_dist_cfg = params.get("trail_distance", 0.5)
-    if not trail_on and profit_pts >= trail_act * atr:
+
+    old_sl = pos.get("sl_pts", 0)
+
+    # ===== TRAILING POR LUCRO (original) =====
+    if not trail_on and atr > 0 and profit_pts >= trail_act * atr:
         trail_on = True
         pos["trail_on"] = True
         log(f"[TRAIL] Ativado trailing {symbol} | Lucro: {profit_pts:.0f} pts ({profit_pts/atr:.1f}x ATR)")
 
-    old_sl = pos.get("sl_pts", 0)
-    if trail_on:
-        trail_dist = trail_dist_cfg * atr
+    # ===== PROTEÇÃO 1: BREAKEVEN =====
+    # Após X minutos sem trailing, move SL pra entry + custo mínimo
+    if not trail_on and pos_minutes >= breakeven_min and atr > 0:
+        cost_pts = int(5 / point_val)  # custo aprox (comissão + slippage) em pontos
+        if direction == "BUY":
+            be_price = entry_price + cost_pts * point_val
+            be_dist = entry_price - be_price  # negativo = SL acima de entry
+            new_sl_pts = max(1, int(abs(be_dist) / point_val)) if be_dist < 0 else sl_pts
+            if new_sl_pts < sl_pts:
+                pos["sl_pts"] = new_sl_pts
+                log(f"[BREAKEVEN] {symbol} após {pos_minutes:.0f}min sem trailing | SL → entry (era {sl_pts}pts)")
+        else:
+            be_price = entry_price - cost_pts * point_val
+            be_dist = be_price - entry_price  # negativo = SL abaixo de entry
+            new_sl_pts = max(1, int(abs(be_dist) / point_val)) if be_dist < 0 else sl_pts
+            if new_sl_pts < sl_pts:
+                pos["sl_pts"] = new_sl_pts
+                log(f"[BREAKEVEN] {symbol} após {pos_minutes:.0f}min sem trailing | SL → entry (era {sl_pts}pts)")
+
+    # ===== PROTEÇÃO 2: TIME-BASED TRAILING =====
+    # Após Y minutos, ativa trailing mesmo sem atingir trail_activate
+    if not trail_on and pos_minutes >= time_trail_min and profit_pts > 0:
+        trail_on = True
+        pos["trail_on"] = True
+        log(f"[TIME_TRAIL] Ativado por tempo {symbol} após {pos_minutes:.0f}min | Lucro: {profit_pts:.0f}pts")
+
+    # ===== TRAILING STOP =====
+    if trail_on and atr > 0:
+        # Proteção 3: após max_position_minutes, trailing mais apertado
+        if pos_minutes >= max_pos_min:
+            trail_dist = 0.3 * atr  # agressivo
+        else:
+            trail_dist = trail_dist_cfg * atr
+
         if direction == "BUY":
             new_sl = best - trail_dist
             if new_sl > entry_price - sl_pts:
-                pos["sl_pts"] = int(entry_price - new_sl)  # distance from entry to new SL
+                pos["sl_pts"] = int(entry_price - new_sl)
         else:
             new_sl = best + trail_dist
             if new_sl < entry_price + sl_pts:
-                pos["sl_pts"] = int(new_sl - entry_price)  # distance from entry to new SL
+                pos["sl_pts"] = int(new_sl - entry_price)
 
     # ===== BOLLINGER: Tight trailing na banda oposta =====
     if strategy == "BOLLINGER":
