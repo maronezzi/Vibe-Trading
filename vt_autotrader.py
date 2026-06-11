@@ -1154,6 +1154,7 @@ def recover_open_positions():
 
 
 def run_daemon():
+    global CONFIG
     init_db()
     state.started_at = datetime.now()
 
@@ -1188,7 +1189,6 @@ def run_daemon():
     while True:
         try:
             # Hot reload config — recarrega se vt_config.json mudou
-            global CONFIG
             CONFIG = load_config()
 
             if is_close_time() and not state.closed:
