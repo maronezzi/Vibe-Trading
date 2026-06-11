@@ -203,7 +203,7 @@ def check_strong_trend(price, atr_val, ema_fast_val, ema_slow_val, adx_val, plus
 
 # ─── Backtest Engine ─────────────────────────────────────────────────────────
 
-def backtest(df, symbol, strategy, params, *, capital=1_000_000.0):
+def backtest(df, symbol, tf, strategy, params, *, capital=1_000_000.0):
     spec = CONTRACT_SPECS[symbol]
     mult = spec["mult"]
     margin = spec["margin"]
@@ -232,6 +232,9 @@ def backtest(df, symbol, strategy, params, *, capital=1_000_000.0):
     trail_distance = params.get("trail_distance", 0.5)
     cooldown = params.get("cooldown_seconds", 300)
     max_daily = params.get("max_daily_trades", 8)
+    breakeven_min = params.get("breakeven_minutes", 0)  # 0 = disabled by default
+    time_trail_min = params.get("time_trail_minutes", 0)  # 0 = disabled
+    max_pos_min = params.get("max_position_minutes", 999)  # 999 = disabled
     
     # State
     cash = capital
@@ -243,13 +246,14 @@ def backtest(df, symbol, strategy, params, *, capital=1_000_000.0):
     sl_price = 0.0
     trail_on = False
     sl_pts = 0
+    bars_in_trade = 0
     
     trade_log = []
     daily_trades = {}
     last_trade_time = None
     
     def _close(price, reason, date):
-        nonlocal cash, pos, ep, e_date, best_price, sl_price, trail_on, e_atr, sl_pts
+        nonlocal cash, pos, ep, e_date, best_price, sl_price, trail_on, e_atr, sl_pts, bars_in_trade
         
         if pos == 0:
             return
@@ -273,6 +277,7 @@ def backtest(df, symbol, strategy, params, *, capital=1_000_000.0):
             "reason": reason,
             "sl_pts": sl_pts,
             "strategy": strategy,
+            "bars": bars_in_trade,
         })
         
         pos = 0
@@ -280,6 +285,7 @@ def backtest(df, symbol, strategy, params, *, capital=1_000_000.0):
         best_price = 0
         sl_price = 0
         trail_on = False
+        bars_in_trade = 0
     
     def _open(direction, price, date, cur_atr):
         nonlocal cash, pos, ep, e_date, best_price, sl_price, trail_on, e_atr, sl_pts, last_trade_time
@@ -342,6 +348,8 @@ def backtest(df, symbol, strategy, params, *, capital=1_000_000.0):
         
         # ─── Position management ───
         if pos != 0:
+            bars_in_trade += 1
+            
             # Update best
             if pos == 1:
                 best_price = max(best_price, high)
@@ -354,13 +362,46 @@ def backtest(df, symbol, strategy, params, *, capital=1_000_000.0):
             else:
                 profit_pts = ep - best_price
             
-            # Activate trailing?
+            # Position time in minutes (M5=5min/bar, M15=15min/bar)
+            tf_minutes = 5 if tf == "M5" else 15
+            pos_minutes = bars_in_trade * tf_minutes
+            
+            # ===== TRAILING POR LUCRO (original) =====
             if not trail_on and e_atr > 0 and profit_pts >= trail_activate * e_atr:
                 trail_on = True
             
-            # Trailing
+            # ===== PROTEÇÃO 1: BREAKEVEN =====
+            if not trail_on and breakeven_min > 0 and pos_minutes >= breakeven_min and e_atr > 0:
+                cost_pts = int(5 / (0.001 if is_wdo else 1.0))
+                if pos == 1:
+                    be_price = ep + cost_pts * (0.001 if is_wdo else 1.0)
+                    be_dist = ep - be_price
+                    if be_dist < 0:
+                        new_sl_pts = max(1, int(abs(be_dist) / (0.001 if is_wdo else 1.0)))
+                        if new_sl_pts < sl_pts:
+                            sl_pts = new_sl_pts
+                            sl_price = ep + sl_pts * (0.001 if is_wdo else 1.0) if pos == -1 else ep - sl_pts * (0.001 if is_wdo else 1.0)
+                else:
+                    be_price = ep - cost_pts * (0.001 if is_wdo else 1.0)
+                    be_dist = be_price - ep
+                    if be_dist < 0:
+                        new_sl_pts = max(1, int(abs(be_dist) / (0.001 if is_wdo else 1.0)))
+                        if new_sl_pts < sl_pts:
+                            sl_pts = new_sl_pts
+                            sl_price = ep + sl_pts * (0.001 if is_wdo else 1.0) if pos == -1 else ep - sl_pts * (0.001 if is_wdo else 1.0)
+            
+            # ===== PROTEÇÃO 2: TIME-BASED TRAILING =====
+            if not trail_on and time_trail_min > 0 and pos_minutes >= time_trail_min and profit_pts > 0:
+                trail_on = True
+            
+            # ===== TRAILING STOP =====
             if trail_on and e_atr > 0:
-                trail_dist = trail_distance * e_atr
+                # Proteção 3: após max_position_minutes, trailing mais apertado
+                if pos_minutes >= max_pos_min:
+                    trail_dist = 0.3 * e_atr  # agressivo
+                else:
+                    trail_dist = trail_distance * e_atr
+                
                 if pos == 1:
                     new_sl = best_price - trail_dist
                     if new_sl > sl_price:
@@ -493,7 +534,7 @@ def run():
         print(f"     {p0:.2f} → {p1:.2f} ({(p1/p0-1)*100:+.2f}%)")
         
         # Run with NEW config (AGI v11)
-        trades_new = backtest(df, sym, strategy, params)
+        trades_new = backtest(df, sym, tf, strategy, params)
         
         # Run with OLD config for comparison
         if "WDO" in sym:
@@ -503,7 +544,7 @@ def run():
             old_strat = "BOLLINGER"
             old_params = old_win
         
-        trades_old = backtest(df, sym, old_strat, old_params)
+        trades_old = backtest(df, sym, tf, old_strat, old_params)
         
         # Filter trades to today only
         trades_new_today = [t for t in trades_new if hasattr(t["entry_time"], 'date') and t["entry_time"].date() == today]
