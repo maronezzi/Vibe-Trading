@@ -42,19 +42,19 @@ CONFIG = {
     "close_hour": 16,
     "close_minute": 45,
 
-    # Símbolos
-    "symbols": ["WIN", "WDO"],
+    # Símbolos — AGI v7: WIN$ reativado com EMA Crossover + ADX
+    "symbols": ["WDO", "WIN"],
     "timeframes": ["M5"],
     # Timeframes por símbolo (override do global)
     "timeframes_by_symbol": {
-        "WDO": ["M5", "M15"],   # WDO: M5+M15 (otimizado 10/06)
-        "WIN": ["M5", "M15"],   # WIN: M5+M15 (otimizado 10/06 — M15 lucrativo com novos params)
+        "WDO": ["M5"],              # WDO: VWAP — WR 77.8%, PF 6.29
+        "WIN": ["M5", "M15"],       # WIN: EMA Crossover + ADX — WR 62.5%, PF 10.98
     },
 
     # Estratégia por símbolo (SPLIT)
     "strategy": {
-        "WDO": "VWAP",      # Dólar: mercado trending → VWAP
-        "WIN": "BOLLINGER",  # Índice: mercado choppy → Bollinger reversão
+        "WDO": "VWAP",             # Dólar: mercado trending → VWAP
+        "WIN": "EMA_CROSSOVER",    # Índice: trend-following → EMA(12/21) + ADX
     },
 
     # WDO params (VWAP — mercado trending)
@@ -76,23 +76,22 @@ CONFIG = {
         "trend_min_spread": 0.001,
     },
 
-    # WIN params (Bollinger + RSI reversal — WIN é choppy)
-    # Otimizado 10/06 por Trader IA: BB(15,2.0) RSI(30/70) SL 2.0x
-    # Meta: mean reversion em mercado choppy, entrada seletiva
+    # WIN params (EMA Crossover + ADX — AGI v7)
+    # Backtest 10/06: WR 62.5%, PF 10.98, Sharpe 100.95, R$/dia R$+95
+    # Trend-following: EMA(12/21) crossover + ADX > 20 filter
     "win": {
-        "bb_period": 15,         # janela curta pra captar reversões rápidas
-        "bb_std": 2.0,           # 2 desvios — entra só nos extremos
+        "ema_fast": 12,            # EMA rápida otimizada: 12 (era 9)
+        "ema_slow": 21,            # EMA lenta: 21
+        "adx_period": 14,          # ADX período
+        "adx_threshold": 20,       # ADX mínimo: 20 (tendência ativa)
         "rsi_period": 14,
-        "rsi_buy": 30,           # otimizado: 30 (era 35) — mais seletivo
-        "rsi_sell": 70,          # otimizado: 70 (era 65) — mais seletivo
-        "sl_atr_mult": 2.0,      # otimizado: 2.0x (era 1.5x) — mais respiração
-        "trail_activate": 1.5,
-        "trail_distance": 0.3,
-        "cooldown_seconds": 1200, # otimizado: 1200s (era 900s) — menos overtrading
-        "max_daily_trades": 4,    # otimizado: 4 (era 6) — proteção capital
-        "trend_filter": True,     # NOVO: só compra em uptrend, vende em downtrend
-        "ema_fast": 9,
-        "ema_slow": 21,
+        "rsi_overbought": 70,      # RSI filtro: não compra acima de 70
+        "rsi_oversold": 30,        # RSI filtro: não vende abaixo de 30
+        "sl_atr_mult": 1.5,        # SL: 1.5x ATR (era 2.0x)
+        "trail_activate": 1.5,     # Trailing ativa: 1.5x ATR
+        "trail_distance": 0.3,     # Trailing distância: 0.3x ATR (apertado)
+        "cooldown_seconds": 900,   # 15 min cooldown
+        "max_daily_trades": 6,     # até 6 trades/dia
     },
 
     # Posição
@@ -237,6 +236,42 @@ def calculate_bollinger(bars: list, period: int = 20, num_std: float = 2.0):
     upper = mid + num_std * std
     lower = mid - num_std * std
     return upper, mid, lower
+
+
+def calculate_adx(bars: list, period: int = 14):
+    """Average Directional Index — mede força da tendência."""
+    if not bars or len(bars) < period * 2:
+        return 0, 0, 0
+    highs = [b["high"] for b in bars[:period * 2]]
+    lows = [b["low"] for b in bars[:period * 2]]
+    closes = [b["close"] for b in bars[:period * 2]]
+    plus_dm = []
+    minus_dm = []
+    for i in range(1, len(highs)):
+        up = highs[i] - highs[i - 1]
+        down = lows[i - 1] - lows[i]
+        plus_dm.append(up if up > down and up > 0 else 0)
+        minus_dm.append(down if down > up and down > 0 else 0)
+    tr_list = []
+    for i in range(1, len(highs)):
+        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+        tr_list.append(tr)
+    if len(tr_list) < period:
+        return 0, 0, 0
+    atr_val = sum(tr_list[:period]) / period
+    plus_dm_smooth = sum(plus_dm[:period]) / period
+    minus_dm_smooth = sum(minus_dm[:period]) / period
+    for i in range(period, len(tr_list)):
+        atr_val = (atr_val * (period - 1) + tr_list[i]) / period
+        plus_dm_smooth = (plus_dm_smooth * (period - 1) + plus_dm[i]) / period
+        minus_dm_smooth = (minus_dm_smooth * (period - 1) + minus_dm[i]) / period
+    if atr_val == 0:
+        return 0, 0, 0
+    plus_di = 100 * plus_dm_smooth / atr_val
+    minus_di = 100 * minus_dm_smooth / atr_val
+    di_sum = plus_di + minus_di
+    dx = 100 * abs(plus_di - minus_di) / di_sum if di_sum > 0 else 0
+    return dx, plus_di, minus_di
 
 
 def get_market_regime(bars: list, params: dict = None) -> str:
@@ -394,6 +429,8 @@ def check_and_trade():
             else:
                 if strategy == "VWAP":
                     check_entry_vwap(symbol, tf, last_close, atr, bar_ts=last_bar_ts, bars=bars, params=params)
+                elif strategy == "EMA_CROSSOVER":
+                    check_entry_ema_crossover(symbol, tf, last_close, atr, bar_ts=last_bar_ts, bars=bars, params=params)
                 else:
                     check_entry_bollinger(symbol, tf, last_close, atr, bar_ts=last_bar_ts, bars=bars, params=params)
 
@@ -564,6 +601,76 @@ def check_entry_bollinger(symbol: str, tf: str, price: float,
                    rsi=rsi)
 
 
+def check_entry_ema_crossover(symbol: str, tf: str, price: float,
+                               atr: float, bar_ts=None, bars=None, params=None):
+    """Entrada via EMA Crossover + ADX (para WIN — trend-following)."""
+    if params is None:
+        params = CONFIG["win"]
+    _reset_daily_counter()
+
+    if not _check_cooldown(symbol, params):
+        return
+
+    if not _check_max_trades(params, symbol):
+        log(f"[BLOQUEADO] {symbol} {tf} — máximo diário atingido")
+        return
+
+    if not _check_consecutive_losses(symbol):
+        return
+
+    ema_fast_period = params.get("ema_fast", 12)
+    ema_slow_period = params.get("ema_slow", 21)
+    adx_period = params.get("adx_period", 14)
+    adx_threshold = params.get("adx_threshold", 20)
+    rsi_period = params.get("rsi_period", 14)
+    rsi_ob = params.get("rsi_overbought", 70)
+    rsi_os = params.get("rsi_oversold", 30)
+
+    ema_fast_val = calculate_ema(bars, ema_fast_period)
+    ema_slow_val = calculate_ema(bars, ema_slow_period)
+    adx_val, plus_di, minus_di = calculate_adx(bars, adx_period)
+    rsi = calculate_rsi(bars, rsi_period)
+
+    if ema_fast_val == 0 or ema_slow_val == 0 or adx_val == 0:
+        return
+
+    if adx_val < adx_threshold:
+        return
+
+    prev_fast = calculate_ema(bars[1:], ema_fast_period) if len(bars) > ema_fast_period else ema_fast_val
+    prev_slow = calculate_ema(bars[1:], ema_slow_period) if len(bars) > ema_slow_period else ema_slow_val
+
+    direction = None
+    if prev_fast <= prev_slow and ema_fast_val > ema_slow_val:
+        direction = "BUY"
+    elif prev_fast >= prev_slow and ema_fast_val < ema_slow_val:
+        direction = "SELL"
+
+    if not direction:
+        return
+
+    if direction == "BUY" and rsi > rsi_ob:
+        return
+    if direction == "SELL" and rsi < rsi_os:
+        return
+
+    if direction == "BUY" and plus_di < minus_di:
+        return
+    if direction == "SELL" and minus_di < plus_di:
+        return
+
+    if not _defenses_ok(symbol, tf, direction, bar_ts):
+        return
+
+    sl_pts = _calc_sl(symbol, atr, params)
+
+    _execute_entry(symbol, tf, direction, price, sl_pts, atr, bar_ts,
+                   strategy="EMA_CROSSOVER",
+                   ema_fast=ema_fast_val, ema_slow=ema_slow_val,
+                   adx=adx_val, plus_di=plus_di, minus_di=minus_di,
+                   rsi=rsi)
+
+
 def _calc_sl(symbol: str, atr: float, params: dict = None) -> int:
     """Calcula SL em pontos (unidade do executor = price * point).
 
@@ -667,6 +774,14 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                 "bb_mid": round(kwargs.get("bb_mid", 0), 2),
                 "bb_lower": round(kwargs.get("bb_lower", 0), 2),
             })
+        elif strategy == "EMA_CROSSOVER":
+            signal_detail.update({
+                "ema_fast": round(kwargs.get("ema_fast", 0), 2),
+                "ema_slow": round(kwargs.get("ema_slow", 0), 2),
+                "adx": round(kwargs.get("adx", 0), 1),
+                "plus_di": round(kwargs.get("plus_di", 0), 1),
+                "minus_di": round(kwargs.get("minus_di", 0), 1),
+            })
 
         # Registrar no banco
         # entry_sl: calcular preço real do SL baseado no symbol
@@ -709,7 +824,8 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
 
         # Notificação
         sl_label = exec_price - sl_pts if direction == "BUY" else exec_price + sl_pts
-        strategy_label = "VWAP" if strategy == "VWAP" else "Bollinger"
+        strategy_label_map = {"VWAP": "VWAP", "BOLLINGER": "Bollinger", "EMA_CROSSOVER": "EMA Cross"}
+        strategy_label = strategy_label_map.get(strategy, strategy)
         notify_telegram(
             f"📊 *{direction} {symbol} {tf}* ({strategy_label})\n"
             f"• Entrada: {exec_price:.2f} | SL: {sl_label:.2f}\n"
