@@ -1,7 +1,7 @@
 {
-  "_version": 5,
-  "_updated_at": "2026-06-11T06:33:44.795119",
-  "_updated_by": "hot_reload_test_restore",
+  "_version": 6,
+  "_updated_at": "2026-06-11T10:09:03.131198",
+  "_updated_by": "manual_fix",
   "_notes": "Config centralizada. Autotrader hot-reloada automaticamente.",
   "start_hour": 9,
   "start_minute": 5,
@@ -60,5 +60,9 @@
   "volume": 1,
   "magic": 555501,
   "check_interval": 30,
-  "bars_count": 30
+  "bars_count": 30,
+  "resolved_symbols": {
+    "WDO": "WDON26",
+    "WIN": "WINM26"
+  }
 }
