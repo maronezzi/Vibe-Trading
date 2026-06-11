@@ -1,7 +1,7 @@
 {
-  "_version": 8,
-  "_updated_at": "2026-06-11T12:03:25.293215",
-  "_updated_by": "midday_opt",
+  "_version": 10,
+  "_updated_at": "2026-06-11T13:10:36.381365",
+  "_updated_by": "trader_ia_11h",
   "_notes": "Config centralizada. Autotrader hot-reloada automaticamente.",
   "start_hour": 9,
   "start_minute": 5,
@@ -25,14 +25,14 @@
   },
   "strategy": {
     "WDO": "VWAP",
-    "WIN": "EMA_CROSSOVER"
+    "WIN": "BOLLINGER"
   },
   "wdo": {
     "vwap_period": 10,
     "vwap_buy_threshold": 1.002,
     "vwap_sell_threshold": 0.995,
     "sl_atr_mult": 1.0,
-    "trail_activate": 2.0,
+    "trail_activate": 1.0,
     "trail_distance": 0.2,
     "cooldown_seconds": 300,
     "max_daily_trades": 8,
@@ -44,18 +44,16 @@
     "trend_min_spread": 0
   },
   "win": {
-    "ema_fast": 12,
-    "ema_slow": 21,
-    "adx_period": 14,
-    "adx_threshold": 15,
+    "bb_period": 20,
+    "bb_std": 2.0,
     "rsi_period": 14,
     "rsi_overbought": 70,
     "rsi_oversold": 30,
     "sl_atr_mult": 2.0,
     "trail_activate": 0.5,
     "trail_distance": 0.1,
-    "cooldown_seconds": 900,
-    "max_daily_trades": 6
+    "cooldown_seconds": 600,
+    "max_daily_trades": 10
   },
   "volume": 1,
   "magic": 555501,
