@@ -42,13 +42,13 @@ CONFIG = {
     "close_hour": 16,
     "close_minute": 45,
 
-    # Símbolos — AGI v7.1: Split strategy optimized
+    # Símbolos — AGI v7.2: Split strategy optimized (ALL 4 combos profitable)
     "symbols": ["WDO", "WIN"],
     "timeframes": ["M5"],
     # Timeframes por símbolo (override do global)
     "timeframes_by_symbol": {
-        "WDO": ["M5"],              # WDO: VWAP(15) — WR 100%, PF 999, Sharpe 207
-        "WIN": ["M5", "M15"],       # WIN: EMA(12/21) + ADX>15 — WR 83%, PF 46
+        "WDO": ["M5"],              # WDO: VWAP(15) — WR 80%, PF 5.14, Sharpe 10.70
+        "WIN": ["M5", "M15"],       # WIN: EMA(12/21) + ADX>15 — WR 56%, PF 1.45
     },
 
     # Estratégia por símbolo (SPLIT)
@@ -58,7 +58,9 @@ CONFIG = {
     },
 
     # WDO params (VWAP — mercado trending)
-    # AGI v7.1 optimized: WR 100%, PF 999, Sharpe 207 (WDO$ M5)
+    # AGI v7.2 optimized: ALL 4 combos profitable, total +0.93%
+    # WDO$ M5: +0.24% WR 80% Sharpe 10.70 PF 5.14
+    # WDO$ M15: +0.45% WR 50% Sharpe 4.45 PF 1.69
     "wdo": {
         "vwap_period": 15,              # otimizado: 15 (era 20)
         "vwap_buy_threshold": 1.001,     # otimizado: 1.001 (era 1.003)
@@ -73,11 +75,13 @@ CONFIG = {
         "rsi_period": 14,
         "rsi_overbought": 70,
         "rsi_oversold": 30,
-        "trend_min_spread": 0.001,
+        "trend_min_spread": 0,           # AGI v7.2: removido filtro choppy → WDO M15 -0.24% → +0.45%
     },
 
-    # WIN params (EMA Crossover + ADX — AGI v7)
-    # AGI v7.1 optimized: WR 83%, PF 46.12, Sharpe 39.3 (WIN$ M5)
+    # WIN params (EMA Crossover + ADX — AGI v7.2)
+    # AGI v7.2 optimized: ALL combos profitable, total +0.93%
+    # WIN$ M5: +0.14% WR 56% Sharpe 6.65 PF 1.45
+    # WIN$ M15: +0.10% WR 50% Sharpe 2.58 PF 1.44
     # Trend-following: EMA(12/21) crossover + ADX > 15 filter
     "win": {
         "ema_fast": 12,            # EMA rápida otimizada: 12 (era 9)
