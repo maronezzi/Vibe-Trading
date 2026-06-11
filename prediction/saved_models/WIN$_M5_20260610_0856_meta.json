@@ -1,0 +1,83 @@
+{
+  "symbol": "WIN$",
+  "timeframe": "M5",
+  "horizon": 1,
+  "n_samples": 2974,
+  "n_features": 17,
+  "target_distribution": {
+    "UP": 1410,
+    "DOWN": 1564
+  },
+  "fold_metrics": [
+    {
+      "fold": 1,
+      "accuracy": 0.4888888888888889,
+      "f1": 0.40189125295508277,
+      "precision": 0.4381443298969072,
+      "recall": 0.37117903930131,
+      "n_train": 499,
+      "n_val": 495
+    },
+    {
+      "fold": 2,
+      "accuracy": 0.5252525252525253,
+      "f1": 0.38961038961038963,
+      "precision": 0.5319148936170213,
+      "recall": 0.3073770491803279,
+      "n_train": 994,
+      "n_val": 495
+    },
+    {
+      "fold": 3,
+      "accuracy": 0.498989898989899,
+      "f1": 0.4585152838427948,
+      "precision": 0.4838709677419355,
+      "recall": 0.43568464730290457,
+      "n_train": 1489,
+      "n_val": 495
+    },
+    {
+      "fold": 4,
+      "accuracy": 0.4808080808080808,
+      "f1": 0.42247191011235957,
+      "precision": 0.4177777777777778,
+      "recall": 0.42727272727272725,
+      "n_train": 1984,
+      "n_val": 495
+    },
+    {
+      "fold": 5,
+      "accuracy": 0.5171717171717172,
+      "f1": 0.47702407002188185,
+      "precision": 0.5165876777251185,
+      "recall": 0.44308943089430897,
+      "n_train": 2479,
+      "n_val": 495
+    }
+  ],
+  "mean_accuracy": 0.5022222222222222,
+  "mean_f1": 0.42990258130850173,
+  "mean_precision": 0.47765912935175203,
+  "mean_recall": 0.3969205787903157,
+  "train_date": "2026-06-10T08:56:35.018663",
+  "feature_cols": [
+    "rsi_14",
+    "macd",
+    "macd_signal",
+    "macd_hist",
+    "bb_position",
+    "bb_width",
+    "atr_pct",
+    "adx_14",
+    "volume_ratio",
+    "close_pct_1",
+    "close_pct_3",
+    "close_pct_5",
+    "high_low_range",
+    "vwap_distance",
+    "body_ratio",
+    "is_bullish",
+    "ema_cross"
+  ],
+  "model_path": "/home/bruno/Projects/Vibe-Trading/prediction/models/../saved_models/WIN$_M5_20260610_0856.pkl"
+}

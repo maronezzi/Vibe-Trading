@@ -60,6 +60,8 @@ def calc_rsi(df, period=14):
     delta = df["close"].diff()
     gain = delta.where(delta > 0, 0).rolling(period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+    # Evitar divisão por zero
+    loss = loss.replace(0, 1e-10)
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
@@ -71,12 +73,15 @@ def calc_adx(df, period=14):
     minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0)
     tr = pd.concat([h-l, (h-c.shift(1)).abs(), (l-c.shift(1)).abs()], axis=1).max(axis=1)
     atr_smooth = tr.rolling(period).mean()
+    # Evitar divisão por zero
+    atr_smooth = atr_smooth.replace(0, 1e-10)
     plus_di = 100 * (plus_dm.rolling(period).mean() / atr_smooth)
     minus_di = 100 * (minus_dm.rolling(period).mean() / atr_smooth)
-    dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di))
+    di_sum = plus_di + minus_di
+    di_sum = di_sum.replace(0, 1e-10)
+    dx = 100 * ((plus_di - minus_di).abs() / di_sum)
     adx = dx.rolling(period).mean()
-    return adx, plus_di, minus_di
-
+    return adx.fillna(0), plus_di.fillna(0), minus_di.fillna(0)
 def calc_ema(df, period):
     return df["close"].ewm(span=period, adjust=False).mean()
 

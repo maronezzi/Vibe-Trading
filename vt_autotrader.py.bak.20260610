@@ -3,7 +3,7 @@
 Vibe-Trading Autotrader — Daemon autônomo com estratégias SPLIT.
 
 WDO → VWAP(20): buy > 1.003, sell < 0.997 (mercado trending)
-WIN → Bollinger(15,2) + RSI(14,35/65): reversão à média (mercado choppy)
+WIN → Bollinger(20,2) + RSI(14): reversão à média (mercado choppy)
 
 Funcionalidades:
 - Estratégia por símbolo (split)
@@ -42,32 +42,31 @@ CONFIG = {
     "close_hour": 16,
     "close_minute": 45,
 
-    # Símbolos — AGI v7.1: Split strategy optimized
-    "symbols": ["WDO", "WIN"],
+    # Símbolos
+    "symbols": ["WIN", "WDO"],
     "timeframes": ["M5"],
     # Timeframes por símbolo (override do global)
     "timeframes_by_symbol": {
-        "WDO": ["M5"],              # WDO: VWAP(15) — WR 100%, PF 999, Sharpe 207
-        "WIN": ["M5", "M15"],       # WIN: EMA(12/21) + ADX>15 — WR 83%, PF 46
+        "WDO": ["M5", "M15"],  # WDO opera em M5 e M15
+        "WIN": ["M5", "M15"],   # Bollinger em M5 e M15
     },
 
     # Estratégia por símbolo (SPLIT)
     "strategy": {
-        "WDO": "VWAP",             # Dólar: mercado trending → VWAP
-        "WIN": "EMA_CROSSOVER",    # Índice: trend-following → EMA(12/21) + ADX
+        "WDO": "VWAP",      # Dólar: mercado trending → VWAP
+        "WIN": "BOLLINGER",  # Índice: mercado choppy → Bollinger reversão
     },
 
-    # WDO params (VWAP — mercado trending)
-    # AGI v7.1 optimized: WR 100%, PF 999, Sharpe 207 (WDO$ M5)
+    # WDO params (otimizado 09/06/2026)
     "wdo": {
-        "vwap_period": 15,              # otimizado: 15 (era 20)
-        "vwap_buy_threshold": 1.001,     # otimizado: 1.001 (era 1.003)
-        "vwap_sell_threshold": 0.999,    # otimizado: 0.999 (era 0.997)
-        "sl_atr_mult": 1.0,        # otimizado 10/06: 1.0x ATR (era 2.0) → PnL +R$1515 WR 69%
+        "vwap_period": 20,
+        "vwap_buy_threshold": 1.003,
+        "vwap_sell_threshold": 0.997,
+        "sl_atr_mult": 1.0,
         "trail_activate": 1.5,
-        "trail_distance": 0.2,           # otimizado: 0.2 (era 0.3)
-        "cooldown_seconds": 300,         # otimizado: 300s (era 600s)
-        "max_daily_trades": 8,
+        "trail_distance": 0.3,
+        "cooldown_seconds": 300,
+        "max_daily_trades": 20,
         "ema_fast": 9,
         "ema_slow": 21,
         "rsi_period": 14,
@@ -76,22 +75,18 @@ CONFIG = {
         "trend_min_spread": 0.001,
     },
 
-    # WIN params (EMA Crossover + ADX — AGI v7)
-    # AGI v7.1 optimized: WR 83%, PF 46.12, Sharpe 39.3 (WIN$ M5)
-    # Trend-following: EMA(12/21) crossover + ADX > 15 filter
+    # WIN params (otimizado 09/06/2026)
     "win": {
-        "ema_fast": 12,            # EMA rápida otimizada: 12 (era 9)
-        "ema_slow": 21,            # EMA lenta: 21
-        "adx_period": 14,          # ADX período
-        "adx_threshold": 15,       # ADX mínimo: 15 (era 20, mais trades)
+        "bb_period": 25,
+        "bb_std": 1.5,
         "rsi_period": 14,
-        "rsi_overbought": 70,      # RSI filtro: não compra acima de 70
-        "rsi_oversold": 30,        # RSI filtro: não vende abaixo de 30
-        "sl_atr_mult": 1.5,        # SL: 1.5x ATR (era 2.0x)
-        "trail_activate": 1.0,     # Trailing ativa: 1.0x ATR (era 1.5)
-        "trail_distance": 0.2,     # Trailing distância: 0.2x ATR (era 0.3)
-        "cooldown_seconds": 900,   # 15 min cooldown
-        "max_daily_trades": 6,     # até 6 trades/dia
+        "rsi_buy": 30,
+        "rsi_sell": 75,
+        "sl_atr_mult": 1.5,
+        "trail_activate": 1.5,
+        "trail_distance": 0.3,
+        "cooldown_seconds": 900,
+        "max_daily_trades": 10,
     },
 
     # Posição
@@ -118,9 +113,6 @@ class SessionState:
         self.last_trade_time = {}
         self.daily_trade_count = 0
         self.current_day = None
-        self.daily_trade_by_symbol = {}  # {symbol: count}
-        self.consecutive_losses = {}      # per-symbol tracking: {symbol: count}
-        self.max_consecutive_losses = 3   # halt after N consecutive losses per symbol
 
     def to_dict(self):
         return {
@@ -238,42 +230,6 @@ def calculate_bollinger(bars: list, period: int = 20, num_std: float = 2.0):
     return upper, mid, lower
 
 
-def calculate_adx(bars: list, period: int = 14):
-    """Average Directional Index — mede força da tendência."""
-    if not bars or len(bars) < period * 2:
-        return 0, 0, 0
-    highs = [b["high"] for b in bars[:period * 2]]
-    lows = [b["low"] for b in bars[:period * 2]]
-    closes = [b["close"] for b in bars[:period * 2]]
-    plus_dm = []
-    minus_dm = []
-    for i in range(1, len(highs)):
-        up = highs[i] - highs[i - 1]
-        down = lows[i - 1] - lows[i]
-        plus_dm.append(up if up > down and up > 0 else 0)
-        minus_dm.append(down if down > up and down > 0 else 0)
-    tr_list = []
-    for i in range(1, len(highs)):
-        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
-        tr_list.append(tr)
-    if len(tr_list) < period:
-        return 0, 0, 0
-    atr_val = sum(tr_list[:period]) / period
-    plus_dm_smooth = sum(plus_dm[:period]) / period
-    minus_dm_smooth = sum(minus_dm[:period]) / period
-    for i in range(period, len(tr_list)):
-        atr_val = (atr_val * (period - 1) + tr_list[i]) / period
-        plus_dm_smooth = (plus_dm_smooth * (period - 1) + plus_dm[i]) / period
-        minus_dm_smooth = (minus_dm_smooth * (period - 1) + minus_dm[i]) / period
-    if atr_val == 0:
-        return 0, 0, 0
-    plus_di = 100 * plus_dm_smooth / atr_val
-    minus_di = 100 * minus_dm_smooth / atr_val
-    di_sum = plus_di + minus_di
-    dx = 100 * abs(plus_di - minus_di) / di_sum if di_sum > 0 else 0
-    return dx, plus_di, minus_di
-
-
 def get_market_regime(bars: list, params: dict = None) -> str:
     if params is None:
         params = CONFIG["wdo"]
@@ -326,28 +282,8 @@ def _reset_daily_counter():
     if state.current_day != today:
         state.current_day = today
         state.daily_trade_count = 0
-        state.daily_trade_by_symbol = {}
         state.last_trade_time = {}
-        state.consecutive_losses = {}
         log(f"[DAILY] Contador diário resetado para {today}")
-
-
-def _is_safe_time_window() -> bool:
-    """Evita operar nos primeiros/últimos 15 min da sessão.
-    - Abertura 9:05-9:20: mercado ainda definindo direção
-    - Fechamento 16:30-16:45: risco de gap/ilha
-    Retorna True se está em janela segura.
-    """
-    now = datetime.now()
-    h, m = now.hour, now.minute
-    current = h * 60 + m
-    # Primeiros 15 min após abertura (9:05-9:20)
-    if 9 * 60 + 5 <= current <= 9 * 60 + 20:
-        return False
-    # Últimos 15 min antes do fechamento (16:30-16:45)
-    if 16 * 60 + 30 <= current <= 16 * 60 + 45:
-        return False
-    return True
 
 
 def _check_cooldown(symbol: str, params: dict) -> bool:
@@ -361,35 +297,13 @@ def _check_cooldown(symbol: str, params: dict) -> bool:
     return True
 
 
-def _check_max_trades(params: dict, symbol: str = "") -> bool:
-    """Retorna True se pode operar (limite não atingido). Conta por símbolo."""
-    # Limite global (segurança)
-    if state.daily_trade_count >= 30:
-        return False
-    # Limite por símbolo
-    sym_count = state.daily_trade_by_symbol.get(symbol, 0)
-    max_per_sym = params.get("max_daily_trades", 15)
-    if sym_count >= max_per_sym:
-        return False
-    return True
-
-
-def _check_consecutive_losses(symbol: str) -> bool:
-    """Retorna True se pode operar (sem sequência de derrotas)."""
-    # Se 3+ perdas consecutivas no símbolo, pausar
-    sym_losses = state.consecutive_losses.get(symbol, 0)
-    if sym_losses >= state.max_consecutive_losses:
-        log(f"[BLOQUEADO] {symbol} — {sym_losses} perdas consecutivas")
-        return False
-    return True
+def _check_max_trades(params: dict) -> bool:
+    """Retorna True se pode operar (limite não atingido)."""
+    return state.daily_trade_count < params.get("max_daily_trades", 15)
 
 
 def check_and_trade():
     from vt_analyst import fetch_snapshot, save_snapshot, detect_anomalies, log_anomaly, notify as analyst_notify
-
-    # Safety: avoid first/last 15 min of session
-    if not _is_safe_time_window():
-        return
 
     for symbol_root in CONFIG["symbols"]:
         symbol = resolve_symbol(symbol_root)
@@ -429,8 +343,6 @@ def check_and_trade():
             else:
                 if strategy == "VWAP":
                     check_entry_vwap(symbol, tf, last_close, atr, bar_ts=last_bar_ts, bars=bars, params=params)
-                elif strategy == "EMA_CROSSOVER":
-                    check_entry_ema_crossover(symbol, tf, last_close, atr, bar_ts=last_bar_ts, bars=bars, params=params)
                 else:
                     check_entry_bollinger(symbol, tf, last_close, atr, bar_ts=last_bar_ts, bars=bars, params=params)
 
@@ -445,11 +357,8 @@ def check_entry_vwap(symbol: str, tf: str, price: float,
     if not _check_cooldown(symbol, params):
         return
 
-    if not _check_max_trades(params, symbol):
+    if not _check_max_trades(params):
         log(f"[BLOQUEADO] {symbol} {tf} — máximo diário atingido")
-        return
-
-    if not _check_consecutive_losses(symbol):
         return
 
     # Market regime
@@ -536,11 +445,8 @@ def check_entry_bollinger(symbol: str, tf: str, price: float,
     if not _check_cooldown(symbol, params):
         return
 
-    if not _check_max_trades(params, symbol):
+    if not _check_max_trades(params):
         log(f"[BLOQUEADO] {symbol} {tf} — máximo diário atingido")
-        return
-
-    if not _check_consecutive_losses(symbol):
         return
 
     # Bollinger Bands
@@ -569,24 +475,6 @@ def check_entry_bollinger(symbol: str, tf: str, price: float,
     if not direction:
         return
 
-    # Volume filter: só entra se volume > média (confirmação)
-    if bars and len(bars) >= 20:
-        avg_vol = sum(b.get("volume", 1) for b in bars[:20]) / 20
-        current_vol = bars[1].get("volume", 1)
-        if current_vol < avg_vol * 0.8:  # volume precisa ser >= 80% da média
-            return
-
-    # Trend filter (NOVO): só compra em uptrend, vende em downtrend
-    # Mean reversion funciona melhor na direção da tendência
-    if params.get("trend_filter", False) and bars and len(bars) >= 26:
-        ema_f = calculate_ema(bars, params.get("ema_fast", 9))
-        ema_s = calculate_ema(bars, params.get("ema_slow", 21))
-        if ema_f > 0 and ema_s > 0:
-            if direction == "BUY" and ema_f < ema_s:
-                return  # mercado em downtrend, não comprar
-            if direction == "SELL" and ema_f > ema_s:
-                return  # mercado em uptrend, não vender
-
     # Defesas
     if not _defenses_ok(symbol, tf, direction, bar_ts):
         return
@@ -601,91 +489,15 @@ def check_entry_bollinger(symbol: str, tf: str, price: float,
                    rsi=rsi)
 
 
-def check_entry_ema_crossover(symbol: str, tf: str, price: float,
-                               atr: float, bar_ts=None, bars=None, params=None):
-    """Entrada via EMA Crossover + ADX (para WIN — trend-following)."""
-    if params is None:
-        params = CONFIG["win"]
-    _reset_daily_counter()
-
-    if not _check_cooldown(symbol, params):
-        return
-
-    if not _check_max_trades(params, symbol):
-        log(f"[BLOQUEADO] {symbol} {tf} — máximo diário atingido")
-        return
-
-    if not _check_consecutive_losses(symbol):
-        return
-
-    ema_fast_period = params.get("ema_fast", 12)
-    ema_slow_period = params.get("ema_slow", 21)
-    adx_period = params.get("adx_period", 14)
-    adx_threshold = params.get("adx_threshold", 20)
-    rsi_period = params.get("rsi_period", 14)
-    rsi_ob = params.get("rsi_overbought", 70)
-    rsi_os = params.get("rsi_oversold", 30)
-
-    ema_fast_val = calculate_ema(bars, ema_fast_period)
-    ema_slow_val = calculate_ema(bars, ema_slow_period)
-    adx_val, plus_di, minus_di = calculate_adx(bars, adx_period)
-    rsi = calculate_rsi(bars, rsi_period)
-
-    if ema_fast_val == 0 or ema_slow_val == 0 or adx_val == 0:
-        return
-
-    if adx_val < adx_threshold:
-        return
-
-    prev_fast = calculate_ema(bars[1:], ema_fast_period) if len(bars) > ema_fast_period else ema_fast_val
-    prev_slow = calculate_ema(bars[1:], ema_slow_period) if len(bars) > ema_slow_period else ema_slow_val
-
-    direction = None
-    if prev_fast <= prev_slow and ema_fast_val > ema_slow_val:
-        direction = "BUY"
-    elif prev_fast >= prev_slow and ema_fast_val < ema_slow_val:
-        direction = "SELL"
-
-    if not direction:
-        return
-
-    if direction == "BUY" and rsi > rsi_ob:
-        return
-    if direction == "SELL" and rsi < rsi_os:
-        return
-
-    if direction == "BUY" and plus_di < minus_di:
-        return
-    if direction == "SELL" and minus_di < plus_di:
-        return
-
-    if not _defenses_ok(symbol, tf, direction, bar_ts):
-        return
-
-    sl_pts = _calc_sl(symbol, atr, params)
-
-    _execute_entry(symbol, tf, direction, price, sl_pts, atr, bar_ts,
-                   strategy="EMA_CROSSOVER",
-                   ema_fast=ema_fast_val, ema_slow=ema_slow_val,
-                   adx=adx_val, plus_di=plus_di, minus_di=minus_di,
-                   rsi=rsi)
-
-
 def _calc_sl(symbol: str, atr: float, params: dict = None) -> int:
-    """Calcula SL em pontos (unidade do executor = price * point).
-
-    WIN: point=1.0 → sl_pts=200 = 200 pontos reais ✓
-    WDO: point=0.001 → sl_pts precisa ser 1000x maior!
-         sl_pts=20000 = 200 pontos reais ✓
-    """
+    """Calcula SL em pontos."""
     if params is None:
         params = CONFIG["wdo"] if "WDO" in symbol else CONFIG["win"]
     sl_pts = int(atr * params.get("sl_atr_mult", 1.5))
     if "WIN" in symbol:
-        sl_pts = max(sl_pts, 200)     # WIN point=1.0, mínimo 200 pts
+        sl_pts = max(sl_pts, 100)
     elif "WDO" in symbol:
-        sl_pts = max(sl_pts, 200)     # pontos reais (ATR ~2-5)
-        sl_pts *= 1000                # WDO point=0.001, multiplicar!
+        sl_pts = max(sl_pts, 200)
     return ((sl_pts + 4) // 5) * 5
 
 
@@ -774,27 +586,13 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                 "bb_mid": round(kwargs.get("bb_mid", 0), 2),
                 "bb_lower": round(kwargs.get("bb_lower", 0), 2),
             })
-        elif strategy == "EMA_CROSSOVER":
-            signal_detail.update({
-                "ema_fast": round(kwargs.get("ema_fast", 0), 2),
-                "ema_slow": round(kwargs.get("ema_slow", 0), 2),
-                "adx": round(kwargs.get("adx", 0), 1),
-                "plus_di": round(kwargs.get("plus_di", 0), 1),
-                "minus_di": round(kwargs.get("minus_di", 0), 1),
-            })
 
         # Registrar no banco
-        # entry_sl: calcular preço real do SL baseado no symbol
-        if "WDO" in symbol:
-            point_val = 0.001  # WDO point value
-        else:
-            point_val = 1.0   # WIN point value
-        entry_sl_price = exec_price - sl_pts * point_val if direction == "BUY" else exec_price + sl_pts * point_val
         trade_id = log_entry(
             symbol=symbol, direction=direction,
             volume=CONFIG["volume"],
             entry_price=exec_price,
-            entry_sl=entry_sl_price,
+            entry_sl=exec_price - sl_pts if direction == "BUY" else exec_price + sl_pts,
             entry_ticket=ticket,
             timeframe=tf,
             strategy=strategy,
@@ -820,12 +618,10 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
         # Cooldown
         state.last_trade_time[symbol] = datetime.now()
         state.daily_trade_count += 1
-        state.daily_trade_by_symbol[symbol] = state.daily_trade_by_symbol.get(symbol, 0) + 1
 
         # Notificação
-        sl_label = exec_price - sl_pts * point_val if direction == "BUY" else exec_price + sl_pts * point_val
-        strategy_label_map = {"VWAP": "VWAP", "BOLLINGER": "Bollinger", "EMA_CROSSOVER": "EMA Cross"}
-        strategy_label = strategy_label_map.get(strategy, strategy)
+        sl_label = exec_price - sl_pts if direction == "BUY" else exec_price + sl_pts
+        strategy_label = "VWAP" if strategy == "VWAP" else "Bollinger"
         notify_telegram(
             f"📊 *{direction} {symbol} {tf}* ({strategy_label})\n"
             f"• Entrada: {exec_price:.2f} | SL: {sl_label:.2f}\n"
@@ -882,7 +678,6 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
 
     if trail_on:
         trail_dist = trail_dist_cfg * atr
-        old_sl = pos["sl_pts"]
         if direction == "BUY":
             new_sl = best - trail_dist
             if new_sl > entry_price - sl_pts:
@@ -891,18 +686,6 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             new_sl = best + trail_dist
             if new_sl < entry_price + sl_pts:
                 pos["sl_pts"] = int(new_sl - entry_price)
-        
-        # Enviar modify SL pro MT5 se mudou
-        if pos["sl_pts"] != old_sl:
-            try:
-                from mt5_orchestrator import modify_sl
-                result = modify_sl(symbol, pos["entry_ticket"], pos["sl_pts"])
-                if result.get("status") == "ok":
-                    log(f"[TRAIL] SL atualizado no MT5: {symbol} ticket={pos['entry_ticket']} → SL={pos['sl_pts']} pts")
-                else:
-                    log(f"[TRAIL] Falha modify SL: {result.get('error', '?')}")
-            except Exception as e:
-                log(f"[TRAIL] Erro modify SL: {e}")
 
     # ===== BOLLINGER: Take Profit na banda oposta =====
     if strategy == "BOLLINGER":
@@ -949,18 +732,8 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             state.trade_count += 1
             if pnl > 0:
                 state.wins += 1
-                state.consecutive_losses[symbol] = 0  # reset streak per symbol
             else:
                 state.losses += 1
-                state.consecutive_losses[symbol] = state.consecutive_losses.get(symbol, 0) + 1
-                if state.consecutive_losses[symbol] >= state.max_consecutive_losses:
-                    log(f"[HALT] {symbol}: {state.consecutive_losses[symbol]} perdas consecutivas! Pausando novas entradas.")
-                    notify_telegram(
-                        f"🛑 *HALT TRADING*\n"
-                        f"{symbol}: {state.consecutive_losses.get(symbol, 0)} perdas consecutivas\n"
-                        f"PnL diário: R$ {state.daily_pnl:+.2f}\n"
-                        f"Aguardando reset (próximo dia)"
-                    )
 
         notify_telegram(
             f"⚡ *Fechou {symbol}*\n"
@@ -1000,10 +773,8 @@ def close_all_and_report():
             state.trade_count += 1
             if pnl > 0:
                 state.wins += 1
-                state.consecutive_losses[symbol] = 0
             else:
                 state.losses += 1
-                state.consecutive_losses[symbol] = state.consecutive_losses.get(symbol, 0) + 1
 
     time.sleep(2)
     try:
@@ -1249,15 +1020,15 @@ def run_daemon():
 
     while True:
         try:
-            if is_close_time() and not state.closed:
-                close_all_and_report()
-                time.sleep(10)
-                continue
-
             if not is_trading_time():
                 if state.started_at:
                     log("Fora do horário de trading. Aguardando...")
                 time.sleep(60)
+                continue
+
+            if is_close_time() and not state.closed:
+                close_all_and_report()
+                time.sleep(10)
                 continue
 
             check_and_trade()
@@ -1280,14 +1051,7 @@ def main():
         s = status()
         print(json.dumps(s, indent=2, default=str))
     else:
-        RESTART_FLAG = "/tmp/vt_autotrader_restart"
-
         def signal_handler(sig, frame):
-            # Se flag de restart existe, NÃO fechar posições
-            if os.path.exists(RESTART_FLAG):
-                log("Restart detectado — NÃO fechando posições abertas")
-                os.remove(RESTART_FLAG)
-                sys.exit(0)
             log("Sinal de encerramento recebido. Fechando tudo...")
             if state.positions and not state.closed:
                 close_all_and_report()

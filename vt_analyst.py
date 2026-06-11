@@ -104,7 +104,10 @@ def notify(event_type: str, symbol: str, msg: str):
     }
     icon = icons.get(event_type, "🔔")
     try:
-        os.system(f'hermes send -t telegram:-1004284773048 "{icon} *{event_type}* {symbol}\\n{msg}" 2>/dev/null')
+        import subprocess
+        subprocess.run(["hermes", "send", "-t", "telegram:-1004284773048", 
+                       f"{icon} *{event_type}* {symbol}\n{msg}"], 
+                       timeout=30, capture_output=True)
     except Exception:
         pass
 
