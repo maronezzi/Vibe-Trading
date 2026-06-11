@@ -1,0 +1,64 @@
+{
+  "_version": 3,
+  "_updated_at": "2026-06-11T06:10:26.846880",
+  "_updated_by": "test_restore",
+  "_notes": "Config centralizada. Autotrader hot-reloada automaticamente.",
+  "start_hour": 9,
+  "start_minute": 5,
+  "close_hour": 16,
+  "close_minute": 45,
+  "symbols": [
+    "WDO",
+    "WIN"
+  ],
+  "timeframes": [
+    "M5"
+  ],
+  "timeframes_by_symbol": {
+    "WDO": [
+      "M5"
+    ],
+    "WIN": [
+      "M5",
+      "M15"
+    ]
+  },
+  "strategy": {
+    "WDO": "VWAP",
+    "WIN": "EMA_CROSSOVER"
+  },
+  "wdo": {
+    "vwap_period": 15,
+    "vwap_buy_threshold": 1.001,
+    "vwap_sell_threshold": 0.999,
+    "sl_atr_mult": 1.0,
+    "trail_activate": 1.5,
+    "trail_distance": 0.2,
+    "cooldown_seconds": 300,
+    "max_daily_trades": 8,
+    "ema_fast": 9,
+    "ema_slow": 21,
+    "rsi_period": 14,
+    "rsi_overbought": 70,
+    "rsi_oversold": 30,
+    "trend_min_spread": 0
+  },
+  "win": {
+    "ema_fast": 12,
+    "ema_slow": 21,
+    "adx_period": 14,
+    "adx_threshold": 15,
+    "rsi_period": 14,
+    "rsi_overbought": 70,
+    "rsi_oversold": 30,
+    "sl_atr_mult": 1.5,
+    "trail_activate": 1.0,
+    "trail_distance": 0.2,
+    "cooldown_seconds": 900,
+    "max_daily_trades": 6
+  },
+  "volume": 1,
+  "magic": 555501,
+  "check_interval": 30,
+  "bars_count": 30
+}

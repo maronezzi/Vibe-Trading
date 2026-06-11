@@ -33,79 +33,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary
 from mt5_orchestrator import status, buy, sell, close, close_all, tick, resolve_symbol, _run_wine, EXECUTOR_WIN
+from vt_config_loader import load_config
 
 # ===== CONFIGURAÇÃO =====
-CONFIG = {
-    # Horário
-    "start_hour": 9,
-    "start_minute": 5,
-    "close_hour": 16,
-    "close_minute": 45,
-
-    # Símbolos — AGI v7.2: Split strategy optimized (ALL 4 combos profitable)
-    "symbols": ["WDO", "WIN"],
-    "timeframes": ["M5"],
-    # Timeframes por símbolo (override do global)
-    "timeframes_by_symbol": {
-        "WDO": ["M5"],              # WDO: VWAP(15) — WR 80%, PF 5.14, Sharpe 10.70
-        "WIN": ["M5", "M15"],       # WIN: EMA(12/21) + ADX>15 — WR 56%, PF 1.45
-    },
-
-    # Estratégia por símbolo (SPLIT)
-    "strategy": {
-        "WDO": "VWAP",             # Dólar: mercado trending → VWAP
-        "WIN": "EMA_CROSSOVER",    # Índice: trend-following → EMA(12/21) + ADX
-    },
-
-    # WDO params (VWAP — mercado trending)
-    # AGI v7.2 optimized: ALL 4 combos profitable, total +0.93%
-    # WDO$ M5: +0.24% WR 80% Sharpe 10.70 PF 5.14
-    # WDO$ M15: +0.45% WR 50% Sharpe 4.45 PF 1.69
-    "wdo": {
-        "vwap_period": 15,              # otimizado: 15 (era 20)
-        "vwap_buy_threshold": 1.001,     # otimizado: 1.001 (era 1.003)
-        "vwap_sell_threshold": 0.999,    # otimizado: 0.999 (era 0.997)
-        "sl_atr_mult": 1.0,        # otimizado 10/06: 1.0x ATR (era 2.0) → PnL +R$1515 WR 69%
-        "trail_activate": 1.5,
-        "trail_distance": 0.2,           # otimizado: 0.2 (era 0.3)
-        "cooldown_seconds": 300,         # otimizado: 300s (era 600s)
-        "max_daily_trades": 8,
-        "ema_fast": 9,
-        "ema_slow": 21,
-        "rsi_period": 14,
-        "rsi_overbought": 70,
-        "rsi_oversold": 30,
-        "trend_min_spread": 0,           # AGI v7.2: removido filtro choppy → WDO M15 -0.24% → +0.45%
-    },
-
-    # WIN params (EMA Crossover + ADX — AGI v7.2)
-    # AGI v7.2 optimized: ALL combos profitable, total +0.93%
-    # WIN$ M5: +0.14% WR 56% Sharpe 6.65 PF 1.45
-    # WIN$ M15: +0.10% WR 50% Sharpe 2.58 PF 1.44
-    # Trend-following: EMA(12/21) crossover + ADX > 15 filter
-    "win": {
-        "ema_fast": 12,            # EMA rápida otimizada: 12 (era 9)
-        "ema_slow": 21,            # EMA lenta: 21
-        "adx_period": 14,          # ADX período
-        "adx_threshold": 15,       # ADX mínimo: 15 (era 20, mais trades)
-        "rsi_period": 14,
-        "rsi_overbought": 70,      # RSI filtro: não compra acima de 70
-        "rsi_oversold": 30,        # RSI filtro: não vende abaixo de 30
-        "sl_atr_mult": 1.5,        # SL: 1.5x ATR (era 2.0x)
-        "trail_activate": 1.0,     # Trailing ativa: 1.0x ATR (era 1.5)
-        "trail_distance": 0.2,     # Trailing distância: 0.2x ATR (era 0.3)
-        "cooldown_seconds": 900,   # 15 min cooldown
-        "max_daily_trades": 6,     # até 6 trades/dia
-    },
-
-    # Posição
-    "volume": 1,
-    "magic": 555501,
-
-    # Timing
-    "check_interval": 30,
-    "bars_count": 30,
-}
+# Config carregada do vt_config.json com hot reload
+# Para alterar parâmetros: edite vt_config.json ou use save_params/save_full_config
+CONFIG = load_config()
 
 
 class SessionState:
@@ -1254,6 +1187,10 @@ def run_daemon():
 
     while True:
         try:
+            # Hot reload config — recarrega se vt_config.json mudou
+            global CONFIG
+            CONFIG = load_config()
+
             if is_close_time() and not state.closed:
                 close_all_and_report()
                 time.sleep(10)
