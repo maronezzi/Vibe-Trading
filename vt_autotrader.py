@@ -738,22 +738,37 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             }
             use_llm = CONFIG.get("validate_with_llm", False)
             validation = validate_order(order_data, use_llm=use_llm)
+
+            # Se LLM sugeriu correção de SL
             if validation.get("suggested_action") and validation["suggested_action"].get("type") == "MODIFY_SL":
                 action = validation["suggested_action"]
                 new_sl = action["suggested_sl"]
+                reason = action.get("reason", "")
+                risco = action.get("risco", "")
+
+                # Notificar Bruno no Telegram
+                _tf_msg = f"{symbol} {direction} @ {exec_price} | SL: {sl_pts}pts → {new_sl}pts"
+                _rag = f"\n⚠️ Risco: {risco}" if risco else ""
+                notify_telegram(f"🤖 [VALIDATOR] SL sugerido:\n{_tf_msg}\n📝 {reason}{_rag}")
+
                 # Bounds check: garantir SL dentro dos limites seguros
                 _base = "WDO" if "WDO" in symbol else "WIN"
                 _limits = {"WDO": {"min": 50, "max": 300}, "WIN": {"min": 500, "max": 50000}}.get(_base, {"min": 50, "max": 50000})
                 if isinstance(new_sl, (int, float)) and _limits["min"] <= new_sl <= _limits["max"]:
-                    log(f"[VALIDATOR] Corrigindo SL: {sl_pts}pts → {int(new_sl)}pts ({action.get('reason', '')})")
+                    log(f"[VALIDATOR] Corrigindo SL: {sl_pts}pts → {int(new_sl)}pts ({reason})")
                     fix_result = modify_sl(symbol, ticket, int(new_sl))
                     if fix_result.get("status") == "ok":
                         sl_pts = int(new_sl)
                         log(f"[VALIDATOR] SL corrigido com sucesso para {sl_pts}pts")
+                        notify_telegram(f"✅ SL aplicado: {symbol} ticket={ticket} → {sl_pts}pts")
                     else:
                         log(f"[VALIDATOR] Falha ao corrigir SL: {fix_result}")
+                        notify_telegram(f"❌ Falha ao aplicar SL: {fix_result}")
                 else:
                     log(f"[VALIDATOR] LLM sugeriu SL fora dos limites ({new_sl}pts [{_limits['min']}-{_limits['max']}]), ignorado")
+            elif validation.get("llm_analysis"):
+                # LLM analisou e não sugeriu mudança — loga resumo
+                log(f"[VALIDATOR] LLM OK: {validation['llm_analysis'][:150]}")
         except Exception as e:
             log(f"[VALIDATOR] Erro na validação (não bloqueante): {e}")
 

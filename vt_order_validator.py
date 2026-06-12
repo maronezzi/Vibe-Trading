@@ -187,33 +187,26 @@ def validate_order(order_data: dict, use_llm: bool = True) -> dict:
             _log(f"  [{alert['severity']}] {alert['type']}: {alert['detail']}")
             _log(f"    Sugestão: {alert['suggestion']}")
 
-    # 2. Consulta LLM para análise adicional (opcional)
-    if use_llm and local_alerts:
-        prompt = f"""Analise esta ordem de trading e verifique se há problemas:
+    # 2. Consulta LLM para análise (se habilitado)
+    if use_llm:
+        prompt = f"""Analise esta ordem de trading que acabou de ser executada:
 
-ORDEM:
-- Símbolo: {symbol}
-- Direção: {direction}
-- Preço entrada: {entry_price}
-- SL: {sl_pts} pontos
-- ATR: {atr:.2f} pontos
-- Estratégia: {strategy}
-- Volume: {order_data.get('volume', 1)}
+Símbolo: {symbol} | Direção: {direction} | Entrada: {entry_price}
+SL: {sl_pts}pts | ATR: {atr:.2f}pts | Estratégia: {strategy}
 
-ALERTAS JÁ DETECTADOS:
-{json.dumps(local_alerts, indent=2)}
+{f"Alertas detectados: {json.dumps([a['type'] for a in local_alerts])}" if local_alerts else "Nenhum alerta local."}
 
-QUESTÕES:
-1. O SL faz sentido para este ativo e timeframe?
-2. Há algum risco não capturado pelos alertas acima?
-3. Deveríamos ajustar o SL? Se sim, para qual valor?
+Perguntas rápidas:
+1. O SL está coerente para este ativo?
+2. Há algum risco que passou batido?
+3. Deveria ajustar o SL? Se sim, para quanto?
 
 Responda em JSON:
 {{
   "sl_ok": true/false,
-  "sl_sugerido": <novo_sl_em_pts ou null>,
-  "risco_extra": "descrição ou null",
-  "recomendação": "ação sugerida"
+  "sl_sugerido": <pts ou null>,
+  "risco": "curta descrição ou null",
+  "resumo": "resumo em 1 linha"
 }}"""
 
         llm_response = _ask_llm(prompt)
@@ -247,7 +240,8 @@ Responda em JSON:
                                 "symbol": symbol,
                                 "current_sl": sl_pts,
                                 "suggested_sl": new_sl,
-                                "reason": llm_data.get("recomendação", "LLM sugere ajuste")
+                                "reason": llm_data.get("resumo", llm_data.get("recomendação", "LLM sugere ajuste")),
+                                "risco": llm_data.get("risco"),
                             }
                             _log(f"[LLM] Sugere alterar SL de {sl_pts}pts para {new_sl}pts")
             except json.JSONDecodeError:
