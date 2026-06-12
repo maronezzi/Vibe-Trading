@@ -326,7 +326,7 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
 
 ## Backtesting
 
-### Backtest Principal — `backtest_agi_v11.py`
+### Backtest Principal — `backtest/backtest_agi_v11.py`
 
 Backtest que replica **exatamente** a lógica do autotrader, incluindo:
 - Mesmas estratégias (lê do `vt_config.json`)
@@ -335,7 +335,7 @@ Backtest que replica **exatamente** a lógica do autotrader, incluindo:
 - Comparação com config antiga (baseline)
 
 ```bash
-PYTHONPATH=./agent ./agent/venv/bin/python backtest_agi_v11.py
+PYTHONPATH=./agent ./agent/venv/bin/python backtest/backtest_agi_v11.py
 ```
 
 **Output:**
@@ -348,10 +348,8 @@ PYTHONPATH=./agent ./agent/venv/bin/python backtest_agi_v11.py
 
 | Script | Uso |
 |---|---|
-| `backtest_autotrader_v6.py` | Versão anterior (só VWAP) |
-| `backtest_multi_strategy.py` | Compara múltiplas estratégias |
-| `backtest_intraday_v*.py` | Versões iterativas do backtest intraday |
-| `parameter_sweep_v6.py` | Sweep de parâmetros (otimização) |
+| `backtest/backtest_autotrader_v6.py` | Versão anterior (só VWAP) |
+| `backtest/backtest_multi_strategy.py` | Compara múltiplas estratégias |
 
 ## Crontab — Fluxo Diário
 
@@ -405,7 +403,7 @@ git clone <repo>
 cd Vibe-Trading
 
 # 2. Instalar MT5 no Wine
-./install_mt5.sh
+./scripts/install_mt5.sh
 
 # 3. Instalar Python no Wine (MT5 API)
 # (manual — precisa do Python Windows com MetaTrader5 package)
@@ -424,10 +422,10 @@ PYTHONPATH=./agent ./agent/venv/bin/python vt_autotrader.py
 ### Shell helpers
 
 ```bash
-./vt.sh buy WIN$ 1 200          # Compra rápida
-./vt.sh sell WDON26 1 50        # Venda rápida
-./vt_start.sh                   # Startup completo (MT5 + autotrader)
-./start_autotrader.sh           # Só o autotrader
+./scripts/vt.sh buy WIN$ 1 200          # Compra rápida
+./scripts/vt.sh sell WDON26 1 50        # Venda rápida
+./scripts/vt_start.sh                   # Startup completo (MT5 + autotrader)
+./scripts/start_autotrader.sh           # Só o autotrader
 ```
 
 ## Estrutura de Diretórios
@@ -442,10 +440,12 @@ Vibe-Trading/
 ├── vt_analyst.py             # Detecção de eventos em tempo real
 ├── vt_daily_report.py       # Relatório diário automático
 ├── vt_copilot.py             # Health check + reconciliação
+├── vt_tax_report.py          # Relatório fiscal (IR)
+├── vt_resolve_symbols.py     # Resolve símbolos MT5
 ├── mt5_orchestrator.py       # Interface Linux → MT5 (Wine bridge)
 ├── mt5_executor.py           # Executor Windows (roda dentro Wine)
 ├── mt5_fetch.py              # Coleta dados do MT5
-├── mt5_resolve.py            # Resolve símbolos MT5
+├── mt5_resolve.py            # Resolve símbolos (Wine side)
 ├── strategies/               # Plugins de estratégia
 │   ├── vwap.py              #   VWAP trend-continuation
 │   ├── ema_pullback.py      #   EMA pullback trend-following
@@ -455,16 +455,26 @@ Vibe-Trading/
 │   ├── adx_trend.py         #   ADX trend-following
 │   ├── macd_momentum.py     #   MACD momentum
 │   └── win_reversion.py     #   Reversão específica WIN
+├── backtest/                 # Backtests ativos
+│   ├── backtest_agi_v11.py  #   Backtest principal (lê config)
+│   ├── backtest_autotrader_v6.py # Versão anterior
+│   └── backtest_multi_strategy.py # Compara estratégias
+├── scripts/                  # Shell helpers
+│   ├── install_mt5.sh       #   Instalação MT5
+│   ├── vt_start.sh          #   Startup completo
+│   ├── start_autotrader.sh   #   Launcher autotrader
+│   ├── start_mt5linux.sh    #   Inicia MT5
+│   ├── vt.sh                #   Wrapper CLI
+│   └── vt-resolve.sh        #   Resolve símbolos
+├── archive/                  # Scripts obsoletos (histórico)
+│   ├── backtests/           #   Backtests antigos (v1-v7)
+│   └── utils/               #   Scripts temporários/teste
 ├── data/                     # Dados CSV (OHLCV M5/M15)
 ├── agent/                    # Hermes Agent (orquestação)
-├── backtest_*.py             # Scripts de backtest
 ├── prediction/               # Modelos preditivos (ML)
 ├── wiki/                     # Documentação wiki
 ├── docs/                     # Documentação técnica
 ├── tools/                    # CI e utilitários
-├── vt.sh                     # Wrapper CLI
-├── vt_start.sh               # Startup script
-├── start_autotrader.sh       # Autotrader launcher
 └── vt_trades.db              # SQLite trade database
 ```
 

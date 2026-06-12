@@ -79,7 +79,7 @@ ls -la "$MT5LINUX_DIR/" 2>&1 | head -5
 
 # 6) Criar script de inicialização do servidor
 echo -e "\n[6/7] Criando start_mt5linux.sh..."
-cat > "$HOME/Projects/Vibe-Trading/start_mt5linux.sh" <<'EOF'
+cat > "$HOME/Projects/Vibe-Trading/scripts/start_mt5linux.sh" <<'EOF'
 #!/bin/bash
 # Inicia o servidor mt5linux (RPyC) dentro do Wine
 # Requer MT5 já aberto e logado
@@ -112,7 +112,7 @@ else
     echo "   Ou use a versão bundled: pip install mt5linux + copie mt5linuxserver.exe do wheel"
 fi
 EOF
-chmod +x "$HOME/Projects/Vibe-Trading/start_mt5linux.sh"
+chmod +x "$HOME/Projects/Vibe-Trading/scripts/start_mt5linux.sh"
 
 # 7) Pacote Python já instalado
 echo -e "\n[7/7] Verificando pacote Python mt5linux..."
@@ -129,7 +129,7 @@ echo "  1. Abra o MT5 e faça login:   wine \"$MT5_PATH\""
 echo "     (crie conta demo se não tiver — arquivo > abrir conta > demo)"
 echo "  2. Baixe o mt5linuxserver.exe (bridge RPyC):"
 echo "     wget -O ~/mt5linux/mt5linuxserver.exe https://github.com/lucas-campagna/mt5linux/releases/latest/download/mt5linuxserver.exe"
-echo "  3. Inicie o bridge:  bash ~/Projects/Vibe-Trading/start_mt5linux.sh"
+echo "  3. Inicie o bridge:  bash ~/Projects/Vibe-Trading/scripts/start_mt5linux.sh"
 echo "  4. Rode o backtest:"
 echo "     cd ~/Projects/Vibe-Trading"
 echo "     PYTHONPATH=./agent ./agent/venv/bin/python backtest_futures.py WIN M5 sma"
