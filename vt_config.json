@@ -1,7 +1,7 @@
 {
-  "_version": 15,
-  "_updated_at": "2026-06-11T21:00:08.319461",
-  "_updated_by": "cleanup_timeframes",
+  "_version": 16,
+  "_updated_at": "2026-06-11T22:56:49.947999",
+  "_updated_by": "agi_17h",
   "_notes": "Cleaned timeframes: global M5+M15, timeframes_by_symbol kept as override",
   "start_hour": 9,
   "start_minute": 5,
@@ -26,7 +26,7 @@
     ]
   },
   "strategy": {
-    "WDO": "EMA_PULLBACK",
+    "WDO": "SMART_EMA",
     "WIN": "EMA_PULLBACK"
   },
   "wdo": {
@@ -47,7 +47,9 @@
     "breakeven_minutes": 15,
     "time_trail_minutes": 30,
     "max_position_minutes": 120,
-    "pullback_pct": 0.15
+    "pullback_pct": 0.15,
+    "adx_period": 14,
+    "adx_threshold": 25
   },
   "win": {
     "ema_fast": 9,
