@@ -32,9 +32,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary
-from mt5_orchestrator import status, buy, sell, close, close_all, tick, _run_wine, EXECUTOR_WIN
+from mt5_orchestrator import status, buy, sell, close, close_all, tick, modify_sl, _run_wine, EXECUTOR_WIN
 from vt_config_loader import load_config
 from vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
+from vt_order_validator import validate_order
 
 # ===== CONFIGURAÇÃO =====
 # Config carregada do vt_config.json com hot reload
@@ -722,6 +723,39 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
     if result.get("status") == "FILLED":
         ticket = result.get("ticket", "?")
         exec_price = result.get("price", price)
+
+        # ===== VALIDAÇÃO PÓS-ENVIO =====
+        try:
+            order_data = {
+                "symbol": symbol,
+                "direction": direction,
+                "entry_price": exec_price,
+                "sl_pts": sl_pts,
+                "atr": atr,
+                "strategy": strategy,
+                "volume": CONFIG["volume"],
+                "ticket": ticket,
+            }
+            use_llm = CONFIG.get("validate_with_llm", False)
+            validation = validate_order(order_data, use_llm=use_llm)
+            if validation.get("suggested_action") and validation["suggested_action"].get("type") == "MODIFY_SL":
+                action = validation["suggested_action"]
+                new_sl = action["suggested_sl"]
+                # Bounds check: garantir SL dentro dos limites seguros
+                _base = "WDO" if "WDO" in symbol else "WIN"
+                _limits = {"WDO": {"min": 50, "max": 300}, "WIN": {"min": 500, "max": 50000}}.get(_base, {"min": 50, "max": 50000})
+                if isinstance(new_sl, (int, float)) and _limits["min"] <= new_sl <= _limits["max"]:
+                    log(f"[VALIDATOR] Corrigindo SL: {sl_pts}pts → {int(new_sl)}pts ({action.get('reason', '')})")
+                    fix_result = modify_sl(symbol, ticket, int(new_sl))
+                    if fix_result.get("status") == "ok":
+                        sl_pts = int(new_sl)
+                        log(f"[VALIDATOR] SL corrigido com sucesso para {sl_pts}pts")
+                    else:
+                        log(f"[VALIDATOR] Falha ao corrigir SL: {fix_result}")
+                else:
+                    log(f"[VALIDATOR] LLM sugeriu SL fora dos limites ({new_sl}pts [{_limits['min']}-{_limits['max']}]), ignorado")
+        except Exception as e:
+            log(f"[VALIDATOR] Erro na validação (não bloqueante): {e}")
 
         state_key = f"{symbol}_{tf}"
         sig_key = f"{symbol}_{tf}_{direction}"
