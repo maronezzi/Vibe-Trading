@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Vibe-Trading Autotrader — Daemon autônomo com estratégias SPLIT.
+Vibe-Trading Autotrader — Daemon autônomo com estratégias plugin.
 
-WDO → VWAP(20): buy > 1.003, sell < 0.997 (mercado trending)
-WIN → Bollinger(15,2) + RSI(14,35/65): reversão à média (mercado choppy)
+Estratégias definidas em vt_config.json (atualmente EMA_PULLBACK para WDO e WIN).
+Novas estratégias: adicione em strategies/ e referencie no config.
 
 Funcionalidades:
-- Estratégia por símbolo (split)
-- SL obrigatório (1.5x ATR)
-- Trailing stop (ativa 1.5x ATR, distância 0.5x ATR)
+- Estratégias por símbolo (configurável)
+- SL obrigatório (ATR × multiplicador)
+- Trailing stop (ativa X×ATR, distância Y×ATR)
+- Breakeven automático após X minutos
+- Time-trail após Y minutos
+- Validação pós-envio com LLM (validator)
 - Fecha tudo às 16:45
 - Log completo no SQLite
 - Notificações Telegram
@@ -958,8 +961,10 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         log(f"[TIME_TRAIL] Ativado por tempo {symbol} após {pos_minutes:.0f}min | Lucro: {profit_pts:.0f}pts")
 
     # ===== TRAILING STOP =====
+    # sl_pts está em executor units (WDO: ×1000, WIN: ×1)
+    # trail_dist e new_sl estão em PREÇO — precisa converter
     if trail_on and atr > 0:
-        # Proteção 3: após max_position_minutes, trailing mais apertado
+        # Proteção 3: após max_position_minutes, trailing mais agressivo
         if pos_minutes >= max_pos_min:
             trail_dist = 0.3 * atr  # agressivo
         else:
@@ -967,12 +972,14 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
 
         if direction == "BUY":
             new_sl = best - trail_dist
-            if new_sl > entry_price - sl_pts:
-                pos["sl_pts"] = int(entry_price - new_sl)
+            old_sl_price = entry_price - sl_pts * point_val
+            if new_sl > old_sl_price:
+                pos["sl_pts"] = int((entry_price - new_sl) / point_val)
         else:
             new_sl = best + trail_dist
-            if new_sl < entry_price + sl_pts:
-                pos["sl_pts"] = int(new_sl - entry_price)
+            old_sl_price = entry_price + sl_pts * point_val
+            if new_sl < old_sl_price:
+                pos["sl_pts"] = int((new_sl - entry_price) / point_val)
 
     # ===== BOLLINGER: Tight trailing na banda oposta =====
     if strategy == "BOLLINGER":
@@ -981,18 +988,19 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             if direction == "BUY" and current_price >= bb_mid and profit_pts > 0:
                 tight_dist = 0.3 * atr
                 new_sl = best - tight_dist
-                if new_sl > entry_price - sl_pts:
-                    pos["sl_pts"] = int(entry_price - new_sl)
+                old_sl_price = entry_price - sl_pts * point_val
+                if new_sl > old_sl_price:
+                    pos["sl_pts"] = int((entry_price - new_sl) / point_val)
             elif direction == "SELL" and current_price <= bb_mid and profit_pts > 0:
                 tight_dist = 0.3 * atr
                 new_sl = best + tight_dist
-                if new_sl < entry_price + sl_pts:
-                    pos["sl_pts"] = int(new_sl - entry_price)
+                old_sl_price = entry_price + sl_pts * point_val
+                if new_sl < old_sl_price:
+                    pos["sl_pts"] = int((new_sl - entry_price) / point_val)
 
     # Enviar modify SL pro MT5 se mudou (after both trailing + BB tight)
     if pos["sl_pts"] != old_sl:
         try:
-            from mt5_orchestrator import modify_sl
             result = modify_sl(symbol, pos["entry_ticket"], pos["sl_pts"])
             if result.get("status") == "ok":
                 log(f"[TRAIL] SL atualizado no MT5: {symbol} ticket={pos['entry_ticket']} → SL={pos['sl_pts']} pts")

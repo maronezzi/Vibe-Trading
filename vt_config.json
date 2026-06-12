@@ -77,6 +77,5 @@
   },
   "warmup_minutes": 15,
   "winddown_minutes": 15,
-  "validate_with_llm": true,
-  "validate_auto_fix": true
+  "validate_with_llm": true
 }
