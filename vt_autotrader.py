@@ -81,13 +81,38 @@ class SessionState:
         self.daily_trade_by_symbol = {}  # {symbol: count}
         self.consecutive_losses = {}      # per-symbol tracking: {symbol: count}
         self.max_consecutive_losses = 3   # halt after N consecutive losses per symbol
+        self.halt_until = {}              # per-symbol: {symbol: datetime} — halt until this time
         self.resolved_symbols = {}        # cache: {"WDO": "WDON26", "WIN": "WINM26"}
         self.resolved_day = ""            # dia do cache (reseta a cada dia)
 
+    STATE_FILE = "/tmp/vt_autotrader_state.json"
+
+    @staticmethod
+    def _json_default(obj):
+        """Serializa datetime/date pra JSON."""
+        if isinstance(obj, (datetime,)):
+            return obj.isoformat()
+        if hasattr(obj, 'isoformat'):
+            return obj.isoformat()
+        return str(obj)
+
+    def _serialize_positions(self):
+        """Serializa positions tratando datetimes."""
+        out = {}
+        for k, v in self.positions.items():
+            pos = {}
+            for pk, pv in v.items():
+                if isinstance(pv, datetime):
+                    pos[pk] = pv.isoformat()
+                else:
+                    pos[pk] = pv
+            out[k] = pos
+        return out
+
     def to_dict(self):
         return {
-            "positions": self.positions,
-            "last_signals": {k: {**v, "ts": v["ts"].isoformat() if v.get("ts") else None}
+            "positions": self._serialize_positions(),
+            "last_signals": {k: {**v, "ts": v["ts"].isoformat() if isinstance(v.get("ts"), datetime) else None}
                              for k, v in self.last_signals.items()},
             "daily_pnl": self.daily_pnl,
             "trade_count": self.trade_count,
@@ -95,10 +120,82 @@ class SessionState:
             "losses": self.losses,
             "started_at": str(self.started_at) if self.started_at else None,
             "closed": self.closed,
+            "daily_trade_count": self.daily_trade_count,
+            "current_day": str(self.current_day) if self.current_day else None,
+            "daily_trade_by_symbol": self.daily_trade_by_symbol,
+            "consecutive_losses": self.consecutive_losses,
+            "halt_until": {k: v.isoformat() if isinstance(v, datetime) else str(v)
+                           for k, v in self.halt_until.items()},
         }
+
+    def save(self):
+        """Persiste state em disco (escrita atômica)."""
+        import json as _json
+        import os
+        tmp = self.STATE_FILE + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                _json.dump(self.to_dict(), f, indent=2, default=self._json_default)
+                f.flush()
+                os.fsync(f.fileno())
+            os.rename(tmp, self.STATE_FILE)
+        except Exception as e:
+            print(f"[STATE] Erro ao salvar: {e}", flush=True)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    def load(self):
+        """Restaura state do disco (se existe e é do mesmo dia)."""
+        import json as _json
+        try:
+            with open(self.STATE_FILE) as f:
+                data = _json.load(f)
+        except (FileNotFoundError, Exception):
+            return
+
+        saved_day = data.get("current_day")
+        today = str(datetime.now().date())
+        if saved_day != today:
+            print(f"[STATE] State salvo é de {saved_day}, hoje é {today} — resetando", flush=True)
+            return
+
+        self.daily_trade_count = data.get("daily_trade_count", 0)
+        self.current_day = datetime.strptime(saved_day, "%Y-%m-%d").date() if saved_day else None
+        self.daily_trade_by_symbol = data.get("daily_trade_by_symbol", {})
+        self.consecutive_losses = data.get("consecutive_losses", {})
+        self.trade_count = data.get("trade_count", 0)
+        self.wins = data.get("wins", 0)
+        self.losses = data.get("losses", 0)
+        self.daily_pnl = data.get("daily_pnl", 0)
+
+        # Restaura halt_until (string → datetime)
+        raw_halt = data.get("halt_until", {})
+        self.halt_until = {}
+        for k, v in raw_halt.items():
+            try:
+                self.halt_until[k] = datetime.fromisoformat(v)
+            except (ValueError, TypeError):
+                pass
+
+        # Restaura positions (entry_time string → datetime)
+        raw_pos = data.get("positions", {})
+        self.positions = {}
+        for k, v in raw_pos.items():
+            pos = dict(v)
+            if isinstance(pos.get("entry_time"), str):
+                try:
+                    pos["entry_time"] = datetime.fromisoformat(pos["entry_time"])
+                except (ValueError, TypeError):
+                    pass
+            self.positions[k] = pos
+
+        print(f"[STATE] Restaurado: trades={self.daily_trade_count}, losses={self.consecutive_losses}, halt={self.halt_until}, positions={list(self.positions.keys())}", flush=True)
 
 
 state = SessionState()
+state.load()  # ← restaura do disco na inicialização
 log_file = Path("/tmp/vt_autotrader.log")
 
 
@@ -240,7 +337,7 @@ def calculate_adx(bars: list, period: int = 14):
 
 def get_market_regime(bars: list, params: dict = None) -> str:
     if params is None:
-        params = CONFIG["wdo"]
+        params = CONFIG.get("win", {})
     ema_slow_val = params.get("ema_slow", 21)
     if not bars or len(bars) < ema_slow_val + 5:
         return "CHOPPY"
@@ -279,6 +376,29 @@ def _get_strategy(symbol_root: str) -> str:
     return CONFIG["strategy"].get(symbol_root, "VWAP")
 
 
+def _get_strategy_for_tf(symbol_root: str, tf: str) -> str:
+    """Retorna a estratégia para o símbolo+TF.
+    Prioridade: strategy_by_tf["SYMBOL_TF"] > strategy[symbol] > VWAP
+    """
+    key = f"{symbol_root}_{tf}"
+    by_tf = CONFIG.get("strategy_by_tf", {})
+    if key in by_tf:
+        return by_tf[key]
+    return CONFIG["strategy"].get(symbol_root, "VWAP")
+
+
+def _get_params_for_tf(symbol_root: str, tf: str) -> dict:
+    """Retorna parâmetros para o símbolo+TF.
+    Prioridade: params_by_tf["symbol_tf"] > params[symbol] > {}
+    """
+    key = f"{symbol_root.lower()}_{tf.lower()}"
+    by_tf = CONFIG.get("params_by_tf", {})
+    base = CONFIG.get(symbol_root.lower(), {})
+    if key in by_tf:
+        return {**base, **by_tf[key]}
+    return base
+
+
 def _get_params(symbol_root: str) -> dict:
     """Retorna os parâmetros otimizados para o símbolo."""
     return CONFIG.get(symbol_root.lower(), {})
@@ -294,6 +414,7 @@ def _reset_daily_counter():
         state.last_trade_time = {}
         state.consecutive_losses = {}
         log(f"[DAILY] Contador diário resetado para {today}")
+        state.save()  # persistir reset diário
 
 
 def _is_safe_time_window() -> bool:
@@ -323,7 +444,7 @@ def _check_cooldown(symbol: str, params: dict) -> bool:
     last_time = state.last_trade_time.get(symbol)
     if last_time:
         elapsed = (now - last_time).total_seconds()
-        if elapsed < params.get("cooldown_seconds", CONFIG["wdo"]["cooldown_seconds"]):
+        if elapsed < params.get("cooldown_seconds", 300):
             return False
     return True
 
@@ -343,16 +464,29 @@ def _check_max_trades(params: dict, symbol: str = "") -> bool:
 
 def _check_consecutive_losses(symbol: str) -> bool:
     """Retorna True se pode operar (sem sequência de derrotas)."""
+    # Check halt_until first
+    halt_time = state.halt_until.get(symbol)
+    if halt_time and datetime.now() < halt_time:
+        remaining = (halt_time - datetime.now()).total_seconds() / 60
+        log(f"[BLOQUEADO] {symbol} — HALT ativo, {remaining:.0f}min restantes")
+        return False
+    
     # Se 3+ perdas consecutivas no símbolo, pausar
     sym_losses = state.consecutive_losses.get(symbol, 0)
     if sym_losses >= state.max_consecutive_losses:
-        log(f"[BLOQUEADO] {symbol} — {sym_losses} perdas consecutivas")
+        from datetime import timedelta
+        state.halt_until[symbol] = datetime.now() + timedelta(hours=1)
+        log(f"[HALT] {symbol}: {sym_losses} perdas consecutivas! Pausado 1h")
         return False
+    if sym_losses > 0:
+        log(f"[DEBUG] {symbol} — {sym_losses}/{state.max_consecutive_losses} perdas consecutivas")
     return True
 
 
 def check_and_trade():
     from vt_analyst import fetch_snapshot, save_snapshot, detect_anomalies, log_anomaly, notify as analyst_notify
+
+    _reset_daily_counter()  # ← sempre resetar no início do ciclo
 
     # Safety: avoid first/last 15 min of session
     if not _is_safe_time_window():
@@ -384,12 +518,15 @@ def check_and_trade():
                 log_anomaly(symbol, a["type"], a)
                 analyst_notify(a["type"], symbol, a["msg"])
 
-        strategy = _get_strategy(symbol_root)
-        params = _get_params(symbol_root)
+        # Strategy/params per TF (with fallback to symbol-level)
+        _default_strategy = _get_strategy(symbol_root)
+        _default_params = _get_params(symbol_root)
         # Timeframes por símbolo (override do global)
         timeframes = CONFIG.get("timeframes_by_symbol", {}).get(symbol_root, CONFIG["timeframes"])
 
         for tf in timeframes:
+            strategy = _get_strategy_for_tf(symbol_root, tf)
+            params = _get_params_for_tf(symbol_root, tf)
             bars = fetch_bars(symbol, tf, CONFIG["bars_count"])
             if not bars or len(bars) < CONFIG["bars_count"]:
                 continue
@@ -405,6 +542,15 @@ def check_and_trade():
             if pos:
                 manage_position(symbol, tf, pos, atr, strategy, params)
             else:
+                # ===== SAFETY CHECKS (cooldown, max, consecutive losses) =====
+                if not _check_cooldown(symbol, params):
+                    continue
+                if not _check_max_trades(params, symbol):
+                    log(f"[BLOQUEADO] {symbol} {tf} — máximo diário atingido")
+                    continue
+                if not _check_consecutive_losses(symbol):
+                    continue
+
                 # Dispatch dinâmico de estratégia
                 strategy_func = get_strategy_func(strategy)
                 if strategy_func:
@@ -426,7 +572,7 @@ def check_entry_vwap(symbol: str, tf: str, price: float,
                      atr: float, bar_ts=None, bars=None, params=None):
     """Entrada via VWAP (para WDO — mercado trending)."""
     if params is None:
-        params = CONFIG["wdo"]
+        params = CONFIG.get("win", {})
     _reset_daily_counter()
 
     if not _check_cooldown(symbol, params):
@@ -517,7 +663,7 @@ def check_entry_bollinger(symbol: str, tf: str, price: float,
                           atr: float, bar_ts=None, bars=None, params=None):
     """Entrada via Bollinger Bands (para WIN — mercado choppy, reversão à média)."""
     if params is None:
-        params = CONFIG["win"]
+        params = CONFIG.get("win", {})
     _reset_daily_counter()
 
     if not _check_cooldown(symbol, params):
@@ -592,7 +738,7 @@ def check_entry_ema_crossover(symbol: str, tf: str, price: float,
                                atr: float, bar_ts=None, bars=None, params=None):
     """Entrada via EMA Crossover + ADX (para WIN — trend-following)."""
     if params is None:
-        params = CONFIG["win"]
+        params = CONFIG.get("win", {})
     _reset_daily_counter()
 
     if not _check_cooldown(symbol, params):
@@ -659,20 +805,43 @@ def check_entry_ema_crossover(symbol: str, tf: str, price: float,
 
 
 def _calc_sl(symbol: str, atr: float, params: dict = None) -> int:
-    """Calcula SL em pontos (unidade do executor = price * point).
+    """Calcula SL em unidades do executor (sl_pts * point = distância em preço).
 
-    WIN: point=1.0 → sl_pts=200 = 200 pontos reais ✓
-    WDO: point=0.001 → sl_pts precisa ser 1000x maior!
-         sl_pts=20000 = 200 pontos reais ✓
+    ATR vem em "pontos nativos" do preço (ex: DOL ATR≈4.5 pts).
+    point_mult converte pra unidades do executor (sl_pts * mt5_point = dist).
+    
+    min_native é o SL MÍNIMO em pontos nativos (antes do point_mult):
+    - WIN/IND: 150 pts (1.0 → sl_pts direto)
+    - WDO/DOL: 3 pts  (point=0.001 → sl_pts * 1000)
+    - BIT:     30 pts  (point=0.01  → sl_pts * 100)
+    - WSP:      5 pts  (point=0.01  → sl_pts * 100)
     """
+    _root = "WIN" if "WIN" in symbol else "WDO" if "WDO" in symbol else \
+            "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
+            "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else "WIN"
+    
     if params is None:
-        params = CONFIG["wdo"] if "WDO" in symbol else CONFIG["win"]
-    sl_pts = int(atr * params.get("sl_atr_mult", 1.5))
-    if "WIN" in symbol:
-        sl_pts = max(sl_pts, 200)     # WIN point=1.0, mínimo 200 pts
-    elif "WDO" in symbol:
-        sl_pts = max(sl_pts, 200)     # pontos reais (ATR ~2-5)
-        sl_pts *= 1000                # WDO point=0.001, multiplicar!
+        params = CONFIG.get(_root.lower(), CONFIG.get("win", {}))
+    
+    # Specs: min_native em pontos do preço, point_mult = 1/mt5_point
+    _specs = {
+        "WIN": {"min_native": 150, "point_mult": 1},
+        "WDO": {"min_native": 3,   "point_mult": 1000},
+        "BIT": {"min_native": 30,  "point_mult": 100},
+        "DOL": {"min_native": 3,   "point_mult": 1000},
+        "IND": {"min_native": 150, "point_mult": 1},
+        "WSP": {"min_native": 5,   "point_mult": 100},
+    }
+    spec = _specs.get(_root, {"min_native": 100, "point_mult": 1})
+    
+    # SL em pontos nativos (= distância em preço)
+    sl_native = int(atr * params.get("sl_atr_mult", 1.5))
+    sl_native = max(sl_native, spec["min_native"])
+    
+    # Converter pra unidades do executor
+    sl_pts = sl_native * spec["point_mult"]
+    
+    # Arredondar pra múltiplo de 5
     return ((sl_pts + 4) // 5) * 5
 
 
@@ -755,8 +924,13 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                 notify_telegram(f"🤖 [VALIDATOR] SL sugerido:\n{_tf_msg}\n📝 {reason}{_rag}")
 
                 # Bounds check: garantir SL dentro dos limites seguros
-                _base = "WDO" if "WDO" in symbol else "WIN"
-                _limits = {"WDO": {"min": 50, "max": 300}, "WIN": {"min": 500, "max": 50000}}.get(_base, {"min": 50, "max": 50000})
+                _root = "WIN" if "WIN" in symbol else "WDO" if "WDO" in symbol else \
+                        "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
+                        "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else "WIN"
+                _limits = {"WDO": {"min": 50, "max": 300}, "WIN": {"min": 500, "max": 50000},
+                           "BIT": {"min": 50, "max": 5000}, "DOL": {"min": 500, "max": 50000},
+                           "IND": {"min": 500, "max": 50000}, "WSP": {"min": 50, "max": 5000}
+                          }.get(_root, {"min": 50, "max": 50000})
                 if isinstance(new_sl, (int, float)) and _limits["min"] <= new_sl <= _limits["max"]:
                     log(f"[VALIDATOR] Corrigindo SL: {sl_pts}pts → {int(new_sl)}pts ({reason})")
                     fix_result = modify_sl(symbol, ticket, int(new_sl))
@@ -820,10 +994,11 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
 
         # Registrar no banco
         # entry_sl: calcular preço real do SL baseado no symbol
-        if "WDO" in symbol:
-            point_val = 0.001  # WDO point value
-        else:
-            point_val = 1.0   # WIN point value
+        _point_map = {"WIN": 1.0, "WDO": 0.001, "BIT": 0.01, "DOL": 0.001, "IND": 1.0, "WSP": 0.01}
+        _root_pv = "WIN" if "WIN" in symbol else "WDO" if "WDO" in symbol else \
+                   "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
+                   "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else "WIN"
+        point_val = _point_map.get(_root_pv, 1.0)
         entry_sl_price = exec_price - sl_pts * point_val if direction == "BUY" else exec_price + sl_pts * point_val
         trade_id = log_entry(
             symbol=symbol, direction=direction,
@@ -857,6 +1032,7 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
         state.last_trade_time[symbol] = datetime.now()
         state.daily_trade_count += 1
         state.daily_trade_by_symbol[symbol] = state.daily_trade_by_symbol.get(symbol, 0) + 1
+        state.save()  # persistir estado
 
         # Notificação
         sl_label = exec_price - sl_pts * point_val if direction == "BUY" else exec_price + sl_pts * point_val
@@ -882,7 +1058,10 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     3. Max position: após max_position_minutes, trailing agressivo (0.3x ATR)
     """
     if params is None:
-        params = CONFIG["wdo"] if "WDO" in symbol else CONFIG["win"]
+        _root = "WIN" if "WIN" in symbol else "WDO" if "WDO" in symbol else \
+                "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
+                "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else "WIN"
+        params = CONFIG.get(_root.lower(), CONFIG.get("win", {}))
     key = f"{symbol}_{tf}"
     direction = pos["direction"]
     entry_price = pos["entry_price"]
@@ -892,7 +1071,12 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     trail_on = pos["trail_on"]
     bar_count = pos["bar_count"]
     trade_log_id = pos["trade_log_id"]
-    point_val = 0.001 if "WDO" in symbol else 1.0  # WDO=R$0.001/pt, WIN=R$1/pt
+    # Point value per symbol
+    _point_map = {"WIN": 1.0, "WDO": 0.001, "BIT": 0.01, "DOL": 0.001, "IND": 1.0, "WSP": 0.01}
+    _root_pv = "WIN" if "WIN" in symbol else "WDO" if "WDO" in symbol else \
+               "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
+               "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else "WIN"
+    point_val = _point_map.get(_root_pv, 1.0)
 
     tick_data = tick(symbol)
     if not tick_data or tick_data.get("bid", 0) == 0:
@@ -936,22 +1120,23 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
 
     # ===== PROTEÇÃO 1: BREAKEVEN =====
     # Após X minutos sem trailing, move SL pra entry + custo mínimo
+    # sl_pts é SIGNED: negativo = SL acima de entry (BUY) ou abaixo (SELL)
     if not trail_on and pos_minutes >= breakeven_min and atr > 0:
         cost_pts = int(5 / point_val)  # custo aprox (comissão + slippage) em pontos
         if direction == "BUY":
-            be_price = entry_price + cost_pts * point_val
-            be_dist = entry_price - be_price  # negativo = SL acima de entry
-            new_sl_pts = max(1, int(abs(be_dist) / point_val)) if be_dist < 0 else sl_pts
-            if new_sl_pts < sl_pts:
+            # BUY: SL acima de entry = lucro mínimo garantido
+            new_sl_pts = -cost_pts  # negativo → SL = entry + custo
+            if new_sl_pts > sl_pts:  # menos negativo = SL mais alto = melhor
                 pos["sl_pts"] = new_sl_pts
-                log(f"[BREAKEVEN] {symbol} após {pos_minutes:.0f}min sem trailing | SL → entry (era {sl_pts}pts)")
+                be_price = entry_price + cost_pts * point_val
+                log(f"[BREAKEVEN] {symbol} após {pos_minutes:.0f}min sem trailing | SL → {be_price:.2f} (era {sl_pts}pts)")
         else:
-            be_price = entry_price - cost_pts * point_val
-            be_dist = be_price - entry_price  # negativo = SL abaixo de entry
-            new_sl_pts = max(1, int(abs(be_dist) / point_val)) if be_dist < 0 else sl_pts
-            if new_sl_pts < sl_pts:
+            # SELL: SL abaixo de entry = lucro mínimo garantido
+            new_sl_pts = -cost_pts  # negativo → SL = entry - custo
+            if new_sl_pts > sl_pts:
                 pos["sl_pts"] = new_sl_pts
-                log(f"[BREAKEVEN] {symbol} após {pos_minutes:.0f}min sem trailing | SL → entry (era {sl_pts}pts)")
+                be_price = entry_price - cost_pts * point_val
+                log(f"[BREAKEVEN] {symbol} após {pos_minutes:.0f}min sem trailing | SL → {be_price:.2f} (era {sl_pts}pts)")
 
     # ===== PROTEÇÃO 2: TIME-BASED TRAILING =====
     # Após Y minutos, ativa trailing mesmo sem atingir trail_activate
@@ -1038,11 +1223,14 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             if pnl > 0:
                 state.wins += 1
                 state.consecutive_losses[symbol] = 0  # reset streak per symbol
+                state.halt_until.pop(symbol, None)  # clear halt on win
             else:
                 state.losses += 1
                 state.consecutive_losses[symbol] = state.consecutive_losses.get(symbol, 0) + 1
                 if state.consecutive_losses[symbol] >= state.max_consecutive_losses:
-                    log(f"[HALT] {symbol}: {state.consecutive_losses[symbol]} perdas consecutivas! Pausando novas entradas.")
+                    from datetime import timedelta
+                    state.halt_until[symbol] = datetime.now() + timedelta(hours=1)
+                    log(f"[HALT] {symbol}: {state.consecutive_losses[symbol]} perdas consecutivas! Pausado até {state.halt_until[symbol].strftime('%H:%M')}")
                     notify_telegram(
                         f"🛑 *HALT TRADING*\n"
                         f"{symbol}: {state.consecutive_losses.get(symbol, 0)} perdas consecutivas\n"
@@ -1057,6 +1245,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         )
 
         del state.positions[key]
+        state.save()  # persistir após fechamento
         return
 
 
@@ -1210,7 +1399,9 @@ def recover_open_positions():
     recovered = 0
     for p in mt5_positions:
         symbol = p["symbol"]
-        symbol_root = "WIN" if "WIN" in symbol else "WDO" if "WDO" in symbol else None
+        symbol_root = "WIN" if "WIN" in symbol else "WDO" if "WDO" in symbol else \
+                         "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
+                         "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else None
         if symbol_root not in CONFIG["symbols"]:
             continue
 
@@ -1248,7 +1439,7 @@ def recover_open_positions():
                 atr = atr_calc or 200
                 sl_pts = _calc_sl(symbol, atr)
         else:
-            direction = "BUY" if p["type"] == 0 else "SELL"
+            direction = "BUY" if p["type"] in (0, "BUY") else "SELL"
             entry_price = p["price_open"]
             tf = "M5"
             bars = fetch_bars(symbol, tf, CONFIG["bars_count"])
@@ -1320,20 +1511,21 @@ def run_daemon():
     log("Vibe-Trading Autotrader SPLIT INICIADO")
     log(f"Símbolos: {CONFIG['symbols']}")
     log(f"Estratégias: {strat_str}")
-    log(f"WDO: SL {CONFIG['wdo']['sl_atr_mult']}x ATR | Trail {CONFIG['wdo']['trail_activate']}x/{CONFIG['wdo']['trail_distance']}x ATR")
-    log(f"WIN: SL {CONFIG['win']['sl_atr_mult']}x ATR | Trail {CONFIG['win']['trail_activate']}x/{CONFIG['win']['trail_distance']}x ATR")
+    for _s in CONFIG["symbols"]:
+        _p = CONFIG.get(_s.lower(), {})
+        log(f"{_s}: SL {_p.get('sl_atr_mult', 1.5)}x ATR | Trail {_p.get('trail_activate', 1.5)}x/{_p.get('trail_distance', 0.5)}x ATR")
     log(f"WDO: Cooldown({CONFIG['wdo']['cooldown_seconds']}s) | Max({CONFIG['wdo']['max_daily_trades']}/dia)")
     log(f"WIN: Cooldown({CONFIG['win']['cooldown_seconds']}s) | Max({CONFIG['win']['max_daily_trades']}/dia)")
     log(f"Volume: {CONFIG['volume']} contrato(s)")
     log("=" * 60)
 
+    _syms = ", ".join(CONFIG["symbols"])
     notify_telegram(
-        f"🚀 *Vibe-Trading Autotrader SPLIT*\n"
+        f"🚀 *Vibe-Trading Autotrader*\n"
         f"⏰ {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
         f"📊 {strat_str}\n"
-        f"⏱️ M5+M15 | 1 contratos\n"
-        f"🎯 WDO SL {CONFIG['wdo']['sl_atr_mult']}x | WIN SL {CONFIG['win']['sl_atr_mult']}x ATR\n"
-        f"🛡️ WDO: {CONFIG['wdo']['cooldown_seconds']}s/{CONFIG['wdo']['max_daily_trades']}t | WIN: {CONFIG['win']['cooldown_seconds']}s/{CONFIG['win']['max_daily_trades']}t"
+        f"🎯 Ativos: {_syms}\n"
+        f"⏱️ Timeframes: {', '.join(CONFIG.get('timeframes', []))}"
     )
 
     recover_open_positions()
