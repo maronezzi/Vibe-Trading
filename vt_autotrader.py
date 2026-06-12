@@ -293,19 +293,22 @@ def _reset_daily_counter():
 
 
 def _is_safe_time_window() -> bool:
-    """Evita operar nos primeiros/últimos 15 min da sessão.
-    - Abertura 9:05-9:20: mercado ainda definindo direção
-    - Fechamento 16:30-16:45: risco de gap/ilha
+    """Evita operar nos primeiros/últimos minutos da sessão.
+    - warmup_minutes: primeiros X min após abertura (mercado definindo direção)
+    - winddown_minutes: últimos X min antes do fechamento (risco de gap/ilha)
     Retorna True se está em janela segura.
     """
     now = datetime.now()
-    h, m = now.hour, now.minute
-    current = h * 60 + m
-    # Primeiros 15 min após abertura (9:05-9:20)
-    if 9 * 60 + 5 <= current <= 9 * 60 + 20:
+    current = now.hour * 60 + now.minute
+    start = CONFIG["start_hour"] * 60 + CONFIG["start_minute"]
+    end = CONFIG["close_hour"] * 60 + CONFIG["close_minute"]
+    warmup = CONFIG.get("warmup_minutes", 15)
+    winddown = CONFIG.get("winddown_minutes", 15)
+    # Primeiros warmup minutos após abertura
+    if start <= current <= start + warmup:
         return False
-    # Últimos 15 min antes do fechamento (16:30-16:45)
-    if 16 * 60 + 30 <= current <= 16 * 60 + 45:
+    # Últimos winddown minutos antes do fechamento
+    if end - winddown <= current <= end:
         return False
     return True
 
