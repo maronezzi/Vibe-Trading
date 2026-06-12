@@ -34,7 +34,8 @@ from collections import deque
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from mt5_orchestrator import _run_wine, EXECUTOR_WIN, status, tick, resolve_symbol
+from mt5_orchestrator import _run_wine, EXECUTOR_WIN, status, tick
+from vt_config_loader import load_config
 
 SNAPSHOT_FILE = Path("/tmp/vt_market_state.json")
 ANOMALY_FILE = Path("/tmp/vt_anomalies.jsonl")
@@ -387,7 +388,7 @@ def analyze():
     print("=" * 60)
 
     for root in ["WIN", "WDO"]:
-        symbol = resolve_symbol(root)
+        symbol = load_config().get("resolved_symbols", {}).get(root)
         if not symbol:
             print(f"[WARN] Não resolveu {root}")
             continue
@@ -440,7 +441,7 @@ def watch_loop():
                 bar_count += 1
 
                 for root in ["WIN", "WDO"]:
-                    symbol = resolve_symbol(root)
+                    symbol = load_config().get("resolved_symbols", {}).get(root)
                     if not symbol:
                         continue
                     snap = fetch_snapshot(symbol, "M5")
@@ -464,7 +465,7 @@ def main():
         watch_loop()
     elif "--snapshot" in sys.argv:
         for root in ["WIN", "WDO"]:
-            symbol = resolve_symbol(root)
+            symbol = load_config().get("resolved_symbols", {}).get(root)
             if symbol:
                 snap = fetch_snapshot(symbol)
                 save_snapshot(snap)

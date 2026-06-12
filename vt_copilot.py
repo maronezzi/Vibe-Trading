@@ -22,7 +22,8 @@ from pathlib import Path
 # Adicionar projeto ao path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from mt5_orchestrator import status as mt5_status, _run_wine, EXECUTOR_WIN, resolve_symbol
+from mt5_orchestrator import status as mt5_status, _run_wine, EXECUTOR_WIN
+from vt_config_loader import load_config
 
 # ===== CONFIGURAÇÃO =====
 DB_PATH = Path(__file__).parent / "vt_trades.db"
@@ -230,8 +231,8 @@ def check_wdo_activity():
     if wdo_trades == 0:
         log("[WDO] Sem operações hoje. Investigando...")
         
-        # Resolver símbolo mais líquido dinamicamente
-        wdo_symbol = resolve_symbol("WDO") or "WDOQ26"
+        # Símbolo mais líquido do config
+        wdo_symbol = load_config().get("resolved_symbols", {}).get("WDO", "WDON26")
         
         # Verificar se WDO tem dados
         try:

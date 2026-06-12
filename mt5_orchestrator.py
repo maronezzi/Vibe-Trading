@@ -3,11 +3,14 @@ Vibe-Trading Orchestrator (Linux side).
 Interface Python que eu (Hermes) uso para enviar ordens ao MT5.
 Chama o mt5_executor.py via Wine subprocess.
 
-Uso típico (dentro de uma sessão Hermes):
+Símbolos devem ser SEMPRE completos (ex: 'WDON26', 'WINM26').
+O cron Symbol Resolver (8h55) salva os símbolos em vt_config.json.
+
+Uso típico:
     from mt5_orchestrator import mt5
     mt5.status()
-    mt5.buy('WINQ26', volume=1, sl_pts=200)
-    mt5.sell('WDOQ26', volume=1, sl_pts=50)
+    mt5.buy('WDON26', volume=1, sl_pts=200)
+    mt5.sell('WINM26', volume=1, sl_pts=50)
     mt5.close_all()
 """
 
@@ -80,71 +83,50 @@ def info(symbol: str) -> dict:
     return _run_wine(EXECUTOR_WIN, "info", symbol)
 
 
-def buy(symbol_or_root: str, volume: float = 1.0, sl_pts: Optional[int] = None,
-        tp_pts: Optional[int] = None, auto_resolve: bool = True) -> dict:
-    """
-    Compra com SL obrigatório.
-    symbol_or_root: 'WINQ26' (específico) ou 'WIN' (resolve o mais líquido)
-    """
-    sym = symbol_or_root
-    if auto_resolve and len(symbol_or_root) <= 4:  # 'WIN', 'WDO'
-        resolved = resolve_symbol(symbol_or_root)
-        if resolved:
-            sym = resolved
-    args = ["buy", sym, str(volume)]
+def buy(symbol: str, volume: float = 1.0, sl_pts: Optional[int] = None,
+        tp_pts: Optional[int] = None) -> dict:
+    """Compra com SL obrigatório. Símbolo deve ser completo (ex: 'WDON26')."""
+    args = ["buy", symbol, str(volume)]
     if sl_pts is not None:
         args.append(str(sl_pts))
     if tp_pts is not None:
         args.append(str(tp_pts))
     result = _run_wine(EXECUTOR_WIN, *args)
-    _log(f"BUY {sym} vol={volume} sl={sl_pts} → {result.get('status', result.get('error', '?'))}")
+    _log(f"BUY {symbol} vol={volume} sl={sl_pts} → {result.get('status', result.get('error', '?'))}")
     return result
 
 
-def sell(symbol_or_root: str, volume: float = 1.0, sl_pts: Optional[int] = None,
-         tp_pts: Optional[int] = None, auto_resolve: bool = True) -> dict:
-    sym = symbol_or_root
-    if auto_resolve and len(symbol_or_root) <= 4:
-        resolved = resolve_symbol(symbol_or_root)
-        if resolved:
-            sym = resolved
-    args = ["sell", sym, str(volume)]
+def sell(symbol: str, volume: float = 1.0, sl_pts: Optional[int] = None,
+         tp_pts: Optional[int] = None) -> dict:
+    """Vende com SL obrigatório. Símbolo deve ser completo (ex: 'WDON26')."""
+    args = ["sell", symbol, str(volume)]
     if sl_pts is not None:
         args.append(str(sl_pts))
     if tp_pts is not None:
         args.append(str(tp_pts))
     result = _run_wine(EXECUTOR_WIN, *args)
-    _log(f"SELL {sym} vol={volume} sl={sl_pts} → {result.get('status', result.get('error', '?'))}")
+    _log(f"SELL {symbol} vol={volume} sl={sl_pts} → {result.get('status', result.get('error', '?'))}")
     return result
 
 
-def close(symbol_or_root: str, auto_resolve: bool = True) -> dict:
-    sym = symbol_or_root
-    if auto_resolve and len(symbol_or_root) <= 4:
-        resolved = resolve_symbol(symbol_or_root)
-        if resolved:
-            sym = resolved
-    return _run_wine(EXECUTOR_WIN, "close", sym)
+def close(symbol: str) -> dict:
+    """Fecha posição do símbolo."""
+    return _run_wine(EXECUTOR_WIN, "close", symbol)
 
 
 def close_all() -> dict:
     return _run_wine(EXECUTOR_WIN, "close_all")
 
 
-def modify_sl(symbol_or_root: str, ticket: int, new_sl_pts: int, auto_resolve: bool = True) -> dict:
+def modify_sl(symbol: str, ticket: int, new_sl_pts: int) -> dict:
     """
     Modifica o Stop Loss de uma posição aberta.
-    symbol_or_root: 'WINQ26' ou 'WIN' (resolve automaticamente)
+    symbol: símbolo completo (ex: 'WDON26')
     ticket: ticket da posição no MT5
     new_sl_pts: novo SL em pontos
     """
-    sym = symbol_or_root
-    if auto_resolve and len(symbol_or_root) <= 4:
-        resolved = resolve_symbol(symbol_or_root)
-        if resolved:
-            sym = resolved
-    result = _run_wine(EXECUTOR_WIN, "modify", sym, str(ticket), str(new_sl_pts))
-    _log(f"MODIFY_SL {sym} ticket={ticket} new_sl={new_sl_pts} → {result.get('status', result.get('error', '?'))}")
+    result = _run_wine(EXECUTOR_WIN, "modify", symbol, str(ticket), str(new_sl_pts))
+    _log(f"MODIFY_SL {symbol} ticket={ticket} new_sl={new_sl_pts} → {result.get('status', result.get('error', '?'))}")
     return result
 
 

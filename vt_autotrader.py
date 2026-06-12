@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary
-from mt5_orchestrator import status, buy, sell, close, close_all, tick, resolve_symbol, _run_wine, EXECUTOR_WIN
+from mt5_orchestrator import status, buy, sell, close, close_all, tick, _run_wine, EXECUTOR_WIN
 from vt_config_loader import load_config
 from vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
 
@@ -360,16 +360,10 @@ def check_and_trade():
         resolved_map = CONFIG.get("resolved_symbols", {})
         if resolved_map.get(symbol_root):
             symbol = resolved_map[symbol_root]
-        elif state.resolved_day != today_str or symbol_root not in state.resolved_symbols:
-            symbol = resolve_symbol(symbol_root)
-            if symbol:
-                state.resolved_symbols[symbol_root] = symbol
-                state.resolved_day = today_str
-                log(f"[RESOLVE] {symbol_root} → {symbol} (cached pro dia)")
-            symbol = state.resolved_symbols.get(symbol_root)
         else:
-            symbol = state.resolved_symbols[symbol_root]
-            
+            log(f"[ERROR] Símbolo {symbol_root} não encontrado em resolved_symbols. Verifique vt_config.json.")
+            continue
+
         if not symbol:
             log(f"[WARN] Não resolveu símbolo {symbol_root}")
             continue
