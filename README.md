@@ -66,7 +66,11 @@ O autotrader faz **hot-reload automático** (detecta mudanças por mtime).
   "_version": 14,
   "_updated_by": "agi_17h",
   "symbols": ["WDO", "WIN"],
-  "timeframes": ["M5"],
+  "timeframes": ["M5", "M15"],
+  "timeframes_by_symbol": {
+    "WDO": ["M5", "M15"],
+    "WIN": ["M5", "M15"]
+  },
   "volume": 1,
   "start_hour": 9, "start_minute": 5,
   "close_hour": 16, "close_minute": 45,
@@ -111,7 +115,8 @@ O autotrader faz **hot-reload automático** (detecta mudanças por mtime).
 Parâmetros por seção:
 
 **Gerais:**
-- `symbols` / `timeframes` — ativos e tempos gráficos
+- `symbols` / `timeframes` — ativos e tempos gráficos (global)
+- `timeframes_by_symbol` — override de timeframes por ativo (prioridade sobre `timeframes`)
 - `volume` — contratos por operação
 - `start_hour/min` / `close_hour/min` — horário de mercado
 - `check_interval` — segundos entre verificações
