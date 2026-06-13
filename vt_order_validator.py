@@ -29,7 +29,7 @@ ALERT_LOG = Path("/tmp/vt_order_alerts.log")
 SL_LIMITS = {
     "WDO": {"min": 3000, "max": 300000, "atr_multiplier_max": 5.0},
     "WIN": {"min": 200, "max": 3000, "atr_multiplier_max": 5.0},
-    "BIT": {"min": 3000, "max": 100000, "atr_multiplier_max": 3.0},
+    "BIT": {"min": 3000, "max": 500000, "atr_multiplier_max": 3.0},  # max 500k exec pts = 5000 nativos (BIT ATR chega a 3600+)
     "DOL": {"min": 3000, "max": 300000, "atr_multiplier_max": 5.0},
     "IND": {"min": 200, "max": 3000, "atr_multiplier_max": 5.0},
     "WSP": {"min": 500, "max": 30000, "atr_multiplier_max": 5.0},
@@ -50,9 +50,13 @@ def _ask_llm(prompt: str, timeout: int = 30) -> Optional[str]:
     Usa o mesmo modelo configurado no Hermes (text-only para economia).
     """
     try:
-        # Usar hermes CLI para consultar LLM (modo -z = non-interactive)
+        from vt_hermes_helper import find_hermes
+        hermes_bin = find_hermes()
+        if not hermes_bin:
+            _log("[WARN] hermes CLI não encontrado no sistema")
+            return None
         result = subprocess.run(
-            ["hermes", "-z", prompt],
+            [hermes_bin, "-z", prompt],
             capture_output=True,
             text=True,
             timeout=timeout
@@ -64,9 +68,6 @@ def _ask_llm(prompt: str, timeout: int = 30) -> Optional[str]:
             return None
     except subprocess.TimeoutExpired:
         _log("[WARN] LLM timeout")
-        return None
-    except FileNotFoundError:
-        _log("[WARN] hermes CLI não encontrado")
         return None
     except Exception as e:
         _log(f"[WARN] Erro ao consultar LLM: {e}")
@@ -138,16 +139,30 @@ def _validate_sl_locally(order_data: dict) -> list:
                 "suggestion": f"Aumentar SL para pelo menos {int(atr * 1.0 * _point_mult)}pts executor (1.0x ATR)"
             })
 
-    # 4. Verificar se SL está do lado errado
+    # 4. Verificar se SL está do lado errado (CAUSA DE PERDAS CATASTRÓFICAS)
+    # sl_pts em executor points; converter para distância em preço nativo
+    sl_price_distance = sl_pts / _point_mult if _point_mult > 0 else sl_pts
     if entry_price > 0 and sl_pts > 0:
         if direction == "BUY":
             # BUY: SL deve estar ABAIXO da entrada
-            # (verificação implícita — se sl_pts é positivo, está correto)
-            pass
+            sl_price = entry_price - sl_price_distance
+            if sl_price > entry_price:
+                alerts.append({
+                    "type": "SL_LADO_ERRADO",
+                    "severity": "CRITICAL",
+                    "detail": f"BUY mas SL ({sl_price:.2f}) está ACIMA da entrada ({entry_price}). SL invertido!",
+                    "suggestion": f"SL deve estar ABAIXO de {entry_price:.2f} para BUY"
+                })
         elif direction == "SELL":
             # SELL: SL deve estar ACIMA da entrada
-            # (verificação implícita)
-            pass
+            sl_price = entry_price + sl_price_distance
+            if sl_price < entry_price:
+                alerts.append({
+                    "type": "SL_LADO_ERRADO",
+                    "severity": "CRITICAL",
+                    "detail": f"SELL mas SL ({sl_price:.2f}) está ABAIXO da entrada ({entry_price}). SL invertido!",
+                    "suggestion": f"SL deve estar ACIMA de {entry_price:.2f} para SELL"
+                })
 
     return alerts
 
@@ -211,6 +226,14 @@ def validate_order(order_data: dict, use_llm: bool = True) -> dict:
         _ideal_sl_min_pts = int(_native_atr * 1.2 / _pt)
         _ideal_sl_max_pts = int(_native_atr * 1.5 / _pt)
 
+        # Determinar limites de executor pts para incluir no prompt (evita deadlock)
+        _base = "WDO" if "WDO" in symbol else "WIN" if "WIN" in symbol else \
+                "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
+                "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else "WIN"
+        _limits = SL_LIMITS.get(_base, {"min": 200, "max": 50000})
+        _sl_min_exec = _limits["min"]
+        _sl_max_exec = _limits["max"]
+
         prompt = f"""Você é um trader profissional. Analise esta ordem e OBRIGATORIAMENTE sugira um SL otimizado.
 
 Símbolo: {symbol} | Direção: {direction} | Entrada: {entry_price}
@@ -222,14 +245,17 @@ REGRAS OBRIGATÓRIAS:
 2. converter sl_pts para pontos nativos: sl_pts * point
 3. SEMPRE retorne um sl_sugerido OTIMIZADO (não retorne null)
 4. Se o SL atual já é otimizado, retorne o mesmo valor
+5. LIMITES ABSOLUTOS em pts executor: mínimo {_sl_min_exec}, máximo {_sl_max_exec}
+   O sl_sugerido DEVE estar dentro destes limites ou será rejeitado
 
 SL atual em pontos nativos: {_native_sl:.1f}pts
 ATR atual: {_native_atr:.2f}pts nativos
 SL ideal: {int(_native_atr * 1.2)} a {int(_native_atr * 1.5)}pts nativos = {_ideal_sl_min_pts} a {_ideal_sl_max_pts}pts executor
+Limites executor: [{_sl_min_exec} - {_sl_max_exec}]
 
 Retorne APENAS JSON:
 {{
-  "sl_sugerido": <pts executor, OBRIGATÓRIO>,
+  "sl_sugerido": <pts executor, OBRIGATÓRIO, dentro dos limites>,
   "resumo": "<motivo>"
 }}"""
 
@@ -255,6 +281,15 @@ Retorne APENAS JSON:
                             new_sl = int(new_sl_raw.strip())
                         else:
                             new_sl = None
+
+                        # Clamp: garantir SL dentro dos limites antes de sugerir
+                        if new_sl is not None:
+                            if new_sl < _sl_min_exec:
+                                _log(f"[LLM] SL sugerido {new_sl} < mínimo {_sl_min_exec}, clampado")
+                                new_sl = _sl_min_exec
+                            elif new_sl > _sl_max_exec:
+                                _log(f"[LLM] SL sugerido {new_sl} > máximo {_sl_max_exec}, clampado")
+                                new_sl = _sl_max_exec
 
                         # Só aplicar se a mudança for significativa (>5% ou >50pts)
                         if new_sl is not None and new_sl != sl_pts:

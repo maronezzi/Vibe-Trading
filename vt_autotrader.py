@@ -934,7 +934,7 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                         "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
                         "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else "WIN"
                 _limits = {"WDO": {"min": 3000, "max": 300000}, "WIN": {"min": 200, "max": 3000},
-                           "BIT": {"min": 3000, "max": 100000}, "DOL": {"min": 3000, "max": 300000},
+                           "BIT": {"min": 3000, "max": 500000}, "DOL": {"min": 3000, "max": 300000},
                            "IND": {"min": 200, "max": 3000}, "WSP": {"min": 500, "max": 30000}
                           }.get(_root, {"min": 200, "max": 50000})
                 if isinstance(new_sl, (int, float)) and _limits["min"] <= new_sl <= _limits["max"]:
