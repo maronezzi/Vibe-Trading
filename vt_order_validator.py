@@ -64,10 +64,15 @@ def _ask_llm(prompt: str, timeout: int = 30) -> Optional[str]:
         if result.returncode == 0:
             return result.stdout.strip()
         else:
-            _log(f"[WARN] LLM retornou erro: {result.stderr[:200]}")
+            # Detectar erros de saldo/quota — não continuar tentando
+            stderr = result.stderr[:200] if result.stderr else ""
+            if "429" in stderr or "balance" in stderr.lower() or "quota" in stderr.lower():
+                _log(f"[WARN] LLM sem saldo/quota (HTTP 429): {stderr}")
+            else:
+                _log(f"[WARN] LLM retornou erro (rc={result.returncode}): {stderr}")
             return None
     except subprocess.TimeoutExpired:
-        _log("[WARN] LLM timeout")
+        _log(f"[WARN] LLM timeout ({timeout}s)")
         return None
     except Exception as e:
         _log(f"[WARN] Erro ao consultar LLM: {e}")
