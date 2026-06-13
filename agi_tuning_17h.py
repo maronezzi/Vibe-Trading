@@ -317,6 +317,219 @@ def _find_hermes():
     return None
 
 
+# ═══════════════════════════════════════════════════════════════════
+# TINYFISH — WEB INTELLIGENCE PARA O AGI
+# ═══════════════════════════════════════════════════════════════════
+
+TINYFISH_BIN = shutil.which("tinyfish") if shutil else None
+
+
+def _tinyfish_check() -> bool:
+    """Verifica se tinyfish está instalado e autenticado."""
+    if not TINYFISH_BIN:
+        return False
+    try:
+        r = subprocess.run(
+            [TINYFISH_BIN, "auth", "status"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return r.returncode == 0 and "authenticated" in r.stdout
+    except Exception:
+        return False
+
+
+def tinyfish_search(query: str, num_results: int = 5, timeout: int = 30) -> list:
+    """Busca web rápida via tinyfish. Retorna lista de dicts com title/url/snippet."""
+    if not TINYFISH_BIN:
+        return []
+    try:
+        r = subprocess.run(
+            [TINYFISH_BIN, "search", "query", query],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if r.returncode != 0:
+            log.warning(f"tinyfish search falhou: {r.stderr[:200]}")
+            return []
+        try:
+            data = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            return []
+        # Formato tinyfish: pode ser {results: [...]} ou lista direta
+        if isinstance(data, dict):
+            results = data.get("results", data.get("data", []))
+        else:
+            results = data
+        return results[:num_results] if isinstance(results, list) else []
+    except subprocess.TimeoutExpired:
+        log.warning(f"tinyfish search timeout ({timeout}s): {query[:60]}")
+        return []
+    except Exception as e:
+        log.warning(f"tinyfish search erro: {e}")
+        return []
+
+
+def tinyfish_fetch(urls: list, max_chars: int = 3000, timeout: int = 30) -> str:
+    """Fetch de múltiplas URLs em paralelo via tinyfish. Retorna texto consolidado."""
+    if not TINYFISH_BIN or not urls:
+        return ""
+    try:
+        cmd = [TINYFISH_BIN, "fetch", "content", "get", "--format", "markdown"] + list(urls)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if r.returncode != 0:
+            log.warning(f"tinyfish fetch falhou: {r.stderr[:200]}")
+            return ""
+        try:
+            data = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            return r.stdout[:max_chars]
+        # Extrair texto de cada URL
+        chunks = []
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    text = item.get("text") or item.get("content") or ""
+                    title = item.get("title", "")
+                    if text:
+                        chunks.append(f"### {title}\n{text}")
+        elif isinstance(data, dict):
+            # Resposta única
+            results = data.get("results", [data])
+            for item in results:
+                if isinstance(item, dict):
+                    text = item.get("text") or item.get("content") or ""
+                    title = item.get("title", "")
+                    if text:
+                        chunks.append(f"### {title}\n{text}")
+        full = "\n\n".join(chunks)
+        return full[:max_chars]
+    except subprocess.TimeoutExpired:
+        log.warning(f"tinyfish fetch timeout ({timeout}s)")
+        return ""
+    except Exception as e:
+        log.warning(f"tinyfish fetch erro: {e}")
+        return ""
+
+
+def tinyfish_agent(url: str, goal: str, timeout: int = 60) -> str:
+    """Browser agent para extrair dados estruturados de uma página dinâmica."""
+    if not TINYFISH_BIN:
+        return ""
+    try:
+        r = subprocess.run(
+            [TINYFISH_BIN, "agent", "run", "--url", url, "--sync", goal],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if r.returncode != 0:
+            log.warning(f"tinyfish agent falhou: {r.stderr[:200]}")
+            return ""
+        # Extrair o evento COMPLETE do SSE stream
+        for line in r.stdout.split("\n"):
+            if line.startswith("data:") and "COMPLETE" in line:
+                try:
+                    event = json.loads(line[5:].strip())
+                    return event.get("resultJson", r.stdout)
+                except json.JSONDecodeError:
+                    continue
+        return r.stdout[:3000]
+    except subprocess.TimeoutExpired:
+        log.warning(f"tinyfish agent timeout ({timeout}s)")
+        return ""
+    except Exception as e:
+        log.warning(f"tinyfish agent erro: {e}")
+        return ""
+
+
+def web_intel_for_symbol(symbol: str) -> dict:
+    """Coleta inteligência de mercado via tinyfish para um símbolo B3.
+
+    Inclui:
+    - Calendário econômico (BCB, FOMC, payroll)
+    - Notícias recentes do ativo
+    - Volatilidade histórica recente
+    - Melhores práticas SL/ATR para o ativo
+
+    Retorna dict com chaves: market_news, calendar_events, best_practices, sources
+    """
+    result = {
+        "symbol": symbol,
+        "market_news": [],
+        "calendar_events": "",
+        "best_practices": "",
+        "sources": [],
+        "fetched_at": datetime.now().isoformat(),
+    }
+
+    if not _tinyfish_check():
+        log.warning("tinyfish não disponível — pulando web intel")
+        return result
+
+    # Mapear símbolo B3 → nome de busca
+    symbol_map = {
+        "WIN": "Mini Índice Bovespa",
+        "WDO": "Mini Dólar",
+        "DOL": "Dólar Futuro B3",
+        "IND": "Índice Bovespa",
+        "BIT": "Bitcoin B3",
+        "WSP": "Mini S&P 500",
+    }
+    name = symbol_map.get(symbol, symbol)
+
+    # 1. Buscar calendário econômico recente
+    try:
+        cal_results = tinyfish_search(
+            f"calendário econômico Brasil {datetime.now().strftime('%B %Y')} FOMC BCB",
+            num_results=3,
+            timeout=15,
+        )
+        if cal_results:
+            urls = [r.get("url", r.get("link", "")) for r in cal_results if r.get("url") or r.get("link")]
+            urls = [u for u in urls if u][:2]
+            if urls:
+                text = tinyfish_fetch(urls, max_chars=1500, timeout=20)
+                result["calendar_events"] = text
+                result["sources"].extend(urls)
+    except Exception as e:
+        log.warning(f"web intel calendar erro: {e}")
+
+    # 2. Buscar notícias do ativo + volatilidade recente
+    try:
+        news_results = tinyfish_search(
+            f"{name} volatilidade análise técnica {datetime.now().strftime('%B')}",
+            num_results=4,
+            timeout=15,
+        )
+        for r in news_results:
+            result["market_news"].append({
+                "title": r.get("title", ""),
+                "url": r.get("url", r.get("link", "")),
+                "snippet": r.get("snippet", r.get("description", "")),
+            })
+            if r.get("url") or r.get("link"):
+                result["sources"].append(r.get("url") or r.get("link"))
+    except Exception as e:
+        log.warning(f"web intel news erro: {e}")
+
+    # 3. Buscar melhores práticas SL/ATR para o tipo de ativo
+    try:
+        bp_results = tinyfish_search(
+            f"stop loss ATR mini índice WIN mini dólar melhores práticas day trade",
+            num_results=3,
+            timeout=15,
+        )
+        urls = [r.get("url", r.get("link", "")) for r in bp_results if r.get("url") or r.get("link")]
+        urls = [u for u in urls if u][:2]
+        if urls:
+            text = tinyfish_fetch(urls, max_chars=1500, timeout=20)
+            result["best_practices"] = text
+    except Exception as e:
+        log.warning(f"web intel best practices erro: {e}")
+
+    log.info(f"🌐 Web intel para {symbol}: {len(result['market_news'])} notícias, "
+             f"calendar: {len(result['calendar_events'])} chars, "
+             f"best_practices: {len(result['best_practices'])} chars")
+    return result
+
+
 def ask_llm(prompt: str, timeout: int = 120) -> str | None:
     """Consulta o LLM ativo no Hermes via CLI não-interativo."""
     hermes_bin = _find_hermes()
@@ -345,8 +558,9 @@ def ask_llm(prompt: str, timeout: int = 120) -> str | None:
         return None
 
 
-def build_llm_prompt(perf: dict, issues: list, config: dict) -> str:
-    """Constrói prompt para o LLM com performance + config atual + problemas."""
+def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = None) -> str:
+    """Constrói prompt para o LLM com performance + config atual + problemas + web intel."""
+    web_intel = web_intel or {}
 
     # Resumo de performance
     perf_lines = []
@@ -415,7 +629,40 @@ def build_llm_prompt(perf: dict, issues: list, config: dict) -> str:
 
 ## CONFIG ATUAL
 {chr(10).join(config_lines)}
+"""
 
+    # Adicionar seção de web intelligence (se houver)
+    if web_intel:
+        prompt += "\n## 🌐 INTELIGÊNCIA DE MERCADO (pesquisa web via tinyfish)\n"
+
+        if web_intel.get("calendar_events"):
+            prompt += f"""
+### Calendário Econômico Relevante
+{web_intel['calendar_events'][:1500]}
+
+⚠️ Se houver evento de alto impacto (FOMC, COPOM, payroll, IPCA) agendado, considerar:
+- Reduzir max_daily_trades para evitar volatilidade imprevisível
+- Aumentar sl_atr_mult (SL mais largo) se evento for hoje/amanhã
+"""
+
+        if web_intel.get("market_news"):
+            prompt += "\n### Notícias Recentes dos Ativos\n"
+            for n in web_intel["market_news"][:5]:
+                if n.get("title"):
+                    prompt += f"- **{n['title']}**\n  {n.get('snippet', '')[:200]}\n"
+
+        if web_intel.get("best_practices"):
+            prompt += f"""
+### Melhores Práticas SL/ATR (referência web)
+{web_intel['best_practices'][:1500]}
+
+Use essas referências para validar suas sugestões (ex: se a maioria dos traders usa 1.5x ATR para SL, mantenha nesse range).
+"""
+
+        if web_intel.get("sources"):
+            prompt += f"\n### Fontes consultadas: {len(web_intel['sources'])} URLs\n"
+
+    prompt += """
 ## REGRAS
 1. Foque no símbolo com PIORES resultados primeiro
 2. Se WR < 30%: tornar filtros MAIS restritivos (elevar thresholds, aumentar cooldown, reduzir max_daily_trades)
@@ -425,6 +672,7 @@ def build_llm_prompt(perf: dict, issues: list, config: dict) -> str:
 6. NUNCA sugerir mudanças maiores que 30% do valor atual por parâmetro
 7. Para símbolos lucrativos (PnL > 0): NÃO mudar ou apenas micro-ajustes
 8. Priorize REDUZIR perdas sobre aumentar ganhos
+9. Se a web intel indicar evento macro iminente, considerar parâmetros defensivos
 
 Retorne APENAS um JSON válido (sem markdown, sem comentários):
 {{
@@ -612,7 +860,7 @@ def notify_telegram(msg: str):
 # ═══════════════════════════════════════════════════════════════════
 
 def print_report(perf: dict, issues: list, llm_result: dict | None,
-                 applied: list, config: dict, dry_run: bool):
+                 applied: list, config: dict, dry_run: bool, web_intel: dict = None):
     """Imprime relatório consolidado."""
     print("\n" + "=" * 60)
     print(f"🤖 AGI 17H TUNING — {TODAY} {'[DRY-RUN]' if dry_run else ''}")
@@ -650,6 +898,21 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
         print(f"\n🧠 ANÁLISE LLM:")
         print(f"  {llm_result['analysis']}")
 
+    # Web intelligence
+    if web_intel:
+        print(f"\n🌐 INTELIGÊNCIA DE MERCADO (tinyfish):")
+        for sym, intel in web_intel.items():
+            n_news = len(intel.get("market_news", []))
+            has_cal = bool(intel.get("calendar_events"))
+            has_bp = bool(intel.get("best_practices"))
+            n_sources = len(intel.get("sources", []))
+            print(f"  {sym}: {n_news} notícias | calendário: {'sim' if has_cal else 'não'} | "
+                  f"best_practices: {'sim' if has_bp else 'não'} | {n_sources} fontes")
+            # Top 3 títulos de notícias
+            for n in intel.get("market_news", [])[:3]:
+                if n.get("title"):
+                    print(f"    • {n['title'][:80]}")
+
     # Changes applied
     if applied:
         print(f"\n✏️ MUDANÇAS {'APLICADAS' if not dry_run else 'SUGERIDAS (DRY-RUN)'}:")
@@ -679,10 +942,13 @@ def main():
     parser.add_argument("--days", type=int, default=7, help="Janela de análise em dias (default: 7)")
     parser.add_argument("--dry-run", action="store_true", help="Só analisa, não aplica mudanças")
     parser.add_argument("--no-llm", action="store_true", help="Só estatísticas, sem consulta LLM")
+    parser.add_argument("--no-web", action="store_true", help="Não usar tinyfish para web intel")
     parser.add_argument("--timeout", type=int, default=120, help="Timeout LLM em segundos")
+    parser.add_argument("--web-timeout", type=int, default=60, help="Timeout tinyfish em segundos (total)")
     args = parser.parse_args()
 
-    log.info(f"🤖 AGI 17H iniciado — janela: {args.days} dias | dry-run: {args.dry_run} | llm: {not args.no_llm}")
+    log.info(f"🤖 AGI 17H iniciado — janela: {args.days} dias | dry-run: {args.dry_run} | "
+             f"llm: {not args.no_llm} | web: {not args.no_web}")
 
     # 1. Carregar config
     config = load_config(force=True)
@@ -701,11 +967,38 @@ def main():
     issues = diagnose_issues(perf)
     log.info(f"Diagnosticados {len(issues)} problemas")
 
-    # 4. LLM (se habilitado)
+    # 4. Web intelligence via tinyfish (se habilitado)
+    web_intel = {}
+    if not args.no_web and _tinyfish_check():
+        log.info("🌐 Coletando inteligência de mercado via tinyfish...")
+        # Focar nos símbolos com problemas (top 3 piores)
+        worst_symbols = sorted(
+            perf.get("by_symbol", {}).items(),
+            key=lambda x: x[1]["total_pnl"]
+        )[:3]
+        worst_syms = [s[0] for s in worst_symbols]
+        # Sempre inclui o ativo raiz mais negociado para calendário geral
+        root_set = set(worst_syms) | set(["WIN", "WDO"])  # WIN/WDO são os mais sensíveis a macro
+
+        for sym in list(root_set)[:3]:  # Limita a 3 símbolos para não demorar muito
+            try:
+                intel = web_intel_for_symbol(sym)
+                if intel.get("market_news") or intel.get("calendar_events") or intel.get("best_practices"):
+                    web_intel[sym] = intel
+            except Exception as e:
+                log.warning(f"web_intel erro para {sym}: {e}")
+        log.info(f"🌐 Web intel coletada para {len(web_intel)} símbolos")
+    else:
+        if args.no_web:
+            log.info("🌐 Web intel desabilitada por --no-web")
+        else:
+            log.warning("🌐 tinyfish não disponível — web intel pulada")
+
+    # 5. LLM (se habilitado)
     llm_result = None
     if not args.no_llm:
         log.info("Consultando LLM ativo do Hermes...")
-        prompt = build_llm_prompt(perf, issues, config)
+        prompt = build_llm_prompt(perf, issues, config, web_intel=web_intel)
         response = ask_llm(prompt, timeout=args.timeout)
         if response:
             llm_result = parse_llm_response(response)
@@ -717,7 +1010,7 @@ def main():
         else:
             log.warning("LLM não respondeu — usando apenas diagnóstico local")
 
-    # 5. Aplicar mudanças
+    # 6. Aplicar mudanças
     applied = []
     if llm_result and llm_result.get("changes") and not args.dry_run:
         applied = apply_changes(llm_result, config, dry_run=False)
@@ -726,14 +1019,16 @@ def main():
     elif llm_result and llm_result.get("changes") and args.dry_run:
         applied = apply_changes(llm_result, config, dry_run=True)
 
-    # 6. Relatório
-    print_report(perf, issues, llm_result, applied, config, args.dry_run)
+    # 7. Relatório
+    print_report(perf, issues, llm_result, applied, config, args.dry_run, web_intel)
 
-    # 7. Notificação Telegram (resumo)
+    # 8. Notificação Telegram (resumo)
     if applied:
         summary_lines = [f"🤖 AGI 17H — {len(applied)} mudanças {'aplicadas' if not args.dry_run else 'sugeridas'}"]
         total_pnl = sum(d["total_pnl"] for d in perf.get("by_symbol", {}).values())
         summary_lines.append(f"📊 Período {args.days}d: {sum(d['n_trades'] for d in perf.get('by_symbol', {}).values())} trades | PnL R${total_pnl:+.2f}")
+        if web_intel:
+            summary_lines.append(f"🌐 Web intel: {len(web_intel)} símbolos analisados")
         for a in applied:
             params_str = ", ".join(f"{k}={v}" for k, v in a["params"].items())
             summary_lines.append(f"  {'✅' if a['applied'] else '🔍'} {a['symbol']}: {params_str}")
@@ -741,13 +1036,14 @@ def main():
             summary_lines.append(f"🧠 {llm_result['analysis'][:300]}")
         notify_telegram("\n".join(summary_lines))
 
-    # 8. Salvar resultado para auditoria
+    # 9. Salvar resultado para auditoria
     audit = {
         "timestamp": datetime.now().isoformat(),
         "period_days": args.days,
         "dry_run": args.dry_run,
         "performance": perf,
         "issues": issues,
+        "web_intel": web_intel,
         "llm_analysis": llm_result.get("analysis") if llm_result else None,
         "changes_applied": applied,
         "config_version": config.get("_version"),
