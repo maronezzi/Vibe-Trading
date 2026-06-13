@@ -62,7 +62,7 @@ def _ask_llm(prompt: str, timeout: int = 60) -> Optional[str]:
             _log("[WARN] hermes CLI não encontrado no sistema")
             return None
         result = subprocess.run(
-            [hermes_bin, "-z", prompt],
+            [hermes_bin, "-z", prompt, "-m", "minimax/minimax-m3", "--provider", "openrouter"],
             capture_output=True,
             text=True,
             timeout=timeout

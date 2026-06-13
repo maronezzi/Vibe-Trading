@@ -66,7 +66,7 @@ def _ask_llm(prompt: str, timeout: int = None) -> dict:
         timeout = LLM_TIMEOUT
     try:
         result = subprocess.run(
-            ["hermes", "-z", prompt],
+            ["hermes", "-z", prompt, "-m", "minimax/minimax-m3", "--provider", "openrouter"],
             capture_output=True, text=True, timeout=timeout,
             env={**__import__('os').environ, "WINEDEBUG": "-all"}
         )

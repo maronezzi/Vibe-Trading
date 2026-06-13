@@ -743,15 +743,20 @@ def web_intel_for_symbol(symbol: str, strategy: str = None) -> dict:
     return result
 
 
-def ask_llm(prompt: str, timeout: int = 120) -> str | None:
-    """Consulta o LLM ativo no Hermes via CLI não-interativo."""
+def ask_llm(prompt: str, timeout: int = 300) -> str | None:
+    """Consulta o MiniMax-M3 via Hermes CLI.
+
+    Modelo: minimax/minimax-m3 (OpenRouter)
+    Timeout 300s (5min) pois o prompt com web intel é grande (~5K tokens).
+    1M context window do M3 comporta isso facilmente.
+    """
     hermes_bin = _find_hermes()
     if not hermes_bin:
         log.warning("hermes CLI não encontrado no sistema")
         return None
     try:
         result = subprocess.run(
-            [hermes_bin, "-z", prompt],
+            [hermes_bin, "-z", prompt, "-m", "minimax/minimax-m3", "--provider", "openrouter"],
             capture_output=True, text=True, timeout=timeout,
             cwd=str(PROJECT_DIR),
         )
@@ -761,7 +766,7 @@ def ask_llm(prompt: str, timeout: int = 120) -> str | None:
             log.warning(f"LLM erro (rc={result.returncode}): {result.stderr[:300]}")
             return None
     except subprocess.TimeoutExpired:
-        log.warning("LLM timeout (120s)")
+        log.warning("LLM timeout (300s)")
         return None
     except FileNotFoundError:
         log.warning("hermes CLI não encontrado")
@@ -855,19 +860,19 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
             if intel.get("strategy_tips"):
                 prompt += f"""
 #### Dicas de Configuração da Estratégia {strat}
-{intel['strategy_tips'][:1500]}
+{intel['strategy_tips'][:800]}
 """
 
             if intel.get("indicator_settings"):
                 prompt += f"""
 #### Configurações Ideais de Indicadores
-{intel['indicator_settings'][:1500]}
+{intel['indicator_settings'][:800]}
 """
 
             if intel.get("sl_trail_tactics"):
                 prompt += f"""
 #### Táticas de SL/ATR/Trailing Stop
-{intel['sl_trail_tactics'][:1500]}
+{intel['sl_trail_tactics'][:800]}
 
 ⚠️ Use essas referências para calibrar sl_atr_mult, trail_activate e trail_distance
 """
@@ -875,7 +880,7 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
             if intel.get("patterns"):
                 prompt += f"""
 #### Padrões Gráficos Aplicáveis
-{intel['patterns'][:1000]}
+{intel['patterns'][:600]}
 """
 
         if any(intel.get("sources") for intel in web_intel.values()):
