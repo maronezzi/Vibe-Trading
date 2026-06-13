@@ -457,6 +457,17 @@ def _check_cooldown(symbol: str, params: dict) -> bool:
 
 def _check_max_trades(params: dict, symbol: str = "") -> bool:
     """Retorna True se pode operar (limite não atingido). Conta por símbolo."""
+    # ── KILL SWITCH: Max daily loss ──
+    max_daily_loss = CONFIG.get("max_daily_loss", -500)
+    if state.daily_pnl <= max_daily_loss:
+        log(f"🛑 KILL SWITCH: PnL diário R$ {state.daily_pnl:.2f} ≤ limite R$ {max_daily_loss:.2f} — TRAVADO")
+        return False
+
+    # ── KILL SWITCH: disabled_ativos (AGI pode desativar ativos que perdem) ──
+    disabled = CONFIG.get("disabled_symbols", [])
+    if symbol in disabled:
+        return False
+
     # Limite global (segurança)
     if state.daily_trade_count >= 30:
         return False
@@ -531,6 +542,11 @@ def check_and_trade():
         timeframes = CONFIG.get("timeframes_by_symbol", {}).get(symbol_root, CONFIG["timeframes"])
 
         for tf in timeframes:
+            # ── KILL SWITCH: TF desativado pelo AGI ──
+            disabled_tfs = CONFIG.get("disabled_timeframes", [])
+            if f"{symbol_root}_{tf}" in disabled_tfs:
+                continue
+
             strategy = _get_strategy_for_tf(symbol_root, tf)
             params = _get_params_for_tf(symbol_root, tf)
             bars = fetch_bars(symbol, tf, CONFIG["bars_count"])

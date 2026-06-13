@@ -889,18 +889,18 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
 
     prompt += """
 ## REGRAS
-1. Foque no símbolo com PIORES resultados primeiro
-2. Se WR < 30%: tornar filtros MAIS restritivos (elevar thresholds, aumentar cooldown, reduzir max_daily_trades)
-3. Se SL_SERVIDOR é a causa principal: ajustar sl_atr_mult (geralmente aumentar 0.2-0.5)
-4. Se worst trade > -500R$: apertar SL (reduzir sl_atr_mult)
-5. Se streak >= 4 perdas: aumentar cooldown_seconds + reduzir max_daily_trades
-6. NUNCA sugerir mudanças maiores que 30% do valor atual por parâmetro
-7. Para símbolos lucrativos (PnL > 0): NÃO mudar ou apenas micro-ajustes
-8. Priorize REDUZIR perdas sobre aumentar ganhos
+1. PRIORIDADE MÁXIMA: se um ativo/timeframe está PERDENDO SISTEMATICAMENTE, DESATIVE em vez de ajustar
+2. Se WR < 25% com 5+ trades E PnL negativo: usar "disable_symbol" ou "disable_tf" para PARAR de operar
+3. Se WR 25-40% com PnL negativo: ajustar filtros MAIS restritivos (elevar thresholds, aumentar cooldown, reduzir max_daily_trades)
+4. Se SL_SERVIDOR é a causa principal: ajustar sl_atr_mult (geralmente aumentar 0.2-0.5)
+5. Se worst trade > -500R$: apertar SL (reduzir sl_atr_mult)
+6. Se streak >= 4 perdas: aumentar cooldown_seconds + reduzir max_daily_trades
+7. NUNCA sugerir mudanças maiores que 30% do valor atual por parâmetro
+8. Para símbolos lucrativos (PnL > 0): NÃO mudar ou apenas micro-ajustes
 9. PRIORIZE as dicas de configuração da estratégia vindas da web intel
-   (ex: se a referência indica BB_std=2.5 ideal para day trade, não sugerimos < 2.0)
 10. Se a web intel indica padrão de pullback para o ativo, ajustar pullback_pct coerentemente
 11. Se a web indica RSI ideal = 7 ao invés de 14, considerar usar rsi_period=7
+12. É MELHOR DESATIVAR e preservar capital do que continuar perdendo com ajustes
 
 Retorne APENAS um JSON válido (sem markdown, sem comentários):
 {{
@@ -911,10 +911,17 @@ Retorne APENAS um JSON válido (sem markdown, sem comentários):
       "params": {{"bb_std": 2.2, "cooldown_seconds": 900}},
       "reason": "WR 20% muito baixa, widen BB + cooldown"
     }}
-  ]
+  ],
+  "disable_symbols": ["BIT"],
+  "disable_tfs": ["BIT_M15", "BIT_H1"],
+  "max_daily_loss": -300
 }}
 
-O JSON deve ter obrigatoriamente "analysis" (string) e "changes" (array). Cada change tem "symbol" (3 letras), "params" (dict de parâmetros), "reason" (string)."""
+O JSON deve ter obrigatoriamente "analysis" (string) e "changes" (array).
+- "disable_symbols": lista de símbolos para DESATIVAR totalmente (ex: ["BIT"])
+- "disable_tfs": lista de "SYMBOL_TF" para desativar (ex: ["BIT_M15", "WIN_H1"])
+- "max_daily_loss": valor em R$ — se PnL diário cair abaixo disso, PARA TUDO (ex: -300)
+Use disable_symbols/disable_tfs AGRESSIVAMENTE para ativos/timeframes que estão perdendo sistematicamente."""
 
     return prompt
 
@@ -1060,6 +1067,37 @@ def apply_changes(llm_result: dict, config: dict, dry_run: bool = False) -> list
 
     for w in all_warnings:
         log.warning(f"⚠️ {w}")
+
+    # ── KILL SWITCH: Desativar símbolos/timeframes ruins ──
+    disable_symbols = llm_result.get("disable_symbols", [])
+    disable_tfs = llm_result.get("disable_tfs", [])
+    max_daily_loss = llm_result.get("max_daily_loss")
+
+    if disable_symbols:
+        current_disabled = config.get("disabled_symbols", [])
+        new_disabled = list(set(current_disabled + disable_symbols))
+        if not dry_run:
+            config["disabled_symbols"] = new_disabled
+            save_full_config(config, updated_by="agi_17h_llm")
+            config_reload = load_config(force=True)  # refresh in-memory
+        log.info(f"🛑 DESATIVADOS símbolos: {disable_symbols}")
+
+    if disable_tfs:
+        config = load_config(force=True)  # pegar versão atualizada
+        current_disabled_tfs = config.get("disabled_timeframes", [])
+        new_disabled_tfs = list(set(current_disabled_tfs + disable_tfs))
+        if not dry_run:
+            config["disabled_timeframes"] = new_disabled_tfs
+            save_full_config(config, updated_by="agi_17h_llm")
+        log.info(f"🛑 DESATIVADOS timeframes: {disable_tfs}")
+
+    if max_daily_loss is not None:
+        max_daily_loss = max(-2000, min(-50, max_daily_loss))  # bounds: -50 a -2000
+        if not dry_run:
+            config = load_config(force=True)
+            config["max_daily_loss"] = max_daily_loss
+            save_full_config(config, updated_by="agi_17h_llm")
+        log.info(f"🛑 Max daily loss configurado: R$ {max_daily_loss:.2f}")
 
     return applied
 
