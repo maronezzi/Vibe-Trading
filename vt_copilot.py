@@ -167,9 +167,13 @@ def reconcile_orphans():
             else:
                 pnl_pts = trade["entry_price"] - current_price
             
-            # Converter pra R$ (WIN: R$ 0.20/pt, WDO: R$ 1.00/pt)
-            multiplier = 0.20 if "WIN" in trade["symbol"] else 1.00
-            net_pnl = pnl_pts * multiplier
+            # Converter pra R$ usando get_multiplier (cobre todos ativos)
+            try:
+                from vt_trade_log import get_multiplier
+                multiplier = get_multiplier(trade["symbol"])
+            except Exception:
+                multiplier = 0.20 if "WIN" in trade["symbol"] else 1.00
+            net_pnl = pnl_pts * multiplier * trade.get("volume", 1)
             
             conn.execute("""
                 UPDATE trades 
@@ -196,15 +200,15 @@ def reconcile_orphans():
             if not exists:
                 # Criar registro básico
                 symbol = pos["symbol"]
-                direction = "BUY" if pos["type"] == 0 else "SELL"
+                direction = "BUY" if pos["type"] in (0, "BUY") else "SELL"
                 entry_price = pos["price_open"]
                 entry_time = datetime.fromtimestamp(pos["time"]).strftime("%Y-%m-%d %H:%M:%S")
                 
                 conn.execute("""
-                    INSERT INTO trades (symbol, direction, timeframe, entry_price,
+                    INSERT INTO trades (symbol, direction, volume, timeframe, entry_price,
                                        entry_ticket, entry_time, strategy)
-                    VALUES (?, ?, 'M5', ?, ?, ?, 'VWAP')
-                """, (symbol, direction, entry_price, ticket, entry_time))
+                    VALUES (?, ?, ?, 'M5', ?, ?, ?, 'VWAP')
+                """, (symbol, direction, pos.get("volume", 1), entry_price, ticket, entry_time))
                 
                 log(f"  Novo registro: {direction} {symbol} @ {entry_price} (ticket {ticket})")
                 reconciled += 1

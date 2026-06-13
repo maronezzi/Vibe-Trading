@@ -25,10 +25,14 @@ PROJECT = Path(__file__).parent
 VALIDATOR_LOG = Path("/tmp/vt_order_validator.log")
 ALERT_LOG = Path("/tmp/vt_order_alerts.log")
 
-# Limites seguros para SL (em pontos)
+# Limites seguros para SL (em pontos EXECUTOR = sl_pts * point)
 SL_LIMITS = {
-    "WDO": {"min": 50, "max": 300, "atr_multiplier_max": 5.0},
-    "WIN": {"min": 500, "max": 50000, "atr_multiplier_max": 3.0},
+    "WDO": {"min": 3000, "max": 300000, "atr_multiplier_max": 5.0},
+    "WIN": {"min": 200, "max": 3000, "atr_multiplier_max": 5.0},
+    "BIT": {"min": 3000, "max": 100000, "atr_multiplier_max": 3.0},
+    "DOL": {"min": 3000, "max": 300000, "atr_multiplier_max": 5.0},
+    "IND": {"min": 200, "max": 3000, "atr_multiplier_max": 5.0},
+    "WSP": {"min": 500, "max": 30000, "atr_multiplier_max": 5.0},
 }
 
 
@@ -46,9 +50,9 @@ def _ask_llm(prompt: str, timeout: int = 30) -> Optional[str]:
     Usa o mesmo modelo configurado no Hermes (text-only para economia).
     """
     try:
-        # Usar hermes CLI para consultar LLM
+        # Usar hermes CLI para consultar LLM (modo -z = non-interactive)
         result = subprocess.run(
-            ["hermes", "ask", "--prompt", prompt, "--max-tokens", "500"],
+            ["hermes", "-z", prompt],
             capture_output=True,
             text=True,
             timeout=timeout
@@ -81,9 +85,11 @@ def _validate_sl_locally(order_data: dict) -> list:
     entry_price = order_data.get("entry_price", 0)
     strategy = order_data.get("strategy", "")
 
-    # Determinar base do símbolo (WDO ou WIN)
-    base = "WDO" if "WDO" in symbol else "WIN"
-    limits = SL_LIMITS.get(base, {})
+    # Determinar base do símbolo
+    base = "WDO" if "WDO" in symbol else "WIN" if "WIN" in symbol else \
+           "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
+           "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else "WIN"
+    limits = SL_LIMITS.get(base, {"min": 200, "max": 50000, "atr_multiplier_max": 5.0})
 
     # 1. SL muito pequeno (pode ser stopado por ruído)
     min_sl = limits.get("min", 50)
@@ -106,22 +112,30 @@ def _validate_sl_locally(order_data: dict) -> list:
         })
 
     # 3. SL vs ATR (se ATR disponível)
+    # sl_pts está em executor units (sl_pts * point = distância em preço)
+    # ATR está em pontos nativos do preço
+    # Precisa converter sl_pts pra pontos nativos para comparar
+    _point_mult = {
+        "WDO": 1000, "WIN": 1, "BIT": 100, "DOL": 1000, "IND": 1, "WSP": 100
+    }.get(base, 1)
+    sl_native = sl_pts / _point_mult if _point_mult > 0 else sl_pts
+    
     if atr > 0:
-        atr_mult = sl_pts / atr
+        atr_mult = sl_native / atr
         max_mult = limits.get("atr_multiplier_max", 5.0)
         if atr_mult > max_mult:
             alerts.append({
                 "type": "SL_ATR_EXCESSIVO",
                 "severity": "HIGH",
                 "detail": f"SL é {atr_mult:.1f}x o ATR ({atr:.1f}pts). Máximo recomendado: {max_mult}x ATR.",
-                "suggestion": f"Reduzir SL para {int(atr * max_mult)}pts ({max_mult}x ATR)"
+                "suggestion": f"Reduzir SL para {int(atr * max_mult * _point_mult)}pts executor ({max_mult}x ATR)"
             })
         elif atr_mult < 0.5:
             alerts.append({
                 "type": "SL_ATR_MUITO_APERTADO",
                 "severity": "MEDIUM",
                 "detail": f"SL é {atr_mult:.2f}x o ATR. Muito apertado, pode ser stopado por volatilidade normal.",
-                "suggestion": f"Aumentar SL para pelo menos {int(atr * 1.0)}pts (1.0x ATR)"
+                "suggestion": f"Aumentar SL para pelo menos {int(atr * 1.0 * _point_mult)}pts executor (1.0x ATR)"
             })
 
     # 4. Verificar se SL está do lado errado
@@ -187,26 +201,28 @@ def validate_order(order_data: dict, use_llm: bool = True) -> dict:
             _log(f"  [{alert['severity']}] {alert['type']}: {alert['detail']}")
             _log(f"    Sugestão: {alert['suggestion']}")
 
-    # 2. Consulta LLM para análise (se habilitado)
+    # 2. Consulta LLM para análise (SEMPRE, não só quando há alertas)
     if use_llm:
-        prompt = f"""Analise esta ordem de trading que acabou de ser executada:
+        prompt = f"""Você é um trader profissional. Analise esta ordem e OBRIGATORIAMENTE sugira um SL otimizado.
 
 Símbolo: {symbol} | Direção: {direction} | Entrada: {entry_price}
-SL: {sl_pts}pts | ATR: {atr:.2f}pts | Estratégia: {strategy}
+SL atual: {sl_pts}pts | ATR: {atr:.2f}pts | Estratégia: {strategy}
+Ponto do ativo: {{"WIN":1,"BIT":0.01,"DOL":0.001,"IND":1,"WSP":0.01}}.get("{symbol[:3]}", 1)
 
-{f"Alertas detectados: {json.dumps([a['type'] for a in local_alerts])}" if local_alerts else "Nenhum alerta local."}
+REGRAS OBRIGATÓRIAS:
+1. SL deve ser entre 1.0x e 2.0x o ATR (em pontos nativos do ativo)
+2. converter sl_pts para pontos nativos: sl_pts * point
+3. SEMPRE retorne um sl_sugerido OTIMIZADO (não retorne null)
+4. Se o SL atual já é otimizado, retorne o mesmo valor
 
-Perguntas rápidas:
-1. O SL está coerente para este ativo?
-2. Há algum risco que passou batido?
-3. Deveria ajustar o SL? Se sim, para quanto?
+Converta {sl_pts}pts executor para pontos nativos: {sl_pts} * {{"WIN":1,"BIT":0.01,"DOL":0.001,"IND":1,"WSP":0.01}}.get("{symbol[:3]}", 1) = {sl_pts * {"WIN":1,"BIT":0.01,"DOL":0.001,"IND":1,"WSP":0.01}.get(symbol[:3], 1)}pts nativos
+ATR atual: {atr:.2f}pts nativos
+SL ideal: {int(atr * 1.2)} a {int(atr * 1.5)}pts nativos = {int(atr * 1.2 / {"WIN":1,"BIT":0.01,"DOL":0.001,"IND":1,"WSP":0.01}.get(symbol[:3], 1))} a {int(atr * 1.5 / {"WIN":1,"BIT":0.01,"DOL":0.001,"IND":1,"WSP":0.01}.get(symbol[:3], 1))}pts executor
 
-Responda em JSON:
+Retorne APENAS JSON:
 {{
-  "sl_ok": true/false,
-  "sl_sugerido": <pts ou null>,
-  "risco": "curta descrição ou null",
-  "resumo": "resumo em 1 linha"
+  "sl_sugerido": <pts executor, OBRIGATÓRIO>,
+  "resumo": "<motivo>"
 }}"""
 
         llm_response = _ask_llm(prompt)
@@ -222,28 +238,30 @@ Responda em JSON:
                 if start >= 0 and end > start:
                     llm_data = json.loads(llm_response[start:end])
 
-                    # Se LLM sugeriu SL diferente
+                    # Extrair sl_sugerido do LLM
                     new_sl_raw = llm_data.get("sl_sugerido")
                     if new_sl_raw is not None:
-                        # Type-check: aceitar apenas int/float positivos
                         if isinstance(new_sl_raw, (int, float)) and new_sl_raw > 0:
                             new_sl = int(new_sl_raw)
                         elif isinstance(new_sl_raw, str) and new_sl_raw.strip().isdigit():
                             new_sl = int(new_sl_raw.strip())
                         else:
-                            _log(f"[WARN] LLM retornou sl_sugerido inválido: {new_sl_raw!r}")
                             new_sl = None
 
+                        # Só aplicar se a mudança for significativa (>5% ou >50pts)
                         if new_sl is not None and new_sl != sl_pts:
-                            result["suggested_action"] = {
-                                "type": "MODIFY_SL",
-                                "symbol": symbol,
-                                "current_sl": sl_pts,
-                                "suggested_sl": new_sl,
-                                "reason": llm_data.get("resumo", llm_data.get("recomendação", "LLM sugere ajuste")),
-                                "risco": llm_data.get("risco"),
-                            }
-                            _log(f"[LLM] Sugere alterar SL de {sl_pts}pts para {new_sl}pts")
+                            diff = abs(new_sl - sl_pts)
+                            diff_pct = diff / sl_pts * 100 if sl_pts > 0 else 0
+                            if diff > 50 or diff_pct > 5:
+                                result["suggested_action"] = {
+                                    "type": "MODIFY_SL",
+                                    "symbol": symbol,
+                                    "current_sl": sl_pts,
+                                    "suggested_sl": new_sl,
+                                    "reason": llm_data.get("resumo", llm_data.get("recomendação", "LLM sugere ajuste")),
+                                    "risco": llm_data.get("risco"),
+                                }
+                                _log(f"[LLM] Sugere alterar SL de {sl_pts}pts para {new_sl}pts")
             except json.JSONDecodeError:
                 _log("[WARN] LLM retornou JSON inválido")
 
@@ -273,6 +291,18 @@ def validate_and_fix(order_data: dict, modify_sl_func=None) -> dict:
 
     if result["suggested_action"] and result["suggested_action"]["type"] == "MODIFY_SL":
         action = result["suggested_action"]
+
+        # Bounds check: garantir SL dentro dos limites seguros antes de aplicar
+        symbol = action.get("symbol", "")
+        base = "WDO" if "WDO" in symbol else "WIN" if "WIN" in symbol else \
+               "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
+               "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else "WIN"
+        _limits = SL_LIMITS.get(base, {"min": 200, "max": 50000})
+        suggested = action["suggested_sl"]
+        if not (_limits["min"] <= suggested <= _limits["max"]):
+            _log(f"[FIX] SL sugerido {suggested}pts fora dos limites [{_limits['min']}-{_limits['max']}], IGNORADO")
+            result["fix_skipped"] = f"SL fora dos limites: {suggested} vs [{_limits['min']}-{_limits['max']}]"
+            return result
 
         if modify_sl_func:
             _log(f"[FIX] Aplicando correção: SL {action['current_sl']} → {action['suggested_sl']}pts")

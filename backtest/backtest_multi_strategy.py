@@ -242,7 +242,7 @@ def load_strategies():
     return strategies
 
 
-def backtest_strategy(df, symbol, strategy_func, params, utils, capital=100_000.0):
+def backtest_strategy(df, symbol, strategy_func, params, utils, capital=100_000.0, tf="M5"):
     """Backtest using a strategy plugin."""
     spec = CONTRACT_SPECS[symbol]
     mult, margin, slip_r = spec["mult"], spec["margin"], spec["slip_r"]
@@ -373,7 +373,7 @@ def backtest_strategy(df, symbol, strategy_func, params, utils, capital=100_000.
             if cur_atr > 0 and i >= 30:
                 # Build bars for strategy (most recent first) — need enough for ADX (2*period) + EMA
                 strat_bars = list(reversed(bars_list[max(0, i-60):i+1]))
-                result = strategy_func(symbol, "M5", price, cur_atr, date, strat_bars, params, utils)
+                result = strategy_func(symbol, tf, price, cur_atr, date, strat_bars, params, utils)
                 if result and result.get("direction"):
                     _open(result["direction"], price, date, cur_atr)
             continue
@@ -521,7 +521,7 @@ def run():
         combo_results = []
         for name, func in strategies.items():
             try:
-                r = backtest_strategy(df, sym, func, base_params, utils)
+                r = backtest_strategy(df, sym, func, base_params, utils, tf=tf)
                 if r["ok"]:
                     combo_results.append((name, r))
                     icon = "✅" if r["ret"] > 0 else "❌"

@@ -1,33 +1,60 @@
 {
-  "_version": 16,
-  "_updated_at": "2026-06-11T22:56:49.947999",
-  "_updated_by": "agi_17h",
-  "_notes": "Cleaned timeframes: global M5+M15, timeframes_by_symbol kept as override",
+  "_version": 25,
+  "_updated_at": "2026-06-12T17:13:06.633106",
+  "_updated_by": "agi_17h_tuning",
+  "_notes": "v20: meio-dia param tuning - BIT widen VWAP, DOL relax ADX, WSP faster MACD, IND/WIN wider RSI",
   "start_hour": 9,
   "start_minute": 5,
   "close_hour": 16,
   "close_minute": 45,
   "symbols": [
-    "WDO",
-    "WIN"
+    "WIN",
+    "BIT",
+    "DOL",
+    "IND",
+    "WSP"
   ],
   "timeframes": [
     "M5",
-    "M15"
+    "M15",
+    "M30",
+    "H1"
   ],
   "timeframes_by_symbol": {
-    "WDO": [
-      "M5",
-      "M15"
-    ],
     "WIN": [
       "M5",
-      "M15"
+      "M15",
+      "M30",
+      "H1"
+    ],
+    "BIT": [
+      "M5",
+      "M15",
+      "M30",
+      "H1"
+    ],
+    "DOL": [
+      "M5",
+      "M15",
+      "M30"
+    ],
+    "IND": [
+      "M5",
+      "M15",
+      "M30",
+      "H1"
+    ],
+    "WSP": [
+      "M15",
+      "M30"
     ]
   },
   "strategy": {
-    "WDO": "SMART_EMA",
-    "WIN": "EMA_PULLBACK"
+    "WIN": "BOLLINGER",
+    "BIT": "VWAP",
+    "DOL": "EMA_PULLBACK",
+    "IND": "BOLLINGER",
+    "WSP": "MACD_MOMENTUM"
   },
   "wdo": {
     "vwap_period": 20,
@@ -41,8 +68,8 @@
     "ema_fast": 9,
     "ema_slow": 21,
     "rsi_period": 14,
-    "rsi_overbought": 85,
-    "rsi_oversold": 15,
+    "rsi_overbought": 65,
+    "rsi_oversold": 35,
     "trend_min_spread": 0,
     "breakeven_minutes": 15,
     "time_trail_minutes": 30,
@@ -52,19 +79,16 @@
     "adx_threshold": 25
   },
   "win": {
-    "ema_fast": 9,
-    "ema_slow": 21,
-    "adx_period": 14,
-    "adx_threshold": 30,
+    "bb_period": 20,
+    "bb_std": 2.1,
     "rsi_period": 14,
-    "rsi_overbought": 80,
-    "rsi_oversold": 20,
+    "rsi_overbought": 70,
+    "rsi_oversold": 30,
     "sl_atr_mult": 1.5,
     "trail_activate": 1.5,
     "trail_distance": 0.5,
-    "cooldown_seconds": 600,
-    "max_daily_trades": 10,
-    "trend_min_spread": 0.001,
+    "cooldown_seconds": 900,
+    "max_daily_trades": 8,
     "breakeven_minutes": 20,
     "time_trail_minutes": 45,
     "max_position_minutes": 120
@@ -72,12 +96,129 @@
   "volume": 1,
   "magic": 555501,
   "check_interval": 30,
-  "bars_count": 30,
+  "bars_count": 45,
   "resolved_symbols": {
-    "WDO": "WDON26",
-    "WIN": "WINM26"
+    "WIN": "WINM26",
+    "BIT": "BITM26",
+    "DOL": "DOLN26",
+    "IND": "INDM26",
+    "WSP": "WSPM26"
   },
   "warmup_minutes": 15,
   "winddown_minutes": 15,
-  "validate_with_llm": true
+  "validate_with_llm": true,
+  "strategy_by_tf": {
+    "WIN_M30": "MACD_MOMENTUM",
+    "WIN_H1": "STRONG_TREND",
+    "BIT_H1": "VWAP",
+    "DOL_M30": "EMA_PULLBACK",
+    "IND_M30": "MACD_MOMENTUM",
+    "IND_H1": "STRONG_TREND",
+    "WSP_M15": "MACD_MOMENTUM",
+    "WSP_M30": "MACD_MOMENTUM"
+  },
+  "contract_specs": {
+    "WIN$": {
+      "mult": 0.2,
+      "margin": 155,
+      "slip_r": 1.0,
+      "tick": 5
+    },
+    "WDO$": {
+      "mult": 10.0,
+      "margin": 140,
+      "slip_r": 5.0,
+      "tick": 0.5
+    },
+    "BIT$": {
+      "mult": 0.5,
+      "margin": 45,
+      "slip_r": 10.0,
+      "tick": 0.01
+    },
+    "DOL$": {
+      "mult": 50.0,
+      "margin": 700,
+      "slip_r": 10.0,
+      "tick": 0.5
+    },
+    "IND$": {
+      "mult": 1.0,
+      "margin": 775,
+      "slip_r": 5.0,
+      "tick": 5
+    },
+    "WSP$": {
+      "mult": 2.5,
+      "margin": 100,
+      "slip_r": 2.5,
+      "tick": 0.01
+    }
+  },
+  "bit": {
+    "vwap_period": 20,
+    "vwap_buy_threshold": 1.008,
+    "vwap_sell_threshold": 0.992,
+    "sl_atr_mult": 1.0,
+    "trail_activate": 1.5,
+    "trail_distance": 0.5,
+    "cooldown_seconds": 600,
+    "max_daily_trades": 5,
+    "breakeven_minutes": 15,
+    "time_trail_minutes": 30,
+    "max_position_minutes": 120
+  },
+  "dol": {
+    "ema_fast": 9,
+    "ema_slow": 21,
+    "adx_period": 14,
+    "adx_threshold": 18,
+    "rsi_period": 14,
+    "rsi_overbought": 65,
+    "rsi_oversold": 35,
+    "pullback_pct": 0.1,
+    "sl_atr_mult": 1.2,
+    "trail_activate": 1.5,
+    "trail_distance": 0.5,
+    "cooldown_seconds": 600,
+    "max_daily_trades": 6,
+    "breakeven_minutes": 15,
+    "time_trail_minutes": 30,
+    "max_position_minutes": 120
+  },
+  "ind": {
+    "bb_period": 20,
+    "bb_std": 2.2,
+    "rsi_period": 14,
+    "rsi_overbought": 70,
+    "rsi_oversold": 30,
+    "sl_atr_mult": 1.5,
+    "trail_activate": 1.5,
+    "trail_distance": 0.5,
+    "cooldown_seconds": 900,
+    "max_daily_trades": 6,
+    "breakeven_minutes": 20,
+    "time_trail_minutes": 45,
+    "max_position_minutes": 120
+  },
+  "wsp": {
+    "ema_fast": 9,
+    "ema_slow": 21,
+    "adx_period": 14,
+    "adx_threshold": 15,
+    "rsi_period": 14,
+    "rsi_overbought": 75,
+    "rsi_oversold": 25,
+    "macd_fast": 9,
+    "macd_slow": 21,
+    "macd_signal": 12,
+    "sl_atr_mult": 1.2,
+    "trail_activate": 1.5,
+    "trail_distance": 0.5,
+    "cooldown_seconds": 600,
+    "max_daily_trades": 6,
+    "breakeven_minutes": 15,
+    "time_trail_minutes": 30,
+    "max_position_minutes": 120
+  }
 }

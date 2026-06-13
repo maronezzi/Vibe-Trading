@@ -385,7 +385,10 @@ def cmd_modify(symbol, ticket, new_sl_pts):
         return False
 
     # Calcular novo preço de SL
-    point = mt5.symbol_info(symbol).point
+    sym_info = mt5.symbol_info(symbol)
+    point = sym_info.point
+    tick_size = getattr(sym_info, 'trade_tick_size', None) or point
+    digits = getattr(sym_info, 'digits', 5)
     if target_pos.type == mt5.ORDER_TYPE_BUY:
         # BUY: SL abaixo do preço
         new_sl_price = target_pos.price_open - (int(new_sl_pts) * point)
@@ -393,7 +396,10 @@ def cmd_modify(symbol, ticket, new_sl_pts):
         # SELL: SL acima do preço
         new_sl_price = target_pos.price_open + (int(new_sl_pts) * point)
 
-    # Request de modificação
+    # Alinhar SL ao trade_tick_size (evita "Invalid stops" no servidor)
+    if tick_size > 0:
+        new_sl_price = round(new_sl_price / tick_size) * tick_size
+        new_sl_price = round(new_sl_price, digits)
     request = {
         "action": mt5.TRADE_ACTION_SLTP,
         "symbol": target_pos.symbol,

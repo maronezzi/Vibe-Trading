@@ -29,16 +29,18 @@ import time
 import json
 import subprocess
 import signal
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary
 from mt5_orchestrator import status, buy, sell, close, close_all, tick, modify_sl, _run_wine, EXECUTOR_WIN
+from mt5_error_recovery import safe_buy, safe_sell, safe_modify_sl, safe_close
 from vt_config_loader import load_config
 from vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
 from vt_order_validator import validate_order
+from vt_calendar import is_trading_day, resolve_all_symbols, resolve_symbol, get_contract_expiry, _parse_contract_code
 
 # ===== CONFIGURAÇÃO =====
 # Config carregada do vt_config.json com hot reload
@@ -272,7 +274,7 @@ def calculate_rsi(bars: list, period: int = 14) -> float:
         return 50
     gains = []
     losses = []
-    for i in range(min(period + 1, len(bars) - 1)):
+    for i in range(min(period, len(bars) - 1)):
         diff = bars[i]["close"] - bars[i + 1]["close"]
         if diff > 0:
             gains.append(diff)
@@ -280,8 +282,9 @@ def calculate_rsi(bars: list, period: int = 14) -> float:
         else:
             gains.append(0)
             losses.append(abs(diff))
-    avg_gain = sum(gains) / period if gains else 0
-    avg_loss = sum(losses) / period if losses else 0.001
+    _n = max(len(gains), 1)
+    avg_gain = sum(gains) / _n if gains else 0
+    avg_loss = sum(losses) / _n if losses else 0.001
     rs = avg_gain / avg_loss if avg_loss > 0 else 100
     return 100 - (100 / (1 + rs))
 
@@ -303,9 +306,12 @@ def calculate_adx(bars: list, period: int = 14):
     """Average Directional Index — mede força da tendência."""
     if not bars or len(bars) < period * 2:
         return 0, 0, 0
-    highs = [b["high"] for b in bars[:period * 2]]
-    lows = [b["low"] for b in bars[:period * 2]]
-    closes = [b["close"] for b in bars[:period * 2]]
+    # CRITICAL: bars do MT5 são newest-first; inverter para ordem cronológica
+    # Sem isso, +DI/-DI ficam invertidos (tendência de alta parece queda)
+    chron_bars = list(reversed(bars[:period * 2]))
+    highs = [b["high"] for b in chron_bars]
+    lows = [b["low"] for b in chron_bars]
+    closes = [b["close"] for b in chron_bars]
     plus_dm = []
     minus_dm = []
     for i in range(1, len(highs)):
@@ -357,7 +363,9 @@ def get_market_regime(bars: list, params: dict = None) -> str:
 
 def is_trading_time() -> bool:
     now = datetime.now()
-    if now.weekday() >= 5:
+    # Verifica dia útil + feriados B3
+    ok, motivo = is_trading_day(now.date())
+    if not ok:
         return False
     h, m = now.hour, now.minute
     start = CONFIG["start_hour"] * 60 + CONFIG["start_minute"]
@@ -886,11 +894,11 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
         detail_parts.append(f"BB=[{kwargs.get('bb_lower', 0):.0f}|{kwargs.get('bb_mid', 0):.0f}|{kwargs.get('bb_upper', 0):.0f}]")
     log(f"[SINAL] {symbol} {tf}: {direction} @ {price:.2f} | {' | '.join(detail_parts)}")
 
-    # Ordem
+    # Ordem com auto-recuperação
     if direction == "BUY":
-        result = buy(symbol, CONFIG["volume"], sl_pts=sl_pts)
+        result = safe_buy(symbol, CONFIG["volume"], sl_pts=sl_pts, strategy=strategy)
     else:
-        result = sell(symbol, CONFIG["volume"], sl_pts=sl_pts)
+        result = safe_sell(symbol, CONFIG["volume"], sl_pts=sl_pts, strategy=strategy)
 
     if result.get("status") == "FILLED":
         ticket = result.get("ticket", "?")
@@ -911,7 +919,7 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             use_llm = CONFIG.get("validate_with_llm", False)
             validation = validate_order(order_data, use_llm=use_llm)
 
-            # Se LLM sugeriu correção de SL
+            # Se LLM sugeriu correção de SL (SEMPRE aplicar)
             if validation.get("suggested_action") and validation["suggested_action"].get("type") == "MODIFY_SL":
                 action = validation["suggested_action"]
                 new_sl = action["suggested_sl"]
@@ -927,13 +935,13 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                 _root = "WIN" if "WIN" in symbol else "WDO" if "WDO" in symbol else \
                         "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
                         "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else "WIN"
-                _limits = {"WDO": {"min": 50, "max": 300}, "WIN": {"min": 500, "max": 50000},
-                           "BIT": {"min": 50, "max": 5000}, "DOL": {"min": 500, "max": 50000},
-                           "IND": {"min": 500, "max": 50000}, "WSP": {"min": 50, "max": 5000}
-                          }.get(_root, {"min": 50, "max": 50000})
+                _limits = {"WDO": {"min": 3000, "max": 300000}, "WIN": {"min": 200, "max": 3000},
+                           "BIT": {"min": 3000, "max": 100000}, "DOL": {"min": 3000, "max": 300000},
+                           "IND": {"min": 200, "max": 3000}, "WSP": {"min": 500, "max": 30000}
+                          }.get(_root, {"min": 200, "max": 50000})
                 if isinstance(new_sl, (int, float)) and _limits["min"] <= new_sl <= _limits["max"]:
                     log(f"[VALIDATOR] Corrigindo SL: {sl_pts}pts → {int(new_sl)}pts ({reason})")
-                    fix_result = modify_sl(symbol, ticket, int(new_sl))
+                    fix_result = safe_modify_sl(symbol, ticket, int(new_sl), exec_price, direction)
                     if fix_result.get("status") == "ok":
                         sl_pts = int(new_sl)
                         log(f"[VALIDATOR] SL corrigido com sucesso para {sl_pts}pts")
@@ -946,6 +954,23 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             elif validation.get("llm_analysis"):
                 # LLM analisou e não sugeriu mudança — loga resumo
                 log(f"[VALIDATOR] LLM OK: {validation['llm_analysis'][:150]}")
+            elif not validation.get("llm_analysis") and validation.get("alerts"):
+                # LLM falhou mas há alertas locais — aplicar correção local
+                for alert in validation["alerts"]:
+                    if "suggestion" in alert:
+                        # Extrair valor sugerido da sugestão
+                        import re
+                        match = re.search(r'(\d+)pts', alert["suggestion"])
+                        if match:
+                            suggested_pts = int(match.group(1))
+                            if suggested_pts != sl_pts:
+                                log(f"[VALIDATOR] LLM falhou, aplicando correção local: {sl_pts}pts → {suggested_pts}pts")
+                                fix_result = safe_modify_sl(symbol, ticket, suggested_pts, exec_price, direction)
+                                if fix_result.get("status") == "ok":
+                                    sl_pts = suggested_pts
+                                    log(f"[VALIDATOR] SL corrigido localmente para {sl_pts}pts")
+                                    notify_telegram(f"✅ SL aplicado (local): {symbol} ticket={ticket} → {sl_pts}pts")
+                                break
         except Exception as e:
             log(f"[VALIDATOR] Erro na validação (não bloqueante): {e}")
 
@@ -1120,23 +1145,32 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
 
     # ===== PROTEÇÃO 1: BREAKEVEN =====
     # Após X minutos sem trailing, move SL pra entry + custo mínimo
-    # sl_pts é SIGNED: negativo = SL acima de entry (BUY) ou abaixo (SELL)
+    # sl_pts é ALWAYS POSITIVO (distância). cmd_modify converte pra preço.
+    be_applied = False
     if not trail_on and pos_minutes >= breakeven_min and atr > 0:
         cost_pts = int(5 / point_val)  # custo aprox (comissão + slippage) em pontos
         if direction == "BUY":
-            # BUY: SL acima de entry = lucro mínimo garantido
-            new_sl_pts = -cost_pts  # negativo → SL = entry + custo
-            if new_sl_pts > sl_pts:  # menos negativo = SL mais alto = melhor
-                pos["sl_pts"] = new_sl_pts
-                be_price = entry_price + cost_pts * point_val
-                log(f"[BREAKEVEN] {symbol} após {pos_minutes:.0f}min sem trailing | SL → {be_price:.2f} (era {sl_pts}pts)")
+            # BUY: breakeven = SL no entry + custo (SL = entry + custo*point)
+            be_sl_pts = cost_pts  # positivo → SL = entry - cost_pts*point_val (abaixo de entry mas perto)
+            if be_sl_pts < abs(sl_pts):  # menor distância = SL mais apertado = melhor
+                result = safe_modify_sl(symbol, pos["entry_ticket"], be_sl_pts, entry_price, direction)
+                if result.get("status") == "ok":
+                    pos["sl_pts"] = be_sl_pts
+                    sl_pts = be_sl_pts  # CRITICAL: refresh local para trailing não afrouxar
+                    be_price = entry_price + cost_pts * point_val
+                    log(f"[BREAKEVEN] {symbol} BUY após {pos_minutes:.0f}min | SL → {be_price:.2f} ({be_sl_pts}pts)")
+                    be_applied = True
         else:
-            # SELL: SL abaixo de entry = lucro mínimo garantido
-            new_sl_pts = -cost_pts  # negativo → SL = entry - custo
-            if new_sl_pts > sl_pts:
-                pos["sl_pts"] = new_sl_pts
-                be_price = entry_price - cost_pts * point_val
-                log(f"[BREAKEVEN] {symbol} após {pos_minutes:.0f}min sem trailing | SL → {be_price:.2f} (era {sl_pts}pts)")
+            # SELL: breakeven = SL no entry - custo (SL = entry + cost_pts*point_val)
+            be_sl_pts = cost_pts
+            if be_sl_pts < abs(sl_pts):
+                result = safe_modify_sl(symbol, pos["entry_ticket"], be_sl_pts, entry_price, direction)
+                if result.get("status") == "ok":
+                    pos["sl_pts"] = be_sl_pts
+                    sl_pts = be_sl_pts  # CRITICAL: refresh local para trailing não afrouxar
+                    be_price = entry_price - cost_pts * point_val
+                    log(f"[BREAKEVEN] {symbol} SELL após {pos_minutes:.0f}min | SL → {be_price:.2f} ({be_sl_pts}pts)")
+                    be_applied = True
 
     # ===== PROTEÇÃO 2: TIME-BASED TRAILING =====
     # Após Y minutos, ativa trailing mesmo sem atingir trail_activate
@@ -1146,8 +1180,10 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         log(f"[TIME_TRAIL] Ativado por tempo {symbol} após {pos_minutes:.0f}min | Lucro: {profit_pts:.0f}pts")
 
     # ===== TRAILING STOP =====
-    # sl_pts está em executor units (WDO: ×1000, WIN: ×1)
-    # trail_dist e new_sl estão em PREÇO — precisa converter
+    # Calcula novo SL mas NÃO aplica no state até MT5 confirmar.
+    # Convenção: sl_pts é ALWAYS POSITIVO (distância em executor units).
+    # cmd_modify: BUY sl = entry - sl_pts*point, SELL sl = entry + sl_pts*point
+    new_sl_pts = None  # candidato (só aplica se MT5 confirmar)
     if trail_on and atr > 0:
         # Proteção 3: após max_position_minutes, trailing mais agressivo
         if pos_minutes >= max_pos_min:
@@ -1156,15 +1192,18 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             trail_dist = trail_dist_cfg * atr
 
         if direction == "BUY":
-            new_sl = best - trail_dist
-            old_sl_price = entry_price - sl_pts * point_val
-            if new_sl > old_sl_price:
-                pos["sl_pts"] = int((entry_price - new_sl) / point_val)
+            new_sl_price = best - trail_dist
+            old_sl_price = entry_price - abs(sl_pts) * point_val
+            if new_sl_price > old_sl_price and new_sl_price > 0:
+                # BUY: SL abaixo de entry → sl_pts = (entry - new_sl) / point_val (positivo)
+                new_sl_pts = int((entry_price - new_sl_price) / point_val)
         else:
-            new_sl = best + trail_dist
-            old_sl_price = entry_price + sl_pts * point_val
-            if new_sl < old_sl_price:
-                pos["sl_pts"] = int((new_sl - entry_price) / point_val)
+            new_sl_price = best + trail_dist
+            old_sl_price = entry_price + abs(sl_pts) * point_val
+            if new_sl_price < old_sl_price and new_sl_price > 0:
+                # SELL: SL acima de entry → sl_pts = (new_sl - entry) / point_val (positivo)
+                # Mas se new_sl < entry (SL abaixo de entry), usar abs
+                new_sl_pts = abs(int((new_sl_price - entry_price) / point_val))
 
     # ===== BOLLINGER: Tight trailing na banda oposta =====
     if strategy == "BOLLINGER":
@@ -1172,25 +1211,30 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         if bb_mid > 0:
             if direction == "BUY" and current_price >= bb_mid and profit_pts > 0:
                 tight_dist = 0.3 * atr
-                new_sl = best - tight_dist
-                old_sl_price = entry_price - sl_pts * point_val
-                if new_sl > old_sl_price:
-                    pos["sl_pts"] = int((entry_price - new_sl) / point_val)
+                tight_sl_price = best - tight_dist
+                old_sl_price = entry_price - abs(sl_pts) * point_val
+                if tight_sl_price > old_sl_price and tight_sl_price > 0:
+                    tight_pts = int((entry_price - tight_sl_price) / point_val)
+                    if tight_pts > 0 and (new_sl_pts is None or tight_pts < new_sl_pts):
+                        new_sl_pts = tight_pts
             elif direction == "SELL" and current_price <= bb_mid and profit_pts > 0:
                 tight_dist = 0.3 * atr
-                new_sl = best + tight_dist
-                old_sl_price = entry_price + sl_pts * point_val
-                if new_sl < old_sl_price:
-                    pos["sl_pts"] = int((new_sl - entry_price) / point_val)
+                tight_sl_price = best + tight_dist
+                old_sl_price = entry_price + abs(sl_pts) * point_val
+                if tight_sl_price < old_sl_price and tight_sl_price > 0:
+                    tight_pts = abs(int((tight_sl_price - entry_price) / point_val))
+                    if tight_pts > 0 and (new_sl_pts is None or tight_pts < new_sl_pts):
+                        new_sl_pts = tight_pts
 
-    # Enviar modify SL pro MT5 se mudou (after both trailing + BB tight)
-    if pos["sl_pts"] != old_sl:
+    # Enviar modify SL pro MT5 — só atualiza state se MT5 confirmar
+    if new_sl_pts is not None and new_sl_pts > 0 and new_sl_pts != abs(sl_pts):
         try:
-            result = modify_sl(symbol, pos["entry_ticket"], pos["sl_pts"])
+            result = safe_modify_sl(symbol, pos["entry_ticket"], new_sl_pts, entry_price, direction)
             if result.get("status") == "ok":
-                log(f"[TRAIL] SL atualizado no MT5: {symbol} ticket={pos['entry_ticket']} → SL={pos['sl_pts']} pts")
+                pos["sl_pts"] = new_sl_pts
+                log(f"[TRAIL] SL atualizado no MT5: {symbol} ticket={pos['entry_ticket']} → SL={new_sl_pts} pts")
             else:
-                log(f"[TRAIL] Falha modify SL: {result.get('error', '?')}")
+                log(f"[TRAIL] Falha modify SL: {result.get('error', '?')} (mantido {abs(sl_pts)}pts)")
         except Exception as e:
             log(f"[TRAIL] Erro modify SL: {e}")
 
@@ -1258,7 +1302,7 @@ def close_all_and_report():
         symbol = parts[0]
         tf = parts[1] if len(parts) > 1 else "M5"
 
-        result = close(symbol)
+        result = safe_close(symbol)
         log(f"Fechei {symbol}: {result}")
 
         tick_data = tick(symbol)
@@ -1414,7 +1458,7 @@ def recover_open_positions():
         if already_managed:
             continue
 
-        db_trade = open_in_db.get(ticket) or open_in_db.get(int(ticket))
+        db_trade = open_in_db.get(ticket) or (open_in_db.get(int(ticket)) if str(ticket).isdigit() else None)
         strategy = _get_strategy(symbol_root)
         params = _get_params(symbol_root)
 
@@ -1500,6 +1544,32 @@ def run_daemon():
     _init_strategy_utils()
     load_strategies()
     state.started_at = datetime.now()
+
+    # ─── Verificação de dia útil + feriados ───
+    ok, motivo = is_trading_day()
+    if not ok:
+        log(f"⛔ Hoje NÃO é dia de trading: {motivo}")
+        notify_telegram(f"⛔ *Mercado fechado hoje*\n📋 Motivo: {motivo}\n💤 Bot aguardando próximo dia útil...")
+    else:
+        log(f"✅ Hoje é dia de trading ({motivo})")
+
+    # ─── Auto-resolução de vencimento de contratos ───
+    log("📅 Verificando vencimentos dos contratos...")
+    resolved = resolve_all_symbols()
+    CONFIG = load_config()  # Recarregar com eventuais atualizações
+    for root, contract in resolved.items():
+        _, month, year = _parse_contract_code(contract)
+        if month:
+            expiry = get_contract_expiry(root, month, year)
+            days = 0
+            check = date.today()
+            while check < expiry:
+                if is_trading_day(check)[0]:
+                    days += 1
+                check += timedelta(days=1)
+            log(f"  {root} → {contract} (vence {expiry.strftime('%d/%m/%Y')}, {days} dias úteis)")
+        else:
+            log(f"  {root} → {contract}")
 
     # Log das estratégias
     strat_info = []

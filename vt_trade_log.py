@@ -136,11 +136,21 @@ def init_db():
 
 
 def get_multiplier(symbol: str) -> float:
-    """Retorna o multiplicador R$ por ponto."""
-    if "WIN" in symbol:
-        return 0.20  # Mini índice = R$ 0,20 por ponto
-    elif "WDO" in symbol:
-        return 10.00  # Mini dólar = R$ 10,00 por ponto
+    """Retorna o multiplicador R$ por ponto — lê de vt_config.json contract_specs."""
+    try:
+        from vt_config_loader import CONFIG as _cfg
+        specs = _cfg.get("contract_specs", {})
+        # Tenta match por root$ (ex: "WIN$", "WDO$", "BIT$")
+        for root, spec in specs.items():
+            if root.rstrip("$") in symbol:
+                return spec.get("mult", 1.0)
+    except Exception:
+        pass
+    # Fallback hardcoded (caso config indisponível)
+    _mults = {"WIN": 0.20, "WDO": 10.00, "DOL": 10.00, "IND": 1.0, "BIT": 0.01, "WSP": 0.50}
+    for root, mult in _mults.items():
+        if root in symbol:
+            return mult
     return 1.0
 
 
@@ -291,10 +301,11 @@ def _queue_notification(event: str, symbol: str, direction: str, volume: float,
         notif["ticket"] = str(args[0]) if args else ""
     elif event == "EXIT":
         notif["reason"] = reason_or_sl
-        notif["net_pnl"] = args[3] if len(args) > 3 else 0
-        notif["gross_pnl"] = args[2] if len(args) > 2 else 0
-        notif["fees"] = args[4] if len(args) > 4 else 0
-        notif["points"] = args[5] if len(args) > 5 else 0
+        # args = (net_pnl, gross_pnl, fees, gross_pts, trade_id) — alinhado com log_exit L243
+        notif["net_pnl"] = args[0] if len(args) > 0 else 0
+        notif["gross_pnl"] = args[1] if len(args) > 1 else 0
+        notif["fees"] = args[2] if len(args) > 2 else 0
+        notif["points"] = args[3] if len(args) > 3 else 0
 
     try:
         with open(NOTIFICATION_FILE, "a") as f:

@@ -41,11 +41,20 @@ SNAPSHOT_FILE = Path("/tmp/vt_market_state.json")
 ANOMALY_FILE = Path("/tmp/vt_anomalies.jsonl")
 SNAPSHOT_HISTORY = Path("/tmp/vt_market_history.jsonl")
 
-# Médias históricas (populadas ao longo do dia)
-METRICS_BUFFER = {
-    "WIN": {"volumes": deque(maxlen=40), "atrs": deque(maxlen=40), "spreads": deque(maxlen=40)},
-    "WDO": {"volumes": deque(maxlen=40), "atrs": deque(maxlen=40), "spreads": deque(maxlen=40)},
-}
+# Médias históricas (populadas ao longo do dia) — inicializadas para TODOS os ativos
+def _init_metrics_buffer():
+    """Cria METRICS_BUFFER dinamicamente a partir dos símbolos ativos no config."""
+    buf = {}
+    try:
+        from vt_config_loader import CONFIG as _cfg
+        symbols = _cfg.get("symbols", ["WIN", "WDO", "BIT", "DOL", "IND", "WSP"])
+    except Exception:
+        symbols = ["WIN", "WDO", "BIT", "DOL", "IND", "WSP"]
+    for sym in symbols:
+        buf[sym] = {"volumes": deque(maxlen=40), "atrs": deque(maxlen=40), "spreads": deque(maxlen=40)}
+    return buf
+
+METRICS_BUFFER = _init_metrics_buffer()
 
 
 def log_anomaly(symbol, event_type, data):

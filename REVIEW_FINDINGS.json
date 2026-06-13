@@ -1,0 +1,86 @@
+[
+  {
+    "severity": "CRITICAL",
+    "file": "vt_autotrader.py",
+    "line": "308-317 (calculate_adx)",
+    "issue": "+DM/-DM are computed directly on bars[:period*2] which is NEWEST-FIRST, without reversing to chronological order. Because directional movement compares consecutive bars, the sign is inverted: plus_dm gets credit for DOWN moves and minus_dm for UP moves. The returned +DI/-DI are SWAPPED. Verified empirically: a clean uptrend yields plus_di=0.0, minus_di=25.0; a downtrend yields plus_di=25.0, minus_di=0.0. This inverts the DI-confirmation logic in 6 strategies (ema_pullback, smart_ema, adx_trend, strong_trend, ema_crossover, macd_momentum): e.g. their guard `if is_uptrend and plus_di < minus_di: return None` now returns None during real uptrends, suppressing almost every legitimate trend entry. Note calculate_ema and macd_momentum DO reverse bars, so this is an inconsistency.",
+    "fix_suggestion": "Reverse to chronological before computing DM/TR, mirroring calculate_ema: `highs=[b['high'] for b in reversed(bars[:period*2])]` (and lows/closes likewise), then iterate oldest->newest. Recompute and assert plus_di>minus_di on an uptrend."
+  },
+  {
+    "severity": "HIGH",
+    "file": "vt_autotrader.py",
+    "line": "324-337 (calculate_adx)",
+    "issue": "The function returns a SINGLE DX value (100*abs(+DI-(-DI))/(+DI+(-DI)) computed once from the final smoothed DIs) but labels it 'ADX'. True Wilder ADX is the smoothed average of DX over `period` bars. The returned value is therefore far noisier than a real ADX, so threshold comparisons (adx_threshold 15-30) do not behave as intended — trend strength flickers above/below the threshold bar-to-bar. Compounds the CRITICAL DI-swap bug.",
+    "fix_suggestion": "Accumulate a DX value at each smoothed step and apply Wilder smoothing to the DX series (adx = (adx*(period-1)+dx)/period), or average the last `period` DX values. Return that smoothed ADX."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "strategies/adx_trend.py + strategies/strong_trend.py",
+    "line": "adx_trend.py:98-99; strong_trend.py:89-90",
+    "issue": "Volume confirmation uses direct key access `sum(b[\"volume\"] for b in bars[:5]) / 5`. Other strategies (macd_momentum.py:130, smart_ema.py:98, win_reversion.py:57) use the defensive form `float(b.get(\"volume\", 1) or 1)`. The direct form raises KeyError if a bar dict ever lacks 'volume' (synthetic/backtest bars, forex-style feeds) and also treats volume=0 differently from the defensive form (which coerces 0->1). Inconsistent zero-handling skews the recent_vol/avg_vol ratio.",
+    "fix_suggestion": "Replace with `float(b.get(\"volume\", 1) or 1)` for parity with the other strategies."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "vt_autotrader.py",
+    "line": "277-286 (calculate_rsi)",
+    "issue": "Loop bound `range(min(period+1, len(bars)-1))` collects `period+1` deltas whenever len(bars) > period+1 (the common case, e.g. bars_count=45, period=14 -> 15 deltas) but the averages are divided by `period` (sum(gains)/period). The denominator is off-by-one, producing a systematic ~1/period inflation of avg_gain/avg_loss and hence a biased RSI. Also the `else 0.001` fallback on avg_loss is dead (losses is always populated) and when avg_loss==0 RSI becomes ~99.0 instead of 100.",
+    "fix_suggestion": "Iterate exactly `period` deltas: `for i in range(period)` (the len(bars)>=period+1 guard already guarantees enough data), then `avg_gain=sum(gains)/period; avg_loss=sum(losses)/period`. Handle avg_loss==0 by returning 100.0 directly."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "strategies/ema_pullback.py",
+    "line": "43",
+    "issue": "min_bars = max(ema_slow_period, adx_period) + 5 (=26 for defaults) but calculate_adx requires `period*2` bars (=28) and returns 0,0,0 otherwise. With 26-27 bars calculate_adx returns 0 -> the guard `if adx_val == 0: return None` silently kills all signals. adx_trend/smart_trend/strong_trend correctly use `max(ema_slow, adx_period*2)+5`; ema_pullback is inconsistent. Currently masked because config bars_count=45, but any reduction makes EMA_PULLBACK silently never fire.",
+    "fix_suggestion": "Change to `max(ema_slow_period, adx_period * 2) + 5` to match calculate_adx's real requirement."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "strategies/ema_pullback.py + strategies/smart_ema.py + strategies/adx_trend.py",
+    "line": "ema_pullback.py:90-95 & 114-119; smart_ema.py:123-126 & 140-143; adx_trend.py:85-94",
+    "issue": "After the config-driven RSI filter (`if rsi > rsi_ob: return None`) these add a hardcoded `if rsi > 65: return None` (BUY) / `if rsi < 35: return None` (SELL). Since 65 < the configured overbought (e.g. 70/80), the hardcoded line always fires first, making the config rsi_overbought/rsi_oversold dead code — the effective threshold is pinned to 65/35 regardless of operator config. For adx_trend this contradicts its stated 'aggressive trend' purpose (it only enters when 35<=rsi<=65).",
+    "fix_suggestion": "Remove the hardcoded 65/35 lines, or expose them as a real param (e.g. rsi_chase_limit) read from params so config actually controls them."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "strategies/bollinger.py + strategies/win_reversion.py + vt_config.json",
+    "line": "bollinger.py:27-28; win_reversion.py:41-42; vt_config.json win.rsi_overbought/oversold=70/30",
+    "issue": "Mean-reversion strategies default RSI to 70/30 (config also sets WIN to 70/30). Requiring RSI<30 AND price<=lower-Bollinger is a double-extreme filter that rarely triggers, so the reversal strategies seldom fire. The review brief recommends ~60/40 for BOLLINGER mean-reversion to enter more readily.",
+    "fix_suggestion": "Relax mean-reversion RSI bands in config to roughly rsi_overbought~40-45 / rsi_oversold~55-60 (or 60/40 for the lower/upper confirm) and update the code defaults accordingly."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "strategies/ema_crossover.py",
+    "line": "34-48",
+    "issue": "No min_bars guard before invoking calculate_ema/calculate_adx/calculate_rsi (all other ADX strategies guard explicitly). It relies entirely on the utils returning 0 to trip the `if ema_fast_val==0 ...: return None` guard. Additionally it recomputes previous EMAs by slicing bars[1:] twice (lines 47-48), which works but is fragile on short data and inefficient.",
+    "fix_suggestion": "Add `if not bars or len(bars) < max(ema_slow_period, adx_period*2)+5: return None` at the top, matching the other strategies."
+  },
+  {
+    "severity": "LOW",
+    "file": "strategies/bollinger.py",
+    "line": "13-30",
+    "issue": "No explicit min_bars guard; relies on calculate_bollinger returning (0,0,0) when len(bars)<bb_period to trip the `if bb_upper==0 or bb_lower==0: return None` guard. Functionally safe but fragile and inconsistent with the documented '~25 bars' requirement.",
+    "fix_suggestion": "Add `if not bars or len(bars) < max(bb_period, rsi_period)+5: return None`."
+  },
+  {
+    "severity": "LOW",
+    "file": "strategies/win_reversion.py",
+    "line": "14-15 vs 69,73",
+    "issue": "Docstring states 'volume > 1.5x avg' but the actual code checks `vol_ratio > 1.2`. Documentation/code mismatch.",
+    "fix_suggestion": "Align docstring to 1.2x or change the threshold to 1.5 to match the documented intent."
+  },
+  {
+    "severity": "LOW",
+    "file": "strategies/smart_ema.py",
+    "line": "123-126 & 140-143",
+    "issue": "Redundant RSI checks: `if rsi > rsi_ob (80): return None` immediately followed by `if rsi > 65: return None`. The first check is dead code since 65<80 (any rsi>65 already returns). Pure clarity/maintainability issue (also covered functionally by the hardcoded-65/35 finding).",
+    "fix_suggestion": "Drop the redundant first check or consolidate into a single configurable threshold."
+  },
+  {
+    "severity": "LOW",
+    "file": "agent/.env",
+    "line": "3,5 (ZAI_API_KEY, TUSHARE_TOKEN)",
+    "issue": "Live-looking API keys are stored in agent/.env (ZAI_API_KEY=4e0d1b..., TUSHARE_TOKEN=CORS_O...). Both .env and agent/.env ARE listed in .gitignore so they are not committed to git, but if these are real (non-redacted) credentials they should be rotated as a precaution and loaded from a secret manager.",
+    "fix_suggestion": "Confirm values are redacted placeholders; if real, rotate and keep them strictly out of any shared/volume-mounted path."
+  }
+]
