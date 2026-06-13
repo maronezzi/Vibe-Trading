@@ -439,23 +439,73 @@ def tinyfish_agent(url: str, goal: str, timeout: int = 60) -> str:
         return ""
 
 
-def web_intel_for_symbol(symbol: str) -> dict:
-    """Coleta inteligência de mercado via tinyfish para um símbolo B3.
+# Mapeamento de estratégias do Vibe-Trading → queries técnicas no tinyfish
+TECHNICAL_QUERIES = {
+    "BOLLINGER": [
+        "Bollinger Bands day trade configurações BB_std período 20",
+        "Bollinger Bands squeeze breakout estratégia B3 mini índice",
+        "Bollinger Bands RSI combinação sinais day trade",
+    ],
+    "VWAP": [
+        "VWAP pullback day trade estratégia B3 mini dólar",
+        "VWAP desvio padrão bandas day trade",
+        "VWAP mean reversion intraday estratégia",
+    ],
+    "EMA_PULLBACK": [
+        "EMA pullback day trade estratégia mini índice B3",
+        "EMA 9 21 cruzamento pullback ADX filtro",
+        "exponential moving average pullback continuation pattern",
+    ],
+    "MACD_MOMENTUM": [
+        "MACD momentum day trade mini S&P 500",
+        "MACD signal line crossover histogram trading strategy",
+        "MACD zero line rejection intraday",
+    ],
+    "RSI": [
+        "RSI overbought oversold day trade períodos 7 14 21",
+        "RSI divergence day trade sinais",
+        "índice força relativa configuracao period ideal",
+    ],
+    "ADX": [
+        "ADX trend strength day trade filtro +DI -DI",
+        "ADX período 14 configuração ideal day trade",
+        "Average Directional Index trend following B3",
+    ],
+    "ATR": [
+        "ATR Average True Range stop loss day trade mini índice",
+        "ATR multiplicador SL trailing stop ideal",
+        "ATR volatility position sizing day trade",
+    ],
+    "GENERAL": [
+        "day trade B3 mini índice configuração indicadores",
+        "scalping day trade parâmetros ideais stochastic RSI MACD",
+        "suporte resistência day trade B3 pullback reversal",
+    ],
+}
 
-    Inclui:
-    - Calendário econômico (BCB, FOMC, payroll)
-    - Notícias recentes do ativo
-    - Volatilidade histórica recente
-    - Melhores práticas SL/ATR para o ativo
 
-    Retorna dict com chaves: market_news, calendar_events, best_practices, sources
+def web_intel_for_symbol(symbol: str, strategy: str = None) -> dict:
+    """Coleta inteligência TÉCNICA de mercado via tinyfish para um símbolo B3.
+
+    Foco 100% técnico (operação é puramente técnica, sem fundamentalismo):
+    - Estratégia do ativo (BB/VWAP/EMA/MACD) → melhores configurações
+    - Períodos ideais de indicadores (RSI 7/14/21, ADX 14, BB 20)
+    - SL/ATR — multiplicador, trailing stop
+    - Padrões de pullback, breakout, mean reversion
+    - Suporte/resistência, S/R dinâmico
+
+    Retorna dict com chaves: strategy_tips, indicator_settings,
+    sl_trail_tactics, patterns, sources
     """
     result = {
         "symbol": symbol,
-        "market_news": [],
-        "calendar_events": "",
-        "best_practices": "",
+        "strategy": strategy,
+        "strategy_tips": "",
+        "indicator_settings": "",
+        "sl_trail_tactics": "",
+        "patterns": "",
         "sources": [],
+        "queries_made": [],
         "fetched_at": datetime.now().isoformat(),
     }
 
@@ -474,59 +524,81 @@ def web_intel_for_symbol(symbol: str) -> dict:
     }
     name = symbol_map.get(symbol, symbol)
 
-    # 1. Buscar calendário econômico recente
+    # 1. Configurações da estratégia do ativo (prioritário)
+    if strategy and strategy in TECHNICAL_QUERIES:
+        try:
+            queries = TECHNICAL_QUERIES[strategy]
+            all_text = []
+            for q in queries[:2]:  # 2 queries por categoria
+                result["queries_made"].append(q)
+                r = tinyfish_search(q, num_results=2, timeout=12)
+                urls = [x.get("url", x.get("link", "")) for x in r if x.get("url") or x.get("link")]
+                urls = [u for u in urls if u][:1]
+                if urls:
+                    text = tinyfish_fetch(urls, max_chars=1000, timeout=15)
+                    if text:
+                        all_text.append(text)
+                        result["sources"].extend(urls)
+            result["strategy_tips"] = "\n\n---\n\n".join(all_text)
+        except Exception as e:
+            log.warning(f"web intel strategy tips erro: {e}")
+
+    # 2. Configurações ideais de indicadores (períodos, std)
     try:
-        cal_results = tinyfish_search(
-            f"calendário econômico Brasil {datetime.now().strftime('%B %Y')} FOMC BCB",
-            num_results=3,
-            timeout=15,
-        )
-        if cal_results:
-            urls = [r.get("url", r.get("link", "")) for r in cal_results if r.get("url") or r.get("link")]
+        ind_queries = TECHNICAL_QUERIES.get("GENERAL", [])
+        all_text = []
+        for q in ind_queries[:1]:  # só 1 query pra economizar tempo
+            result["queries_made"].append(q)
+            r = tinyfish_search(q, num_results=3, timeout=12)
+            urls = [x.get("url", x.get("link", "")) for x in r if x.get("url") or x.get("link")]
             urls = [u for u in urls if u][:2]
             if urls:
-                text = tinyfish_fetch(urls, max_chars=1500, timeout=20)
-                result["calendar_events"] = text
-                result["sources"].extend(urls)
+                text = tinyfish_fetch(urls, max_chars=1200, timeout=15)
+                if text:
+                    all_text.append(text)
+                    result["sources"].extend(urls)
+        result["indicator_settings"] = "\n\n---\n\n".join(all_text)
     except Exception as e:
-        log.warning(f"web intel calendar erro: {e}")
+        log.warning(f"web intel indicator settings erro: {e}")
 
-    # 2. Buscar notícias do ativo + volatilidade recente
+    # 3. SL/ATR/Trailing — táticas operacionais
     try:
-        news_results = tinyfish_search(
-            f"{name} volatilidade análise técnica {datetime.now().strftime('%B')}",
-            num_results=4,
-            timeout=15,
-        )
-        for r in news_results:
-            result["market_news"].append({
-                "title": r.get("title", ""),
-                "url": r.get("url", r.get("link", "")),
-                "snippet": r.get("snippet", r.get("description", "")),
-            })
-            if r.get("url") or r.get("link"):
-                result["sources"].append(r.get("url") or r.get("link"))
+        sl_queries = TECHNICAL_QUERIES.get("ATR", [])
+        all_text = []
+        for q in sl_queries[:1]:
+            result["queries_made"].append(q)
+            r = tinyfish_search(q, num_results=3, timeout=12)
+            urls = [x.get("url", x.get("link", "")) for x in r if x.get("url") or x.get("link")]
+            urls = [u for u in urls if u][:2]
+            if urls:
+                text = tinyfish_fetch(urls, max_chars=1200, timeout=15)
+                if text:
+                    all_text.append(text)
+                    result["sources"].extend(urls)
+        result["sl_trail_tactics"] = "\n\n---\n\n".join(all_text)
     except Exception as e:
-        log.warning(f"web intel news erro: {e}")
+        log.warning(f"web intel SL tactics erro: {e}")
 
-    # 3. Buscar melhores práticas SL/ATR para o tipo de ativo
+    # 4. Padrões gráficos aplicáveis (pullback, breakout, mean reversion)
     try:
-        bp_results = tinyfish_search(
-            f"stop loss ATR mini índice WIN mini dólar melhores práticas day trade",
-            num_results=3,
-            timeout=15,
-        )
-        urls = [r.get("url", r.get("link", "")) for r in bp_results if r.get("url") or r.get("link")]
+        pattern_query = f"{name} day trade padrões pullback breakout mean reversion suporte resistência"
+        result["queries_made"].append(pattern_query)
+        r = tinyfish_search(pattern_query, num_results=3, timeout=12)
+        urls = [x.get("url", x.get("link", "")) for x in r if x.get("url") or x.get("link")]
         urls = [u for u in urls if u][:2]
         if urls:
-            text = tinyfish_fetch(urls, max_chars=1500, timeout=20)
-            result["best_practices"] = text
+            text = tinyfish_fetch(urls, max_chars=1000, timeout=15)
+            result["patterns"] = text
+            result["sources"].extend(urls)
     except Exception as e:
-        log.warning(f"web intel best practices erro: {e}")
+        log.warning(f"web intel patterns erro: {e}")
 
-    log.info(f"🌐 Web intel para {symbol}: {len(result['market_news'])} notícias, "
-             f"calendar: {len(result['calendar_events'])} chars, "
-             f"best_practices: {len(result['best_practices'])} chars")
+    log.info(f"🌐 Web intel (técnica) para {symbol} [{strategy}]: "
+             f"strategy_tips={len(result['strategy_tips'])}ch, "
+             f"indicators={len(result['indicator_settings'])}ch, "
+             f"sl_tactics={len(result['sl_trail_tactics'])}ch, "
+             f"patterns={len(result['patterns'])}ch, "
+             f"{len(result['sources'])} fontes")
     return result
 
 
@@ -631,36 +703,43 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
 {chr(10).join(config_lines)}
 """
 
-    # Adicionar seção de web intelligence (se houver)
+    # Adicionar seção de web intelligence (técnica) se houver
     if web_intel:
-        prompt += "\n## 🌐 INTELIGÊNCIA DE MERCADO (pesquisa web via tinyfish)\n"
+        prompt += "\n## 🌐 INTELIGÊNCIA TÉCNICA (pesquisa web via tinyfish)\n"
 
-        if web_intel.get("calendar_events"):
-            prompt += f"""
-### Calendário Econômico Relevante
-{web_intel['calendar_events'][:1500]}
+        for sym, intel in web_intel.items():
+            strat = intel.get("strategy", "?")
+            prompt += f"\n### {sym} — Estratégia: {strat}\n"
 
-⚠️ Se houver evento de alto impacto (FOMC, COPOM, payroll, IPCA) agendado, considerar:
-- Reduzir max_daily_trades para evitar volatilidade imprevisível
-- Aumentar sl_atr_mult (SL mais largo) se evento for hoje/amanhã
+            if intel.get("strategy_tips"):
+                prompt += f"""
+#### Dicas de Configuração da Estratégia {strat}
+{intel['strategy_tips'][:1500]}
 """
 
-        if web_intel.get("market_news"):
-            prompt += "\n### Notícias Recentes dos Ativos\n"
-            for n in web_intel["market_news"][:5]:
-                if n.get("title"):
-                    prompt += f"- **{n['title']}**\n  {n.get('snippet', '')[:200]}\n"
-
-        if web_intel.get("best_practices"):
-            prompt += f"""
-### Melhores Práticas SL/ATR (referência web)
-{web_intel['best_practices'][:1500]}
-
-Use essas referências para validar suas sugestões (ex: se a maioria dos traders usa 1.5x ATR para SL, mantenha nesse range).
+            if intel.get("indicator_settings"):
+                prompt += f"""
+#### Configurações Ideais de Indicadores
+{intel['indicator_settings'][:1500]}
 """
 
-        if web_intel.get("sources"):
-            prompt += f"\n### Fontes consultadas: {len(web_intel['sources'])} URLs\n"
+            if intel.get("sl_trail_tactics"):
+                prompt += f"""
+#### Táticas de SL/ATR/Trailing Stop
+{intel['sl_trail_tactics'][:1500]}
+
+⚠️ Use essas referências para calibrar sl_atr_mult, trail_activate e trail_distance
+"""
+
+            if intel.get("patterns"):
+                prompt += f"""
+#### Padrões Gráficos Aplicáveis
+{intel['patterns'][:1000]}
+"""
+
+        if any(intel.get("sources") for intel in web_intel.values()):
+            total_sources = sum(len(intel.get("sources", [])) for intel in web_intel.values())
+            prompt += f"\n*Total: {total_sources} fontes consultadas*\n"
 
     prompt += """
 ## REGRAS
@@ -672,7 +751,10 @@ Use essas referências para validar suas sugestões (ex: se a maioria dos trader
 6. NUNCA sugerir mudanças maiores que 30% do valor atual por parâmetro
 7. Para símbolos lucrativos (PnL > 0): NÃO mudar ou apenas micro-ajustes
 8. Priorize REDUZIR perdas sobre aumentar ganhos
-9. Se a web intel indicar evento macro iminente, considerar parâmetros defensivos
+9. PRIORIZE as dicas de configuração da estratégia vindas da web intel
+   (ex: se a referência indica BB_std=2.5 ideal para day trade, não sugerimos < 2.0)
+10. Se a web intel indica padrão de pullback para o ativo, ajustar pullback_pct coerentemente
+11. Se a web indica RSI ideal = 7 ao invés de 14, considerar usar rsi_period=7
 
 Retorne APENAS um JSON válido (sem markdown, sem comentários):
 {{
@@ -900,18 +982,20 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
 
     # Web intelligence
     if web_intel:
-        print(f"\n🌐 INTELIGÊNCIA DE MERCADO (tinyfish):")
+        print(f"\n🌐 INTELIGÊNCIA TÉCNICA (tinyfish):")
         for sym, intel in web_intel.items():
-            n_news = len(intel.get("market_news", []))
-            has_cal = bool(intel.get("calendar_events"))
-            has_bp = bool(intel.get("best_practices"))
+            n_st = len(intel.get("strategy_tips", ""))
+            n_ind = len(intel.get("indicator_settings", ""))
+            n_sl = len(intel.get("sl_trail_tactics", ""))
+            n_pat = len(intel.get("patterns", ""))
             n_sources = len(intel.get("sources", []))
-            print(f"  {sym}: {n_news} notícias | calendário: {'sim' if has_cal else 'não'} | "
-                  f"best_practices: {'sim' if has_bp else 'não'} | {n_sources} fontes")
-            # Top 3 títulos de notícias
-            for n in intel.get("market_news", [])[:3]:
-                if n.get("title"):
-                    print(f"    • {n['title'][:80]}")
+            n_queries = len(intel.get("queries_made", []))
+            strat = intel.get("strategy", "?")
+            print(f"  {sym} [{strat}]: strategy_tips={n_st}ch, indicators={n_ind}ch, "
+                  f"sl_tactics={n_sl}ch, patterns={n_pat}ch | {n_queries} queries / {n_sources} fontes")
+            # Mostrar queries feitas
+            for q in intel.get("queries_made", [])[:3]:
+                print(f"    🔍 {q[:75]}")
 
     # Changes applied
     if applied:
@@ -970,24 +1054,38 @@ def main():
     # 4. Web intelligence via tinyfish (se habilitado)
     web_intel = {}
     if not args.no_web and _tinyfish_check():
-        log.info("🌐 Coletando inteligência de mercado via tinyfish...")
+        log.info("🌐 Coletando inteligência TÉCNICA via tinyfish...")
         # Focar nos símbolos com problemas (top 3 piores)
         worst_symbols = sorted(
             perf.get("by_symbol", {}).items(),
             key=lambda x: x[1]["total_pnl"]
         )[:3]
         worst_syms = [s[0] for s in worst_symbols]
-        # Sempre inclui o ativo raiz mais negociado para calendário geral
-        root_set = set(worst_syms) | set(["WIN", "WDO"])  # WIN/WDO são os mais sensíveis a macro
+        # Sempre inclui WIN/WDO (mais sensíveis)
+        root_set = set(worst_syms) | set(["WIN", "WDO"])
 
-        for sym in list(root_set)[:3]:  # Limita a 3 símbolos para não demorar muito
+        # Mapear símbolo → estratégia (da config)
+        strat_map = config.get("strategy", {}) or {}
+
+        for sym in list(root_set)[:3]:
             try:
-                intel = web_intel_for_symbol(sym)
-                if intel.get("market_news") or intel.get("calendar_events") or intel.get("best_practices"):
+                # Pegar estratégia do config (pode ser WIN/BIT/DOL/IND/WSP/WDO)
+                # Config key pode ser maiúscula ou minúscula
+                strategy_name = (
+                    strat_map.get(sym) or
+                    strat_map.get(sym.upper()) or
+                    strat_map.get(sym.lower()) or
+                    "GENERAL"
+                )
+                intel = web_intel_for_symbol(sym, strategy=strategy_name)
+                if (intel.get("strategy_tips") or
+                    intel.get("indicator_settings") or
+                    intel.get("sl_trail_tactics") or
+                    intel.get("patterns")):
                     web_intel[sym] = intel
             except Exception as e:
                 log.warning(f"web_intel erro para {sym}: {e}")
-        log.info(f"🌐 Web intel coletada para {len(web_intel)} símbolos")
+        log.info(f"🌐 Web intel técnica coletada para {len(web_intel)} símbolos")
     else:
         if args.no_web:
             log.info("🌐 Web intel desabilitada por --no-web")
