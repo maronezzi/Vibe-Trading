@@ -1,8 +1,8 @@
 {
-  "_version": 46,
-  "_updated_at": "2026-06-13T18:47:35.253493",
-  "_updated_by": "bruno_explorer_fix",
-  "_notes": "v43: Bruno fix manual — Explorer params (BIT/IND/WDO) + reativação BIT/IND/WDO, WIN desativado",
+  "_version": 47,
+  "_updated_at": "2026-06-13T18:48:22.619798",
+  "_updated_by": "bruno_wdo_add",
+  "_notes": "v47: adicionar WDO à lista de símbolos (WDO_M5 ativo com config Explorer)",
   "start_hour": 9,
   "start_minute": 5,
   "close_hour": 16,
@@ -12,7 +12,8 @@
     "BIT",
     "DOL",
     "IND",
-    "WSP"
+    "WSP",
+    "WDO"
   ],
   "timeframes": [
     "M5",
@@ -47,6 +48,9 @@
     "WSP": [
       "M15",
       "M30"
+    ],
+    "WDO": [
+      "M5"
     ]
   },
   "strategy": {
@@ -54,7 +58,8 @@
     "BIT": "VWAP",
     "DOL": "EMA_PULLBACK",
     "IND": "BOLLINGER",
-    "WSP": "MACD_MOMENTUM"
+    "WSP": "MACD_MOMENTUM",
+    "WDO": "VWAP"
   },
   "wdo": {
     "vwap_period": 20,
@@ -102,7 +107,8 @@
     "BIT": "BITM26",
     "DOL": "DOLN26",
     "IND": "INDM26",
-    "WSP": "WSPM26"
+    "WSP": "WSPM26",
+    "WDO": "WDON26"
   },
   "warmup_minutes": 15,
   "winddown_minutes": 15,
