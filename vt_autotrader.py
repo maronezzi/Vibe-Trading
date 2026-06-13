@@ -1135,8 +1135,6 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     trail_act = params.get("trail_activate", 1.5)
     trail_dist_cfg = params.get("trail_distance", 0.5)
 
-    old_sl = pos.get("sl_pts", 0)
-
     # ===== TRAILING POR LUCRO (original) =====
     if not trail_on and atr > 0 and profit_pts >= trail_act * atr:
         trail_on = True
@@ -1505,6 +1503,24 @@ def recover_open_positions():
         if strategy == "BOLLINGER" and bars:
             _, bb_mid, _ = calculate_bollinger(bars, params.get("bb_period", 20), params.get("bb_std", 2.0))
 
+        # Estimar bar_count real a partir do tempo de abertura da posição
+        # (999 causava max_pos_min imediato → fechava posições recuperadas injustamente)
+        check_interval = CONFIG.get("check_interval", 30)
+        _entry_ts = None
+        if db_trade and db_trade.get("entry_time"):
+            try:
+                _dt = datetime.strptime(db_trade["entry_time"], "%Y-%m-%d %H:%M:%S")
+                _entry_ts = _dt.timestamp()
+            except Exception:
+                pass
+        if _entry_ts is None and p.get("time"):
+            _entry_ts = float(p["time"])
+        if _entry_ts:
+            _age_min = max(0, (datetime.now().timestamp() - _entry_ts) / 60)
+            _est_bar_count = int(_age_min / (check_interval / 60))
+        else:
+            _est_bar_count = 1  # fallback conservador
+
         state.positions[f"{symbol}_{tf}"] = {
             "direction": direction,
             "entry_price": entry_price,
@@ -1513,7 +1529,7 @@ def recover_open_positions():
             "atr": atr,
             "trail_on": trail_on,
             "best_price": best,
-            "bar_count": 999,
+            "bar_count": _est_bar_count,
             "trade_log_id": db_trade["id"] if db_trade else None,
             "recovered": True,
             "strategy": strategy,

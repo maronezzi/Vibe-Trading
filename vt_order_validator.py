@@ -203,11 +203,19 @@ def validate_order(order_data: dict, use_llm: bool = True) -> dict:
 
     # 2. Consulta LLM para análise (SEMPRE, não só quando há alertas)
     if use_llm:
+        # Pre-computar point do ativo para prompt limpo (evita double-brace no f-string)
+        _point_map = {"WIN": 1, "BIT": 0.01, "DOL": 0.001, "IND": 1, "WSP": 0.01}
+        _pt = _point_map.get(symbol[:3], 1)
+        _native_sl = sl_pts * _pt
+        _native_atr = atr
+        _ideal_sl_min_pts = int(_native_atr * 1.2 / _pt)
+        _ideal_sl_max_pts = int(_native_atr * 1.5 / _pt)
+
         prompt = f"""Você é um trader profissional. Analise esta ordem e OBRIGATORIAMENTE sugira um SL otimizado.
 
 Símbolo: {symbol} | Direção: {direction} | Entrada: {entry_price}
 SL atual: {sl_pts}pts | ATR: {atr:.2f}pts | Estratégia: {strategy}
-Ponto do ativo: {{"WIN":1,"BIT":0.01,"DOL":0.001,"IND":1,"WSP":0.01}}.get("{symbol[:3]}", 1)
+Ponto do ativo: {_pt}
 
 REGRAS OBRIGATÓRIAS:
 1. SL deve ser entre 1.0x e 2.0x o ATR (em pontos nativos do ativo)
@@ -215,9 +223,9 @@ REGRAS OBRIGATÓRIAS:
 3. SEMPRE retorne um sl_sugerido OTIMIZADO (não retorne null)
 4. Se o SL atual já é otimizado, retorne o mesmo valor
 
-Converta {sl_pts}pts executor para pontos nativos: {sl_pts} * {{"WIN":1,"BIT":0.01,"DOL":0.001,"IND":1,"WSP":0.01}}.get("{symbol[:3]}", 1) = {sl_pts * {"WIN":1,"BIT":0.01,"DOL":0.001,"IND":1,"WSP":0.01}.get(symbol[:3], 1)}pts nativos
-ATR atual: {atr:.2f}pts nativos
-SL ideal: {int(atr * 1.2)} a {int(atr * 1.5)}pts nativos = {int(atr * 1.2 / {"WIN":1,"BIT":0.01,"DOL":0.001,"IND":1,"WSP":0.01}.get(symbol[:3], 1))} a {int(atr * 1.5 / {"WIN":1,"BIT":0.01,"DOL":0.001,"IND":1,"WSP":0.01}.get(symbol[:3], 1))}pts executor
+SL atual em pontos nativos: {_native_sl:.1f}pts
+ATR atual: {_native_atr:.2f}pts nativos
+SL ideal: {int(_native_atr * 1.2)} a {int(_native_atr * 1.5)}pts nativos = {_ideal_sl_min_pts} a {_ideal_sl_max_pts}pts executor
 
 Retorne APENAS JSON:
 {{

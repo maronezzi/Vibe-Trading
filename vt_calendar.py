@@ -29,7 +29,7 @@ B3_HOLIDAYS = {
         "05-01",  # Dia do Trabalho
         "06-19",  # Corpus Christi
         "09-07",  # Independência (dia útil nacional, mas B3 opera normalmente)
-        "10-20",  # Nossa Senhora Aparecida (feriado em SP, B3 não fecha) — manter p/ segurança
+        "10-12",  # Nossa Senhora Aparecida
         "11-02",  # Finados
         "11-15",  # Proclamação da República
         "11-20",  # Consciência Negra (feriado nacional desde 2024)

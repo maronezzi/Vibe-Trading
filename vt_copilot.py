@@ -363,7 +363,7 @@ def _apply_pauses(paused_items: list, today: str):
                     log(f"[PAUSA] Removido {sym} de symbols")
                     anything_changed = True
             # Comentar entrada no timeframes_by_symbol
-            for line_match in re.finditer(rf'([ \t]*"[{sym}]":\s*\[[^\]]*\][^\n]*)', content):
+            for line_match in re.finditer(rf'([ \t]*"{re.escape(sym)}":\s*\[[^\]]*\][^\n]*)', content):
                 old_line = line_match.group(0)
                 if not old_line.strip().startswith('#'):
                     content = content.replace(old_line, f'    # {old_line.strip()}  # PAUSADO {today}')
