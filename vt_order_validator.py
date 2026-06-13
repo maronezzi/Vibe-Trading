@@ -45,9 +45,15 @@ def _log(msg: str, file=None):
         f.write(line)
 
 
-def _ask_llm(prompt: str, timeout: int = 30) -> Optional[str]:
-    """Consulta LLM para análise da ordem.
-    Usa o mesmo modelo configurado no Hermes (text-only para economia).
+def _ask_llm(prompt: str, timeout: int = 60) -> Optional[str]:
+    """Consulta LLM ativo no Hermes (mesmo modelo que está rodando).
+
+    Política:
+    - SEMPRE tenta consultar (sem fallback local)
+    - Timeout padrão 60s (LLM com latência pode demorar)
+    - Erros transient (timeout, 5xx): loga warning, retorna None
+    - Erros de saldo (HTTP 429): loga warning, retorna None
+    - Próxima chamada tenta novamente
     """
     try:
         from vt_hermes_helper import find_hermes
@@ -61,21 +67,20 @@ def _ask_llm(prompt: str, timeout: int = 30) -> Optional[str]:
             text=True,
             timeout=timeout
         )
-        if result.returncode == 0:
+        if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
+        # Detectar tipo de erro para log apropriado
+        stderr = (result.stderr or "")[:200]
+        if "429" in stderr or "balance" in stderr.lower() or "quota" in stderr.lower():
+            _log(f"[WARN] LLM sem saldo (HTTP 429): {stderr[:100]}")
         else:
-            # Detectar erros de saldo/quota — não continuar tentando
-            stderr = result.stderr[:200] if result.stderr else ""
-            if "429" in stderr or "balance" in stderr.lower() or "quota" in stderr.lower():
-                _log(f"[WARN] LLM sem saldo/quota (HTTP 429): {stderr}")
-            else:
-                _log(f"[WARN] LLM retornou erro (rc={result.returncode}): {stderr}")
-            return None
+            _log(f"[WARN] LLM erro (rc={result.returncode}): {stderr[:100]}")
+        return None
     except subprocess.TimeoutExpired:
-        _log(f"[WARN] LLM timeout ({timeout}s)")
+        _log(f"[WARN] LLM timeout ({timeout}s) — próxima chamada tentará novamente")
         return None
     except Exception as e:
-        _log(f"[WARN] Erro ao consultar LLM: {e}")
+        _log(f"[WARN] Erro LLM: {e}")
         return None
 
 
