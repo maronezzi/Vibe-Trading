@@ -444,13 +444,25 @@ def _is_safe_time_window() -> bool:
     return True
 
 
-def _check_cooldown(symbol: str, params: dict) -> bool:
-    """Retorna True se pode operar (cooldown ok)."""
+def _check_cooldown(symbol: str, params: dict, tf: str = "", direction: str = "") -> bool:
+    """Retorna True se pode operar (cooldown ok).
+    Cooldown por (symbol, tf, direction) para evitar reversões rápidas.
+    Falls back a cooldown por symbol se tf/direction vazios.
+    """
     now = datetime.now()
-    last_time = state.last_trade_time.get(symbol)
-    if last_time:
-        elapsed = (now - last_time).total_seconds()
-        if elapsed < params.get("cooldown_seconds", 300):
+    cd = params.get("cooldown_seconds", 300)
+    if tf and direction:
+        key = f"{symbol}_{tf}_{direction}"
+        last_time = state.last_trade_time.get(key)
+        if last_time:
+            elapsed = (now - last_time).total_seconds()
+            if elapsed < cd:
+                return False
+    # Também checa cooldown por symbol (proteção geral)
+    last_time_sym = state.last_trade_time.get(symbol)
+    if last_time_sym:
+        elapsed = (now - last_time_sym).total_seconds()
+        if elapsed < cd * 0.6:  # symbol-level cooldown pode ser 60% do per-direction
             return False
     return True
 
@@ -565,7 +577,10 @@ def check_and_trade():
                 manage_position(symbol, tf, pos, atr, strategy, params)
             else:
                 # ===== SAFETY CHECKS (cooldown, max, consecutive losses) =====
-                if not _check_cooldown(symbol, params):
+                # Cooldown precisa de tf e direction — mas ainda não sabemos a direction
+                # do sinal. Pré-checa por symbol-level apenas aqui; por direction
+                # é re-checado dentro da strategy_func antes de executar.
+                if not _check_cooldown(symbol, params, tf=tf):
                     continue
                 if not _check_max_trades(params, symbol):
                     log(f"[BLOQUEADO] {symbol} {tf} — máximo diário atingido")
@@ -597,7 +612,7 @@ def check_entry_vwap(symbol: str, tf: str, price: float,
         params = CONFIG.get("win", {})
     _reset_daily_counter()
 
-    if not _check_cooldown(symbol, params):
+    if not _check_cooldown(symbol, params, tf=tf):
         return
 
     if not _check_max_trades(params, symbol):
@@ -688,7 +703,7 @@ def check_entry_bollinger(symbol: str, tf: str, price: float,
         params = CONFIG.get("win", {})
     _reset_daily_counter()
 
-    if not _check_cooldown(symbol, params):
+    if not _check_cooldown(symbol, params, tf=tf):
         return
 
     if not _check_max_trades(params, symbol):
@@ -763,7 +778,7 @@ def check_entry_ema_crossover(symbol: str, tf: str, price: float,
         params = CONFIG.get("win", {})
     _reset_daily_counter()
 
-    if not _check_cooldown(symbol, params):
+    if not _check_cooldown(symbol, params, tf=tf):
         return
 
     if not _check_max_trades(params, symbol):
@@ -831,38 +846,46 @@ def _calc_sl(symbol: str, atr: float, params: dict = None) -> int:
 
     ATR vem em "pontos nativos" do preço (ex: DOL ATR≈4.5 pts).
     point_mult converte pra unidades do executor (sl_pts * mt5_point = dist).
-    
+
     min_native é o SL MÍNIMO em pontos nativos (antes do point_mult):
     - WIN/IND: 150 pts (1.0 → sl_pts direto)
     - WDO/DOL: 3 pts  (point=0.001 → sl_pts * 1000)
     - BIT:     30 pts  (point=0.01  → sl_pts * 100)
     - WSP:      5 pts  (point=0.01  → sl_pts * 100)
+
+    MAX_NATIVE é o SL MÁXIMO (proteção contra ATR inflado ou sl_atr_mult muito alto):
+    - BIT:    500 pts nativos (com mult 0.5 = R$ 250 de risco máximo)
+    - IND:    600 pts nativos (com mult 1.0 = R$ 600 de risco)
+    - WDO/DOL: 80 pts nativos (com mult 10/50 = R$ 800/4000 de risco)
+    - WIN:    800 pts nativos (com mult 0.2 = R$ 160 de risco)
+    - WSP:   300 pts nativos (com mult 2.5 = R$ 750 de risco)
     """
     _root = "WIN" if "WIN" in symbol else "WDO" if "WDO" in symbol else \
             "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
             "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else "WIN"
-    
+
     if params is None:
         params = CONFIG.get(_root.lower(), CONFIG.get("win", {}))
-    
-    # Specs: min_native em pontos do preço, point_mult = 1/mt5_point
+
+    # Specs: min/max_native em pontos do preço, point_mult = 1/mt5_point
     _specs = {
-        "WIN": {"min_native": 150, "point_mult": 1},
-        "WDO": {"min_native": 3,   "point_mult": 1000},
-        "BIT": {"min_native": 30,  "point_mult": 100},
-        "DOL": {"min_native": 3,   "point_mult": 1000},
-        "IND": {"min_native": 150, "point_mult": 1},
-        "WSP": {"min_native": 5,   "point_mult": 100},
+        "WIN": {"min_native": 150, "max_native": 800, "point_mult": 1},
+        "WDO": {"min_native": 3,   "max_native": 80,  "point_mult": 1000},
+        "BIT": {"min_native": 30,  "max_native": 350, "point_mult": 100},
+        "DOL": {"min_native": 3,   "max_native": 40,  "point_mult": 1000},
+        "IND": {"min_native": 150, "max_native": 600, "point_mult": 1},
+        "WSP": {"min_native": 5,   "max_native": 200, "point_mult": 100},
     }
-    spec = _specs.get(_root, {"min_native": 100, "point_mult": 1})
-    
+    spec = _specs.get(_root, {"min_native": 100, "max_native": 500, "point_mult": 1})
+
     # SL em pontos nativos (= distância em preço)
     sl_native = int(atr * params.get("sl_atr_mult", 1.5))
-    sl_native = max(sl_native, spec["min_native"])
-    
+    # Aplicar limites min/max (CRÍTICO: max protege contra losses catastróficos)
+    sl_native = max(spec["min_native"], min(sl_native, spec["max_native"]))
+
     # Converter pra unidades do executor
     sl_pts = sl_native * spec["point_mult"]
-    
+
     # Arredondar pra múltiplo de 5
     return ((sl_pts + 4) // 5) * 5
 
@@ -890,6 +913,16 @@ def _defenses_ok(symbol: str, tf: str, direction: str, bar_ts) -> bool:
     if last and last.get("bar_ts") is not None and last.get("bar_ts") == bar_ts:
         return False
 
+    # Defesa 4: cooldown por (symbol, tf, direction) — evita reversão rápida
+    dir_key = f"{symbol}_{tf}_{direction}"
+    last_dir_time = state.last_trade_time.get(dir_key)
+    if last_dir_time:
+        _root = symbol[:3] if len(symbol) >= 3 else symbol
+        _params = CONFIG.get(_root.lower(), CONFIG.get("win", {}))
+        cd = _params.get("cooldown_seconds", 300)
+        if (datetime.now() - last_dir_time).total_seconds() < cd:
+            return False
+
     return True
 
 
@@ -909,10 +942,17 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
     log(f"[SINAL] {symbol} {tf}: {direction} @ {price:.2f} | {' | '.join(detail_parts)}")
 
     # Ordem com auto-recuperação
+    _vol_by_sym = CONFIG.get("volume_by_symbol", {})
+    _root_vol = ""
+    for r in ["WIN", "WDO", "BIT", "DOL", "IND", "WSP"]:
+        if r in symbol:
+            _root_vol = r
+            break
+    _vol = _vol_by_sym.get(_root_vol, CONFIG["volume"])
     if direction == "BUY":
-        result = safe_buy(symbol, CONFIG["volume"], sl_pts=sl_pts, strategy=strategy)
+        result = safe_buy(symbol, _vol, sl_pts=sl_pts, strategy=strategy)
     else:
-        result = safe_sell(symbol, CONFIG["volume"], sl_pts=sl_pts, strategy=strategy)
+        result = safe_sell(symbol, _vol, sl_pts=sl_pts, strategy=strategy)
 
     if result.get("status") == "FILLED":
         ticket = result.get("ticket", "?")
@@ -927,7 +967,7 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                 "sl_pts": sl_pts,
                 "atr": atr,
                 "strategy": strategy,
-                "volume": CONFIG["volume"],
+                "volume": _vol,
                 "ticket": ticket,
             }
             use_llm = CONFIG.get("validate_with_llm", False)
@@ -1041,7 +1081,7 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
         entry_sl_price = exec_price - sl_pts * point_val if direction == "BUY" else exec_price + sl_pts * point_val
         trade_id = log_entry(
             symbol=symbol, direction=direction,
-            volume=CONFIG["volume"],
+            volume=_vol,
             entry_price=exec_price,
             entry_sl=entry_sl_price,
             entry_ticket=ticket,
@@ -1067,8 +1107,11 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             "entry_time": datetime.now(),
         }
 
-        # Cooldown
-        state.last_trade_time[symbol] = datetime.now()
+        # Cooldown (por symbol, tf, direction — evita reversões rápidas)
+        now = datetime.now()
+        state.last_trade_time[symbol] = now
+        state.last_trade_time[f"{symbol}_{tf}"] = now
+        state.last_trade_time[f"{symbol}_{tf}_{direction}"] = now
         state.daily_trade_count += 1
         state.daily_trade_by_symbol[symbol] = state.daily_trade_by_symbol.get(symbol, 0) + 1
         state.save()  # persistir estado
@@ -1143,11 +1186,11 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     pos_minutes = bar_count * check_interval / 60
 
     # Parâmetros de proteção temporal
-    breakeven_min = params.get("breakeven_minutes", 15)
-    time_trail_min = params.get("time_trail_minutes", 30)
-    max_pos_min = params.get("max_position_minutes", 120)
-    trail_act = params.get("trail_activate", 1.5)
-    trail_dist_cfg = params.get("trail_distance", 0.5)
+    breakeven_min = params.get("breakeven_minutes", 10)  # ANTES 15, AGORA 10 (mais cedo)
+    time_trail_min = params.get("time_trail_minutes", 20)  # ANTES 30, AGORA 20
+    max_pos_min = params.get("max_position_minutes", 60)  # ANTES 120, AGORA 60
+    trail_act = params.get("trail_activate", 1.0)  # ANTES 1.5, AGORA 1.0 (ativa mais cedo)
+    trail_dist_cfg = params.get("trail_distance", 0.4)  # ANTES 0.5, AGORA 0.4 (mais apertado)
 
     # ===== TRAILING POR LUCRO (original) =====
     if not trail_on and atr > 0 and profit_pts >= trail_act * atr:
