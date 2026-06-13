@@ -140,28 +140,33 @@ def _validate_sl_locally(order_data: dict) -> list:
             })
 
     # 4. Verificar se SL está do lado errado (CAUSA DE PERDAS CATASTRÓFICAS)
-    # sl_pts em executor points; converter para distância em preço nativo
-    sl_price_distance = sl_pts / _point_mult if _point_mult > 0 else sl_pts
-    if entry_price > 0 and sl_pts > 0:
+    # Replicar lógica do executor MT5:
+    #   BUY:  raw_sl = price - cur_sl_pts * point
+    #   SELL: raw_sl = price + cur_sl_pts * point
+    # Se sl_pts é negativo, o lado INVERTE:
+    #   BUY com sl_pts<0  → raw_sl = price + |sl|*point → ACIMA (errado)
+    #   SELL com sl_pts<0 → raw_sl = price - |sl|*point → ABAIXO (errado)
+    sl_native_distance = sl_pts * _point_mult  # em pontos nativos (pode ser negativo)
+    if entry_price > 0 and sl_pts != 0:
         if direction == "BUY":
-            # BUY: SL deve estar ABAIXO da entrada
-            sl_price = entry_price - sl_price_distance
-            if sl_price > entry_price:
+            # SL efetivo = entry - distância (em nativo). Positivo = SL abaixo. Negativo = SL acima.
+            sl_price = entry_price - sl_native_distance
+            if sl_price >= entry_price:
                 alerts.append({
                     "type": "SL_LADO_ERRADO",
                     "severity": "CRITICAL",
-                    "detail": f"BUY mas SL ({sl_price:.2f}) está ACIMA da entrada ({entry_price}). SL invertido!",
-                    "suggestion": f"SL deve estar ABAIXO de {entry_price:.2f} para BUY"
+                    "detail": f"BUY com sl_pts={sl_pts} → SL efetivo {sl_price:.2f} está ACIMA da entrada {entry_price:.2f}. SL INVERTIDO (perda sem limite)!",
+                    "suggestion": f"Usar sl_pts POSITIVO (ex: 600pts = 600 nativos abaixo de {entry_price:.2f})"
                 })
         elif direction == "SELL":
-            # SELL: SL deve estar ACIMA da entrada
-            sl_price = entry_price + sl_price_distance
-            if sl_price < entry_price:
+            # SL efetivo = entry + distância. Positivo = SL acima. Negativo = SL abaixo.
+            sl_price = entry_price + sl_native_distance
+            if sl_price <= entry_price:
                 alerts.append({
                     "type": "SL_LADO_ERRADO",
                     "severity": "CRITICAL",
-                    "detail": f"SELL mas SL ({sl_price:.2f}) está ABAIXO da entrada ({entry_price}). SL invertido!",
-                    "suggestion": f"SL deve estar ACIMA de {entry_price:.2f} para SELL"
+                    "detail": f"SELL com sl_pts={sl_pts} → SL efetivo {sl_price:.2f} está ABAIXO da entrada {entry_price:.2f}. SL INVERTIDO (perda sem limite)!",
+                    "suggestion": f"Usar sl_pts POSITIVO (ex: 3000pts = 3.0 nativos acima de {entry_price:.2f})"
                 })
 
     return alerts
