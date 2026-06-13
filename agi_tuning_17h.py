@@ -776,9 +776,11 @@ def ask_llm(prompt: str, timeout: int = 300) -> str | None:
         return None
 
 
-def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = None) -> str:
-    """Constrói prompt para o LLM com performance + config atual + problemas + web intel."""
+def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = None,
+                    optimization: dict = None) -> str:
+    """Constrói prompt para o LLM com performance + config atual + problemas + web intel + optimization."""
     web_intel = web_intel or {}
+    optimization = optimization or {}
 
     # Resumo de performance
     perf_lines = []
@@ -849,6 +851,47 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
 {chr(10).join(config_lines)}
 """
 
+    # Adicionar seção de optimization (Strategy Explorer) se houver
+    if optimization:
+        prompt += "\n## 🔬 STRATEGY EXPLORER (busca automática de configs lucrativas)\n"
+        prompt += "O sistema testou 100+ combinações de parâmetros no histórico de 30 dias.\n"
+        prompt += "Símbolos com configs lucrativas encontradas (PF>1 e PnL>0):\n\n"
+
+        for sym, opt in optimization.items():
+            cur_pnl = opt.get("current_pnl", 0)
+            best_pnl = opt.get("best_pnl", 0)
+            improvement = best_pnl - cur_pnl
+            prompt += f"### {sym} — Atual PnL R$ {cur_pnl:+.2f} → Melhor encontrada PnL R$ {best_pnl:+.2f} (Δ R$ {improvement:+.2f})\n"
+            prompt += f"- Profit Factor: {opt.get('best_pf', 0)} (atual deve ser < 1)\n"
+            prompt += f"- Win Rate: {opt.get('best_wr', 0)}%\n"
+            # Sugerir mudança EXPLÍCITA
+            prompt += f"- **MUDANÇA SUGERIDA (já validada)**:\n"
+            prompt += f"  {{\"symbol\": \"{sym}\", \"params\": {{"
+            params_json = []
+            if opt.get('best_sl_atr_mult'):
+                params_json.append(f'"sl_atr_mult": {opt["best_sl_atr_mult"]}')
+            if opt.get('best_cooldown_seconds'):
+                params_json.append(f'"cooldown_seconds": {opt["best_cooldown_seconds"]}')
+            if opt.get('best_bb_std'):
+                params_json.append(f'"bb_std": {opt["best_bb_std"]}')
+            if opt.get('best_rsi_ob'):
+                params_json.append(f'"rsi_overbought": {opt["best_rsi_ob"]}')
+            if opt.get('best_rsi_os'):
+                params_json.append(f'"rsi_oversold": {opt["best_rsi_os"]}')
+            prompt += ", ".join(params_json)
+            prompt += f"}}, \"reason\": \"Strategy Explorer encontrou config lucrativa (PF={opt.get('best_pf', 0)}, WR={opt.get('best_wr', 0)}%)\"}},\n"
+            # Variantes A/B
+            variants = opt.get("variants", [])
+            if variants:
+                prompt += f"- Variantes A/B para testar:\n"
+                for v in variants:
+                    prompt += f"  - `{v['label']}`: esperado R$ {v['expected_pnl']:+.2f}\n"
+            prompt += "\n"
+        prompt += """
+**INSTRUÇÃO DIRETA: INCLUA no array "changes" TODAS as mudanças sugeridas acima (do Explorer).**
+O Explorer testou 100+ combinações e validou essas configs. NÃO desative estes ativos.
+NÃO duvide dos resultados do Explorer — eles são baseados em dados reais.
+"""
     # Adicionar seção de web intelligence (técnica) se houver
     if web_intel:
         prompt += "\n## 🌐 INTELIGÊNCIA TÉCNICA (pesquisa web via tinyfish)\n"
@@ -889,9 +932,9 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
 
     prompt += """
 ## REGRAS
-1. PRIORIDADE MÁXIMA: se um ativo/timeframe está PERDENDO SISTEMATICAMENTE, DESATIVE em vez de ajustar
-2. Se WR < 25% com 5+ trades E PnL negativo: usar "disable_symbol" ou "disable_tf" para PARAR de operar
-3. Se WR 25-40% com PnL negativo: ajustar filtros MAIS restritivos (elevar thresholds, aumentar cooldown, reduzir max_daily_trades)
+1. PRIORIDADE ZERO — LER COM ATENÇÃO: se o Strategy Explorer encontrou config lucrativa (PF>1 E PnL>0) para um símbolo, USE ESSA CONFIG. NÃO desative.
+2. SÓ desative se (a) Explorer NÃO achou config lucrativa E (b) WR < 25% com 5+ trades E PnL negativo
+3. Se WR 25-40% com PnL negativo e Explorer achou config: aplicar config do Explorer (com moderação 30% se quiser)
 4. Se SL_SERVIDOR é a causa principal: ajustar sl_atr_mult (geralmente aumentar 0.2-0.5)
 5. Se worst trade > -500R$: apertar SL (reduzir sl_atr_mult)
 6. Se streak >= 4 perdas: aumentar cooldown_seconds + reduzir max_daily_trades
@@ -900,7 +943,8 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
 9. PRIORIZE as dicas de configuração da estratégia vindas da web intel
 10. Se a web intel indica padrão de pullback para o ativo, ajustar pullback_pct coerentemente
 11. Se a web indica RSI ideal = 7 ao invés de 14, considerar usar rsi_period=7
-12. É MELHOR DESATIVAR e preservar capital do que continuar perdendo com ajustes
+12. LEMBRE-SE: o Explorer testou 100+ combinações — se ele disse "esta config dá lucro", CONFIE NELE
+13. O objetivo é LUCRAR, não sobreviver. Se o Explorer achou config lucrativa, USE-A agressivamente.
 
 Retorne APENAS um JSON válido (sem markdown, sem comentários):
 {{
@@ -1126,7 +1170,8 @@ def notify_telegram(msg: str):
 # ═══════════════════════════════════════════════════════════════════
 
 def print_report(perf: dict, issues: list, llm_result: dict | None,
-                 applied: list, config: dict, dry_run: bool, web_intel: dict = None):
+                 applied: list, config: dict, dry_run: bool, web_intel: dict = None,
+                 optimization: dict = None):
     """Imprime relatório consolidado."""
     print("\n" + "=" * 60)
     print(f"🤖 AGI 17H TUNING — {TODAY} {'[DRY-RUN]' if dry_run else ''}")
@@ -1180,6 +1225,17 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
             # Mostrar queries feitas
             for q in intel.get("queries_made", [])[:3]:
                 print(f"    🔍 {q[:75]}")
+
+    # Strategy Explorer
+    if optimization:
+        print(f"\n🔬 STRATEGY EXPLORER (configs lucrativas encontradas):")
+        for sym, opt in optimization.items():
+            cur_pnl = opt.get("current_pnl", 0)
+            best_pnl = opt.get("best_pnl", 0)
+            delta = best_pnl - cur_pnl
+            emoji = "🟢" if best_pnl > 0 else "🔴"
+            print(f"  {emoji} {sym}: atual R$ {cur_pnl:+.2f} → melhor R$ {best_pnl:+.2f} (Δ R$ {delta:+.2f}, PF {opt.get('best_pf', 0)})")
+            print(f"     Config: SL={opt.get('best_sl_atr_mult')} CD={opt.get('best_cooldown_seconds')}s WR={opt.get('best_wr', 0)}%")
 
     # Changes applied
     if applied:
@@ -1276,11 +1332,36 @@ def main():
         else:
             log.warning("🌐 tinyfish não disponível — web intel pulada")
 
+    # 4.5. Strategy Explorer — busca configs lucrativas no histórico
+    optimization = {}
+    try:
+        from strategy_explorer import generate_optimization_report
+        log.info("🔬 Rodando Strategy Explorer (busca configs lucrativas)...")
+        full_report = generate_optimization_report()
+        for sym, data in full_report.get("by_symbol", {}).items():
+            best = data.get("optimization", {}).get("best_config")
+            if best and best.get("profit_factor", 0) > 1.0 and best.get("pnl", 0) > 0:
+                optimization[sym] = {
+                    "current_pnl": data["current_performance"].get("pnl", 0),
+                    "best_pnl": best.get("pnl", 0),
+                    "best_pf": best.get("profit_factor", 0),
+                    "best_wr": best.get("wr", 0),
+                    "best_sl_atr_mult": best.get("sl_atr_mult"),
+                    "best_cooldown_seconds": best.get("cooldown_seconds"),
+                    "best_bb_std": best.get("bb_std"),
+                    "best_rsi_ob": best.get("rsi_overbought"),
+                    "best_rsi_os": best.get("rsi_oversold"),
+                    "variants": data.get("variants_to_test", []),
+                }
+        log.info(f"🔬 Optimization encontrada para {len(optimization)} símbolos com PF>1")
+    except Exception as e:
+        log.warning(f"Strategy Explorer falhou: {e}")
+
     # 5. LLM (se habilitado)
     llm_result = None
     if not args.no_llm:
         log.info("Consultando LLM ativo do Hermes...")
-        prompt = build_llm_prompt(perf, issues, config, web_intel=web_intel)
+        prompt = build_llm_prompt(perf, issues, config, web_intel=web_intel, optimization=optimization)
         response = ask_llm(prompt, timeout=args.timeout)
         if response:
             llm_result = parse_llm_response(response)
@@ -1302,7 +1383,7 @@ def main():
         applied = apply_changes(llm_result, config, dry_run=True)
 
     # 7. Relatório
-    print_report(perf, issues, llm_result, applied, config, args.dry_run, web_intel)
+    print_report(perf, issues, llm_result, applied, config, args.dry_run, web_intel, optimization)
 
     # 8. Notificação Telegram (resumo)
     if applied:
@@ -1326,6 +1407,7 @@ def main():
         "performance": perf,
         "issues": issues,
         "web_intel": web_intel,
+        "optimization": optimization,
         "llm_analysis": llm_result.get("analysis") if llm_result else None,
         "changes_applied": applied,
         "config_version": config.get("_version"),

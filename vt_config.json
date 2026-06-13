@@ -1,7 +1,7 @@
 {
-  "_version": 36,
-  "_updated_at": "2026-06-13T17:00:28.410784",
-  "_updated_by": "agi_17h_llm",
+  "_version": 42,
+  "_updated_at": "2026-06-13T17:19:08.255469",
+  "_updated_by": "bruno_manual_reactivation",
   "_notes": "v20: meio-dia param tuning - BIT widen VWAP, DOL relax ADX, WSP faster MACD, IND/WIN wider RSI",
   "start_hour": 9,
   "start_minute": 5,
@@ -222,16 +222,10 @@
     "max_position_minutes": 120
   },
   "disabled_symbols": [
-    "WIN",
-    "BIT"
+    "WIN"
   ],
   "disabled_timeframes": [
-    "WIN_M5",
-    "BIT_M5",
-    "BIT_H1",
-    "IND_M5",
-    "BIT_M15",
-    "WIN_M15"
+    "IND_M5"
   ],
-  "max_daily_loss": -250
+  "max_daily_loss": -400
 }
