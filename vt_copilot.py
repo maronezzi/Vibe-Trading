@@ -47,11 +47,8 @@ def log(msg):
 def notify_telegram(msg):
     """Envia notificação via hermes CLI."""
     try:
-        subprocess.run(
-            ["hermes", "send", "-t", TELEGRAM_TARGET, msg],
-            capture_output=True, timeout=30,
-            env={**os.environ, "WINEDEBUG": "-all"}
-        )
+        from vt_hermes_helper import hermes_send
+        hermes_send(TELEGRAM_TARGET, msg)
         log(f"Notificação enviada pro grupo")
     except Exception as e:
         log(f"[ERRO] Falha ao enviar notificação: {e}")

@@ -145,10 +145,9 @@ def main():
         print(f"\n📄 CSV exportado: {csv_path}")
 
     if do_send:
-        import subprocess
         msg = format_report(report) + format_detail(report)
-        subprocess.run(["hermes", "send", "-t", "telegram:-1004284773048", msg],
-                       capture_output=True, timeout=15)
+        from vt_hermes_helper import hermes_send
+        hermes_send("telegram:-1004284773048", msg, timeout=15)
         print("✅ Relatório enviado ao Telegram")
 
 

@@ -25,6 +25,7 @@ Uso:
 
 import sys
 import os
+import shutil
 import time
 import json
 import subprocess
@@ -212,11 +213,8 @@ TELEGRAM_TARGET = "telegram:-1004284773048"
 
 def notify_telegram(msg: str):
     try:
-        subprocess.run(
-            ["hermes", "send", "-t", TELEGRAM_TARGET, msg],
-            capture_output=True, timeout=30,
-            env={**os.environ, "WINEDEBUG": "-all"}
-        )
+        from vt_hermes_helper import hermes_send
+        hermes_send(TELEGRAM_TARGET, msg)
     except Exception as e:
         log(f"[NOTIFY FAIL] {e}")
 

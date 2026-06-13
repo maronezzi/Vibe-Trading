@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sqlite3
 import sys
@@ -304,11 +305,27 @@ def diagnose_issues(perf: dict) -> list:
 # 3. LLM — CONSULTA AO MODELO ATIVO NO HERMES
 # ═══════════════════════════════════════════════════════════════════
 
+def _find_hermes():
+    """Localiza o binário do hermes (cron pode ter PATH minimalista)."""
+    for p in [
+        os.path.expanduser("~/.local/bin/hermes"),
+        os.path.expanduser("~/.hermes/hermes-agent/venv/bin/hermes"),
+        shutil.which("hermes") if shutil else None,
+    ]:
+        if p and os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
+
 def ask_llm(prompt: str, timeout: int = 120) -> str | None:
     """Consulta o LLM ativo no Hermes via CLI não-interativo."""
+    hermes_bin = _find_hermes()
+    if not hermes_bin:
+        log.warning("hermes CLI não encontrado no sistema")
+        return None
     try:
         result = subprocess.run(
-            ["hermes", "-z", prompt],
+            [hermes_bin, "-z", prompt],
             capture_output=True, text=True, timeout=timeout,
             cwd=str(PROJECT_DIR),
         )

@@ -227,10 +227,8 @@ def format_report(report: dict, close_info: dict) -> str:
 
 def send_telegram(message: str):
     """Envia mensagem pro grupo Telegram via hermes."""
-    subprocess.run(
-        ["hermes", "send", "-t", f"telegram:{TELEGRAM_GROUP}", message],
-        capture_output=True, timeout=30
-    )
+    from vt_hermes_helper import hermes_send
+    hermes_send(f"telegram:{TELEGRAM_GROUP}", message)
 
 
 def main():

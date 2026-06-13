@@ -527,11 +527,7 @@ def _notify_fix(msg: str):
     if not NOTIFY_ALL_FIXES:
         return
     try:
-        import os
-        subprocess.run(
-            ["hermes", "send", "-t", "telegram:-1004284773048", msg],
-            capture_output=True, timeout=15,
-            env={**os.environ, "WINEDEBUG": "-all"}
-        )
+        from vt_hermes_helper import hermes_send
+        hermes_send("telegram:-1004284773048", msg, timeout=15)
     except Exception:
         pass
