@@ -439,49 +439,184 @@ def tinyfish_agent(url: str, goal: str, timeout: int = 60) -> str:
         return ""
 
 
-# Mapeamento de estratégias do Vibe-Trading → queries técnicas no tinyfish
+# Mapeamento de estratégias do Vibe-Trading → queries técnicas ESPECÍFICAS
+# Foco: trading automatizado, MT5, alta taxa de acerto, B3 mini contratos
 TECHNICAL_QUERIES = {
     "BOLLINGER": [
-        "Bollinger Bands day trade configurações BB_std período 20",
-        "Bollinger Bands squeeze breakout estratégia B3 mini índice",
-        "Bollinger Bands RSI combinação sinais day trade",
+        "Bollinger Bands expert advisor MT5 profit factor backtest",
+        "Bollinger Bands RSI day trade win rate above 60 percent mini indice",
+        "Bollinger Bands squeeze mean reversion automated trading backtest results",
+        "Bollinger Bands bot MT5 high win rate strategy optimization",
     ],
     "VWAP": [
-        "VWAP pullback day trade estratégia B3 mini dólar",
-        "VWAP desvio padrão bandas day trade",
-        "VWAP mean reversion intraday estratégia",
+        "VWAP pullback expert advisor MT5 mini dolar backtest win rate",
+        "VWAP deviation bands automated trading strategy high profit factor",
+        "VWAP mean reversion bot MT5 mini indice win rate",
+        "VWAP intraday strategy expert advisor backtest B3 futures",
     ],
     "EMA_PULLBACK": [
-        "EMA pullback day trade estratégia mini índice B3",
-        "EMA 9 21 cruzamento pullback ADX filtro",
-        "exponential moving average pullback continuation pattern",
+        "EMA 9 21 pullback expert advisor MT5 high win rate backtest",
+        "EMA crossover pullback ADX filter automated strategy mini indice",
+        "EMA pullback continuation pattern expert advisor MT5 B3",
+        "EMA fast slow crossover pullback bot MT5 profit factor",
     ],
     "MACD_MOMENTUM": [
-        "MACD momentum day trade mini S&P 500",
-        "MACD signal line crossover histogram trading strategy",
-        "MACD zero line rejection intraday",
+        "MACD signal line crossover expert advisor MT5 momentum backtest",
+        "MACD histogram zero line rejection automated strategy win rate",
+        "MACD momentum bot MT5 mini S&P 500 backtest profit factor",
+        "MACD crossover expert advisor MT5 high win rate strategy",
     ],
     "RSI": [
-        "RSI overbought oversold day trade períodos 7 14 21",
-        "RSI divergence day trade sinais",
-        "índice força relativa configuracao period ideal",
+        "RSI 14 70 30 overbought oversold expert advisor MT5 backtest win rate",
+        "RSI 2 mean reversion expert advisor MT5 high win rate",
+        "RSI divergence automated strategy MT5 mini indice B3 backtest",
+        "RSI period 7 vs 14 day trade expert advisor MT5 win rate",
     ],
     "ADX": [
-        "ADX trend strength day trade filtro +DI -DI",
-        "ADX período 14 configuração ideal day trade",
-        "Average Directional Index trend following B3",
+        "ADX 14 25 trend strength filter expert advisor MT5 backtest",
+        "ADX plus minus DI directional movement automated strategy win rate",
+        "ADX trend filter expert advisor MT5 mini indice high win rate",
+        "ADX 20 25 threshold expert advisor MT5 backtest profit factor",
     ],
     "ATR": [
-        "ATR Average True Range stop loss day trade mini índice",
-        "ATR multiplicador SL trailing stop ideal",
-        "ATR volatility position sizing day trade",
+        "ATR stop loss 1.5 2.0 multiplier expert advisor MT5 backtest win rate",
+        "ATR trailing stop expert advisor MT5 high profit factor",
+        "ATR volatility position sizing mini contrato B3 day trade",
+        "ATR multiplier 1.0 1.5 2.0 SL expert advisor MT5 backtest",
     ],
     "GENERAL": [
-        "day trade B3 mini índice configuração indicadores",
-        "scalping day trade parâmetros ideais stochastic RSI MACD",
-        "suporte resistência day trade B3 pullback reversal",
+        "expert advisor MT5 day trade mini indice B3 high win rate backtest",
+        "expert advisor MT5 mini dolar B3 high profit factor strategy",
+        "MetaTrader 5 bot day trade B3 futures high win rate backtest",
+        "MT5 expert advisor mini contrato B3 win rate above 60 percent",
+        "automated trading bot B3 mini indice dolar win rate backtest",
+        "day trade B3 high win rate strategy backtest profit factor 1.5",
     ],
 }
+
+
+# Whitelist de fontes técnicas sólidas (preferidas)
+PREFERRED_DOMAINS = [
+    "b3.com.br",                    # B3 oficial
+    "schwab.com",                   # Schwab (broker)
+    "investopedia.com",             # Investopedia (referência)
+    "babypips.com",                 # Babypips (forex education)
+    "tradingwithrayner.com",        # Trading with Rayner
+    "tradingview.com",              # TradingView
+    "mql5.com",                     # MQL5 (comunidade MT5)
+    "forexfactory.com",             # ForexFactory
+    "stockcharts.com",              # StockCharts
+    "incrediblecharts.com",         # Incredible Charts
+    "technicalanalysis.org.uk",     # Technical Analysis
+    "earnforex.com",                # EarnForex (MT5)
+    "forexstrategiesresources.com", # Forex Strategies
+    "tradingstrategyguides.com",    # Trading Strategy Guides
+    "tradingpedia.com",             # TradingPedia
+    "learn.tradimo.com",            # Tradimo
+    "fidelity.com",                 # Fidelity (broker)
+    "tastytrade.com",               # TastyTrade
+    "interactivebrokers.com",       # Interactive Brokers
+    "global-view.com",              # Barchart global view
+    "barchart.com",                 # Barchart
+    "dailyfx.com",                  # DailyFX
+    "fxstreet.com",                 # FXStreet
+    "investing.com",                # Investing.com
+]
+
+# Blacklist: fontes com muito lixo, pouco conteúdo técnico profundo
+BLOCKED_DOMAINS = [
+    "youtube.com",        # Vídeos — fetch retorna lixo de metadata
+    "youtu.be",           # Shorts
+    "instagram.com",      # Posts curtos + boilerplate
+    "tiktok.com",         # Vídeos curtos
+    "pinterest.com",      # Imagens + descriptions curtas
+    "facebook.com",       # Posts + ads
+    "twitter.com",        # Tweets curtos
+    "x.com",              # Mesma coisa
+    "reddit.com",         # Opiniões, não referências técnicas
+    "quora.com",          # Respostas curtas
+    "linkedin.com",       # Posts pessoais
+    "medium.com",         # Variável — alguns bons, mas muito lixo
+    "wordpress.com",      # Blogs pessoais
+    "blogspot.com",       # Blogs antigos
+]
+
+
+def _score_url(url: str) -> float:
+    """Retorna score 0.0-1.0 de qualidade de uma URL técnica."""
+    url_lower = url.lower()
+
+    # Blacklist → score 0
+    for blocked in BLOCKED_DOMAINS:
+        if blocked in url_lower:
+            return 0.0
+
+    # Whitelist → score alto
+    for pref in PREFERRED_DOMAINS:
+        if pref in url_lower:
+            return 1.0
+
+    # B3 específica (.b3.com.br) → bônus
+    if ".b3." in url_lower or "b3.com" in url_lower:
+        return 1.0
+
+    # Domínios .gov / .edu → alta confiança
+    if ".gov" in url_lower or ".edu" in url_lower:
+        return 0.9
+
+    # Default: fonte neutra (blogs, sites desconhecidos)
+    return 0.5
+
+
+def _clean_junk(text: str) -> str:
+    """Remove lixo comum de páginas web (rodapés, menus, etc)."""
+    if not text:
+        return ""
+
+    # Padrões de lixo comuns
+    junk_patterns = [
+        # YouTube
+        r"About\s+Press\s+Copyright.*?(?=\n\n|\Z)",
+        r"Advertise\s+Developers\s+Terms.*?(?=\n\n|\Z)",
+        r"Test new features.*?NFL Sunday Ticket.*?(?=\n\n|\Z)",
+        r"© \d{4} Google LLC.*?(?=\n\n|\Z)",
+        # Instagram
+        r"Sign up to Instagram.*?(?=\n\n|\Z)",
+        r"Sign in to like.*?(?=\n\n|\Z)",
+        r"Never miss a post from.*?(?=\n\n|\Z)",
+        r"Follow\s*More\s*",
+        # Genéricos
+        r"Cookie Policy\s*Accept\s*Reject\s*",
+        r"Subscribe to our newsletter.*?(?=\n\n|\Z)",
+        r"Follow us on.*?(?=\n\n|\Z)",
+    ]
+
+    cleaned = text
+    for pattern in junk_patterns:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+
+    # Colapsar múltiplas linhas em branco
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+
+    return cleaned.strip()
+
+
+def _filter_results_by_quality(results: list, min_score: float = 0.5) -> list:
+    """Filtra e ordena resultados por score de qualidade."""
+    scored = []
+    for r in results:
+        url = r.get("url", r.get("link", ""))
+        if not url:
+            continue
+        score = _score_url(url)
+        if score >= min_score:
+            r_copy = dict(r)
+            r_copy["_quality_score"] = score
+            scored.append(r_copy)
+
+    # Ordenar por score desc
+    scored.sort(key=lambda x: x["_quality_score"], reverse=True)
+    return scored
 
 
 def web_intel_for_symbol(symbol: str, strategy: str = None) -> dict:
@@ -524,21 +659,38 @@ def web_intel_for_symbol(symbol: str, strategy: str = None) -> dict:
     }
     name = symbol_map.get(symbol, symbol)
 
+    def _search_and_fetch(query: str, num_results: int = 5, max_chars: int = 1500) -> str:
+        """Busca + filtra por qualidade + fetch + limpa lixo."""
+        result["queries_made"].append(query)
+        r = tinyfish_search(query, num_results=num_results, timeout=15)
+
+        # Filtrar por score de qualidade (>= 0.5)
+        filtered = _filter_results_by_quality(r, min_score=0.5)
+        if not filtered:
+            log.debug(f"query '{query[:40]}': nenhuma fonte de qualidade")
+            return ""
+
+        # Top 2 fontes por score
+        top_urls = [x.get("url", x.get("link", "")) for x in filtered[:2]]
+        top_urls = [u for u in top_urls if u][:2]
+        if not top_urls:
+            return ""
+
+        text = tinyfish_fetch(top_urls, max_chars=max_chars, timeout=20)
+        if text:
+            text = _clean_junk(text)
+            result["sources"].extend(top_urls)
+        return text or ""
+
     # 1. Configurações da estratégia do ativo (prioritário)
     if strategy and strategy in TECHNICAL_QUERIES:
         try:
             queries = TECHNICAL_QUERIES[strategy]
             all_text = []
-            for q in queries[:2]:  # 2 queries por categoria
-                result["queries_made"].append(q)
-                r = tinyfish_search(q, num_results=2, timeout=12)
-                urls = [x.get("url", x.get("link", "")) for x in r if x.get("url") or x.get("link")]
-                urls = [u for u in urls if u][:1]
-                if urls:
-                    text = tinyfish_fetch(urls, max_chars=1000, timeout=15)
-                    if text:
-                        all_text.append(text)
-                        result["sources"].extend(urls)
+            for q in queries[:2]:
+                text = _search_and_fetch(q, num_results=5, max_chars=1500)
+                if text and len(text) > 100:
+                    all_text.append(text)
             result["strategy_tips"] = "\n\n---\n\n".join(all_text)
         except Exception as e:
             log.warning(f"web intel strategy tips erro: {e}")
@@ -547,16 +699,10 @@ def web_intel_for_symbol(symbol: str, strategy: str = None) -> dict:
     try:
         ind_queries = TECHNICAL_QUERIES.get("GENERAL", [])
         all_text = []
-        for q in ind_queries[:1]:  # só 1 query pra economizar tempo
-            result["queries_made"].append(q)
-            r = tinyfish_search(q, num_results=3, timeout=12)
-            urls = [x.get("url", x.get("link", "")) for x in r if x.get("url") or x.get("link")]
-            urls = [u for u in urls if u][:2]
-            if urls:
-                text = tinyfish_fetch(urls, max_chars=1200, timeout=15)
-                if text:
-                    all_text.append(text)
-                    result["sources"].extend(urls)
+        for q in ind_queries[:2]:
+            text = _search_and_fetch(q, num_results=5, max_chars=1500)
+            if text and len(text) > 100:
+                all_text.append(text)
         result["indicator_settings"] = "\n\n---\n\n".join(all_text)
     except Exception as e:
         log.warning(f"web intel indicator settings erro: {e}")
@@ -565,31 +711,26 @@ def web_intel_for_symbol(symbol: str, strategy: str = None) -> dict:
     try:
         sl_queries = TECHNICAL_QUERIES.get("ATR", [])
         all_text = []
-        for q in sl_queries[:1]:
-            result["queries_made"].append(q)
-            r = tinyfish_search(q, num_results=3, timeout=12)
-            urls = [x.get("url", x.get("link", "")) for x in r if x.get("url") or x.get("link")]
-            urls = [u for u in urls if u][:2]
-            if urls:
-                text = tinyfish_fetch(urls, max_chars=1200, timeout=15)
-                if text:
-                    all_text.append(text)
-                    result["sources"].extend(urls)
+        for q in sl_queries[:2]:
+            text = _search_and_fetch(q, num_results=5, max_chars=1500)
+            if text and len(text) > 100:
+                all_text.append(text)
         result["sl_trail_tactics"] = "\n\n---\n\n".join(all_text)
     except Exception as e:
         log.warning(f"web intel SL tactics erro: {e}")
 
     # 4. Padrões gráficos aplicáveis (pullback, breakout, mean reversion)
     try:
-        pattern_query = f"{name} day trade padrões pullback breakout mean reversion suporte resistência"
-        result["queries_made"].append(pattern_query)
-        r = tinyfish_search(pattern_query, num_results=3, timeout=12)
-        urls = [x.get("url", x.get("link", "")) for x in r if x.get("url") or x.get("link")]
-        urls = [u for u in urls if u][:2]
-        if urls:
-            text = tinyfish_fetch(urls, max_chars=1000, timeout=15)
-            result["patterns"] = text
-            result["sources"].extend(urls)
+        pattern_queries = [
+            f"{name} day trade pullback breakout mean reversion backtest strategy",
+            f"{symbol} day trade high win rate patterns support resistance automated",
+        ]
+        all_text = []
+        for q in pattern_queries[:2]:
+            text = _search_and_fetch(q, num_results=5, max_chars=1500)
+            if text and len(text) > 100:
+                all_text.append(text)
+        result["patterns"] = "\n\n---\n\n".join(all_text)
     except Exception as e:
         log.warning(f"web intel patterns erro: {e}")
 
