@@ -767,15 +767,29 @@ section .subtitle{color:var(--dim);margin-bottom:2rem;font-size:.95rem}
 <script>
 // SYNTAX HIGHLIGHTER
 function hl(code){
-  return code
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/(#.*$)/gm,'<span class="hl-cm">$1</span>')
-    .replace(/("""[\s\S]*?"""|'''[\s\S]*?''')/g,'<span class="hl-str">$1</span>')
-    .replace(/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g,'<span class="hl-str">$1</span>')
-    .replace(/\b(def|class|return|if|elif|else|for|while|try|except|import|from|as|with|in|not|and|or|is|None|True|False|global|continue|break|pass|raise|lambda|yield|async|await)\b/g,'<span class="hl-kw">$1</span>')
-    .replace(/\b(self)\b/g,'<span class="hl-self">$1</span>')
-    .replace(/\b(\d+\.?\d*)\b/g,'<span class="hl-num">$1</span>')
-    .replace(/@(\w+)/g,'<span class="hl-dec">@$1</span>')
+  // Escape HTML first
+  let s=code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  // Collect string literals and replace with placeholders to protect them
+  const strings=[];
+  // Triple-quoted strings
+  s=s.replace(/("""[\s\S]*?"""|'''[\s\S]*?''')/g,(m)=>{
+    strings.push(m);return`__STR${strings.length-1}__`;
+  });
+  // Single/double quoted strings
+  s=s.replace(/(f?"(?:[^"\\]|\\.)*"|f?'(?:[^'\\]|\\.)*')/g,(m)=>{
+    strings.push(m);return`__STR${strings.length-1}__`;
+  });
+  // Now highlight everything else safely
+  s=s.replace(/(#.*$)/gm,'<span class="hl-cm">$1</span>');
+  s=s.replace(/\b(def|class|return|if|elif|else|for|while|try|except|import|from|as|with|in|not|and|or|is|None|True|False|global|continue|break|pass|raise|lambda|yield|async|await)\b/g,'<span class="hl-kw">$1</span>');
+  s=s.replace(/\b(self)\b/g,'<span class="hl-self">$1</span>');
+  s=s.replace(/\b(\d+\.?\d*)\b/g,'<span class="hl-num">$1</span>');
+  s=s.replace(/@(\w+)/g,'<span class="hl-dec">@$1</span>');
+  // Restore strings with highlighting
+  strings.forEach((str,i)=>{
+    s=s.replace(`__STR${i}__`,`<span class="hl-str">${str}</span>`);
+  });
+  return s;
 }
 
 function addLineNums(code){
