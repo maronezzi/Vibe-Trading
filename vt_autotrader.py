@@ -900,13 +900,14 @@ def _calc_sl(symbol: str, atr: float, params: dict = None) -> int:
         params = CONFIG.get(_root.lower(), CONFIG.get("win", {}))
 
     # Specs: min/max_native em pontos do preço, point_mult = 1/mt5_point
+    # max_native calibrado para limitar loss máximo POR TRADE em ~R$150-250
     _specs = {
-        "WIN": {"min_native": 150, "max_native": 800, "point_mult": 1},
-        "WDO": {"min_native": 3,   "max_native": 12,  "point_mult": 1000},
-        "BIT": {"min_native": 30,  "max_native": 150, "point_mult": 100},
-        "DOL": {"min_native": 3,   "max_native": 200, "point_mult": 1000},
-        "IND": {"min_native": 150, "max_native": 250, "point_mult": 1},
-        "WSP": {"min_native": 5,   "max_native": 200, "point_mult": 100},
+        "WIN": {"min_native": 150, "max_native": 800,  "point_mult": 1},      # R$160 max loss
+        "WDO": {"min_native": 3,   "max_native": 12,   "point_mult": 1000},    # R$120 max loss
+        "BIT": {"min_native": 30,  "max_native": 500,  "point_mult": 100},     # R$500 max (ATR grande)
+        "DOL": {"min_native": 3,   "max_native": 200,  "point_mult": 1000},    # R$200 max loss
+        "IND": {"min_native": 150, "max_native": 350,  "point_mult": 1},       # R$350 max loss
+        "WSP": {"min_native": 5,   "max_native": 200,  "point_mult": 100},     # R$200 max loss
     }
     spec = _specs.get(_root, {"min_native": 100, "max_native": 500, "point_mult": 1})
 
@@ -1218,11 +1219,31 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     pos_minutes = bar_count * check_interval / 60
 
     # Parâmetros de proteção temporal
-    breakeven_min = params.get("breakeven_minutes", 10)  # ANTES 15, AGORA 10 (mais cedo)
-    time_trail_min = params.get("time_trail_minutes", 20)  # ANTES 30, AGORA 20
-    max_pos_min = params.get("max_position_minutes", 60)  # ANTES 120, AGORA 60
-    trail_act = params.get("trail_activate", 1.0)  # ANTES 1.5, AGORA 1.0 (ativa mais cedo)
-    trail_dist_cfg = params.get("trail_distance", 0.4)  # ANTES 0.5, AGORA 0.4 (mais apertado)
+    breakeven_min = params.get("breakeven_minutes", 10)
+    time_trail_min = params.get("time_trail_minutes", 20)
+    max_pos_min = params.get("max_position_minutes", 60)
+    trail_act = params.get("trail_activate", 1.0)
+    trail_dist_cfg = params.get("trail_distance", 0.4)
+    hard_exit_min = params.get("hard_exit_minutes", 45)  # FORÇA exit a mercado após X min
+
+    # ===== FORCED EXIT — fecha posição a mercado após hard_exit_min =====
+    # Previne desastres como #66 (WDO -R$566 em 375min) e #104 (BIT -R$901 em 104min)
+    if pos_minutes >= hard_exit_min:
+        log(f"[HARD_EXIT] {symbol} {direction} — {pos_minutes:.0f}min >= {hard_exit_min}min. Fechando a mercado.")
+        try:
+            close_result = safe_close(symbol)
+            if close_result and close_result.get("status") == "ok":
+                # PnL será calculado no próximo ciclo quando servidor fechar
+                notify_telegram(
+                    f"⏱️ *HARD EXIT* {symbol}\n"
+                    f"• {direction} | {pos_minutes:.0f}min\n"
+                    f"• Fechado por tempo máximo"
+                )
+                return  # posição será detectada como fechada no próximo ciclo
+            else:
+                log(f"[HARD_EXIT] Falha ao fechar {symbol}: {close_result}")
+        except Exception as e:
+            log(f"[HARD_EXIT] Erro: {e}")
 
     # ===== TRAILING POR LUCRO (original) =====
     if not trail_on and atr > 0 and profit_pts >= trail_act * atr:
