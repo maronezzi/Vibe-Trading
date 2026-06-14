@@ -426,11 +426,15 @@ def _get_params_for_tf(symbol_root: str, tf: str) -> dict:
     """Retorna parâmetros para o símbolo+TF.
     Prioridade: params_by_tf["symbol_tf"] > params[symbol] > {}
     """
-    key = f"{symbol_root.lower()}_{tf.lower()}"
+    key = f"{symbol_root}_{tf}"
     by_tf = CONFIG.get("params_by_tf", {})
     base = CONFIG.get(symbol_root.lower(), {})
+    # Tentar match case-insensitive
     if key in by_tf:
         return {**base, **by_tf[key]}
+    key_lower = key.lower()
+    if key_lower in by_tf:
+        return {**base, **by_tf[key_lower]}
     return base
 
 
