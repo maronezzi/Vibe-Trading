@@ -145,13 +145,13 @@
       "tick": 0.5
     },
     "BIT$": {
-      "mult": 0.5,
+      "mult": 1.0,
       "margin": 45,
       "slip_r": 10.0,
       "tick": 0.01
     },
     "DOL$": {
-      "mult": 50.0,
+      "mult": 1.0,
       "margin": 700,
       "slip_r": 10.0,
       "tick": 0.5
@@ -163,7 +163,7 @@
       "tick": 5
     },
     "WSP$": {
-      "mult": 2.5,
+      "mult": 1.0,
       "margin": 100,
       "slip_r": 2.5,
       "tick": 0.01
@@ -173,7 +173,7 @@
     "vwap_period": 20,
     "vwap_buy_threshold": 1.015,
     "vwap_sell_threshold": 0.985,
-    "sl_atr_mult": 0.8,
+    "sl_atr_mult": 0.2,
     "trail_activate": 1.0,
     "trail_distance": 0.4,
     "cooldown_seconds": 507,
@@ -206,7 +206,7 @@
     "rsi_period": 14,
     "rsi_overbought": 75,
     "rsi_oversold": 25,
-    "sl_atr_mult": 0.84,
+    "sl_atr_mult": 0.5,
     "trail_activate": 1.0,
     "trail_distance": 0.4,
     "cooldown_seconds": 585,

@@ -870,10 +870,10 @@ def _calc_sl(symbol: str, atr: float, params: dict = None) -> int:
     # Specs: min/max_native em pontos do preço, point_mult = 1/mt5_point
     _specs = {
         "WIN": {"min_native": 150, "max_native": 800, "point_mult": 1},
-        "WDO": {"min_native": 3,   "max_native": 80,  "point_mult": 1000},
-        "BIT": {"min_native": 30,  "max_native": 350, "point_mult": 100},
-        "DOL": {"min_native": 3,   "max_native": 40,  "point_mult": 1000},
-        "IND": {"min_native": 150, "max_native": 600, "point_mult": 1},
+        "WDO": {"min_native": 3,   "max_native": 12,  "point_mult": 1000},
+        "BIT": {"min_native": 30,  "max_native": 150, "point_mult": 100},
+        "DOL": {"min_native": 3,   "max_native": 200, "point_mult": 1000},
+        "IND": {"min_native": 150, "max_native": 250, "point_mult": 1},
         "WSP": {"min_native": 5,   "max_native": 200, "point_mult": 100},
     }
     spec = _specs.get(_root, {"min_native": 100, "max_native": 500, "point_mult": 1})
