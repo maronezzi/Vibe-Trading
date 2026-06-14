@@ -106,7 +106,7 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS trade_history_from_mt5 (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticket TEXT NOT NULL,
+            ticket TEXT NOT NULL UNIQUE,
             symbol TEXT NOT NULL,
             direction TEXT,
             volume REAL,
@@ -155,14 +155,26 @@ def get_multiplier(symbol: str) -> float:
     return 1.0
 
 
-def calc_fees(volume: float, entry_price: float, exit_price: float) -> float:
+def calc_fees(volume: float, entry_price: float, exit_price: float, symbol: str = "") -> float:
     """
-    Estima taxas B3 para mini contrato.
-    Emolumentos B3: ~R$ 1,20 por contrato (mini índice)
-    Emolumentos B3: ~R$ 0,60 por contrato (mini dólar)
-    Corretagem XP: R$ 0 (zero para mini)
+    Estima taxas B3 por contrato, variando por ativo.
+    Corretagem XP: R$ 0 (zero para mini).
     """
-    return volume * 1.20  # estimativa conservadora
+    _fees_per_contract = {
+        "WIN": 1.20,   # mini índice
+        "WDO": 0.60,   # mini dólar
+        "DOL": 0.90,
+        "IND": 1.50,
+        "BIT": 2.00,   # BTC/ETH
+        "WSP": 1.00,
+    }
+    fee = 1.20  # default conservador
+    if symbol:
+        for root, f in _fees_per_contract.items():
+            if root in symbol:
+                fee = f
+                break
+    return volume * fee
 
 
 def log_entry(symbol: str, direction: str, volume: float,
@@ -483,8 +495,8 @@ def get_tax_report(month: int = None, year: int = None) -> dict:
 
     # Cálculo IR
     ir_rate = 0.20  # 20% para day trade
-    ir_due = max(0, total_net * ir_rate) if total_net > 0 else 0
     compensable_loss = min(abs(prev_losses), total_net) if total_net > 0 else 0
+    ir_due = max(0, (total_net - compensable_loss) * ir_rate) if total_net > 0 else 0
     remaining_loss = abs(prev_losses) - compensable_loss
 
     return {

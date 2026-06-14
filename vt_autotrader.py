@@ -117,6 +117,8 @@ class SessionState:
             "positions": self._serialize_positions(),
             "last_signals": {k: {**v, "ts": v["ts"].isoformat() if isinstance(v.get("ts"), datetime) else None}
                              for k, v in self.last_signals.items()},
+            "last_trade_time": {k: v.isoformat() if isinstance(v, datetime) else str(v)
+                                for k, v in self.last_trade_time.items()},
             "daily_pnl": self.daily_pnl,
             "trade_count": self.trade_count,
             "wins": self.wins,
@@ -155,7 +157,8 @@ class SessionState:
         try:
             with open(self.STATE_FILE) as f:
                 data = _json.load(f)
-        except (FileNotFoundError, Exception):
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"[STATE] Erro ao carregar state: {e} — resetando", flush=True)
             return
 
         saved_day = data.get("current_day")
@@ -193,6 +196,32 @@ class SessionState:
                 except (ValueError, TypeError):
                     pass
             self.positions[k] = pos
+
+        # Restaura last_trade_time (string → datetime)
+        raw_ltt = data.get("last_trade_time", {})
+        self.last_trade_time = {}
+        for k, v in raw_ltt.items():
+            try:
+                self.last_trade_time[k] = datetime.fromisoformat(v)
+            except (ValueError, TypeError):
+                pass
+
+        # Restaura last_signals (ts string → datetime)
+        raw_sigs = data.get("last_signals", {})
+        self.last_signals = {}
+        for k, v in raw_sigs.items():
+            sig = dict(v)
+            if isinstance(sig.get("ts"), str):
+                try:
+                    sig["ts"] = datetime.fromisoformat(sig["ts"])
+                except (ValueError, TypeError):
+                    pass
+            if isinstance(sig.get("bar_ts"), str):
+                try:
+                    sig["bar_ts"] = sig["bar_ts"]  # bar_ts pode ser int/string
+                except (ValueError, TypeError):
+                    pass
+            self.last_signals[k] = sig
 
         print(f"[STATE] Restaurado: trades={self.daily_trade_count}, losses={self.consecutive_losses}, halt={self.halt_until}, positions={list(self.positions.keys())}", flush=True)
 

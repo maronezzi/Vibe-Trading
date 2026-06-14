@@ -318,59 +318,35 @@ def check_performance():
 
 
 def _apply_pauses(paused_items: list, today: str):
-    """Modifica vt_autotrader.py pra remover símbolos/timeframes pausados e reinicia.
+    """Desativa símbolos/timeframes no config (disabled_symbols/disabled_timeframes).
     paused_items: lista de strings como "WIN", "WDO_M15" etc."""
-    import re
+    from vt_config_loader import load_config, save_full_config
 
-    autotrader_path = Path(__file__).parent / "vt_autotrader.py"
-    content = autotrader_path.read_text()
+    config = load_config(force=True)
+    disabled_syms = set(config.get("disabled_symbols", []))
+    disabled_tfs = set(config.get("disabled_timeframes", []))
     anything_changed = False
 
     for item in paused_items:
-        if "_M" in item:
-            # Pausar timeframe específico: "WIN_M15" → remover M15 de "WIN": [...]
+        if "_" in item:
             sym, tf = item.split("_", 1)
-            pattern = rf'("{sym}":\s*\[)([^\]]*"\b{tf}\b[^\]]*)(\])'
-            match = re.search(pattern, content)
-            if match:
-                full = match.group(0)
-                before = match.group(1)
-                items_str = match.group(2)
-                after = match.group(3)
-                items = re.findall(r'"(\w+)"', items_str)
-                if tf in items:
-                    items.remove(tf)
-                    new_entry = f'{before}{", ".join(f"{chr(34)}{i}{chr(34)}" for i in items)}{after}'
-                    content = content.replace(full, new_entry)
-                    log(f"[PAUSA] Removido {sym}/{tf} de timeframes_by_symbol")
-                    anything_changed = True
+            tf_key = f"{sym}_{tf}"
+            if tf_key not in disabled_tfs:
+                disabled_tfs.add(tf_key)
+                log(f"[PAUSA] Desativado timeframe {tf_key}")
+                anything_changed = True
         else:
-            # Pausar símbolo inteiro: "WIN" → remover da lista symbols + comentar timeframes
             sym = item
-            # Remover de "symbols": [...]
-            pattern = rf'"symbols"\s*:\s*\[([^\]]*)\]'
-            match = re.search(pattern, content)
-            if match:
-                items = re.findall(r'"(\w+)"', match.group(1))
-                if sym in items:
-                    items.remove(sym)
-                    new_list = ", ".join(f'"{i}"' for i in items)
-                    new_line = f'"symbols": [{new_list}],'
-                    content = content.replace(match.group(0), new_line)
-                    log(f"[PAUSA] Removido {sym} de symbols")
-                    anything_changed = True
-            # Comentar entrada no timeframes_by_symbol
-            for line_match in re.finditer(rf'([ \t]*"{re.escape(sym)}":\s*\[[^\]]*\][^\n]*)', content):
-                old_line = line_match.group(0)
-                if not old_line.strip().startswith('#'):
-                    content = content.replace(old_line, f'    # {old_line.strip()}  # PAUSADO {today}')
-                    anything_changed = True
-                    log(f"[PAUSA] Comentado {sym} em timeframes_by_symbol")
+            if sym not in disabled_syms:
+                disabled_syms.add(sym)
+                log(f"[PAUSA] Desativado símbolo {sym}")
+                anything_changed = True
 
     if anything_changed:
-        autotrader_path.write_text(content)
-        log(f"[PAUSA] Config salva. Reiniciando autotrader...")
-        restart_autotrader()
+        config["disabled_symbols"] = sorted(disabled_syms)
+        config["disabled_timeframes"] = sorted(disabled_tfs)
+        save_full_config(config, updated_by="copilot_pausa")
+        log(f"[PAUSA] Config atualizado. Autotrader fará hot-reload.")
     else:
         log(f"[PAUSA] Nenhuma alteração necessária")
 
@@ -398,7 +374,7 @@ def evaluate_and_pause():
         symbol, tf, ops, wins, losses, avg_pnl, total_pnl = row
         # Extrair root do símbolo (WINQ26 → WIN)
         sym_root = ""
-        for root in ["WIN", "WDO", "IND", "DOL"]:
+        for root in ["WIN", "WDO", "IND", "DOL", "BIT", "WSP"]:
             if root in symbol:
                 sym_root = root
                 break
@@ -421,7 +397,7 @@ def evaluate_and_pause():
     # Se TODOS os timeframes de um símbolo foram pausados → pausar símbolo inteiro
     sym_roots = set()
     for row in stats["sym_tf"]:
-        for root in ["WIN", "WDO", "IND", "DOL"]:
+        for root in ["WIN", "WDO", "IND", "DOL", "BIT", "WSP"]:
             if root in row[0]:
                 sym_roots.add(root)
     for sym_root in sym_roots:
@@ -485,10 +461,9 @@ def generate_report():
 
 
 def _restore_pauses_if_needed():
-    """No primeiro run do dia, restaurar timeframes pausados no dia anterior.
-    Descomenta linhas comentadas e restaura símbolos removidos."""
-    import re
-    import json
+    """No primeiro run do dia, reativa símbolos/timeframes desativados no dia anterior.
+    Limpa disabled_symbols/disabled_timeframes do config."""
+    from vt_config_loader import load_config, save_full_config
 
     pause_file = Path("/tmp/vt_paused_timeframes.json")
     if not pause_file.exists():
@@ -512,44 +487,12 @@ def _restore_pauses_if_needed():
 
     log(f"[RESTORE] Restaurando {len(old_pauses)} pausas do dia anterior...")
 
-    autotrader_path = Path(__file__).parent / "vt_autotrader.py"
-    content = autotrader_path.read_text()
-    anything_changed = False
-
-    # Restaurar linhas comentadas
-    for key, info in old_pauses.items():
-        if "_M" not in key:
-            # Restaurar símbolo inteiro: descomentar linhas + adicionar de volta ao symbols
-            sym = key
-            # Descomentar linhas
-            pattern = rf'([ \t]*)# (.+?)(\s*# PAUSADO .+)$'
-            for m in re.finditer(pattern, content):
-                original = m.group(2)
-                if f'"{sym}"' in original:
-                    content = content.replace(m.group(0), original)
-                    anything_changed = True
-                    log(f"[RESTORE] Descomentado {sym} em timeframes_by_symbol")
-
-            # Adicionar de volta ao symbols (se não estiver)
-            pattern = rf'"symbols"\s*:\s*\[([^\]]*)\]'
-            match = re.search(pattern, content)
-            if match:
-                items = re.findall(r'"(\w+)"', match.group(1))
-                if sym not in items:
-                    items.append(sym)
-                    new_list = ", ".join(f'"{i}"' for i in sorted(items))
-                    new_line = f'"symbols": [{new_list}],'
-                    content = content.replace(match.group(0), new_line)
-                    anything_changed = True
-                    log(f"[RESTORE] Adicionado {sym} de volta ao symbols")
-
-    if anything_changed:
-        autotrader_path.write_text(content)
-        log(f"[RESTORE] Config restaurada. Limpando pausas...")
-        pause_file.write_text("{}")
-        restart_autotrader()
-    else:
-        log(f"[RESTORE] Nenhuma alteração necessária")
+    config = load_config(force=True)
+    config["disabled_symbols"] = []
+    config["disabled_timeframes"] = []
+    save_full_config(config, updated_by="copilot_restore")
+    log(f"[RESTORE] disabled_symbols/timeframes limpos. Autotrader fará hot-reload.")
+    pause_file.write_text("{}")
 
 
 def main():

@@ -400,8 +400,10 @@ def analyze():
     print(f"Vibe-Trading Analyst | {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     print("=" * 60)
 
-    for root in ["WIN", "WDO"]:
-        symbol = load_config().get("resolved_symbols", {}).get(root)
+    _config = load_config()
+    _roots = list(_config.get("resolved_symbols", {}).keys()) or ["WIN", "WDO"]
+    for root in _roots:
+        symbol = _config.get("resolved_symbols", {}).get(root)
         if not symbol:
             print(f"[WARN] Não resolveu {root}")
             continue
@@ -453,8 +455,10 @@ def watch_loop():
                 last_bar_time = snap_time
                 bar_count += 1
 
-                for root in ["WIN", "WDO"]:
-                    symbol = load_config().get("resolved_symbols", {}).get(root)
+                _config = load_config()
+                _roots = list(_config.get("resolved_symbols", {}).keys()) or ["WIN", "WDO"]
+                for root in _roots:
+                    symbol = _config.get("resolved_symbols", {}).get(root)
                     if not symbol:
                         continue
                     snap = fetch_snapshot(symbol, "M5")
@@ -477,8 +481,10 @@ def main():
     if "--watch" in sys.argv:
         watch_loop()
     elif "--snapshot" in sys.argv:
-        for root in ["WIN", "WDO"]:
-            symbol = load_config().get("resolved_symbols", {}).get(root)
+        _config = load_config()
+        _roots = list(_config.get("resolved_symbols", {}).keys()) or ["WIN", "WDO"]
+        for root in _roots:
+            symbol = _config.get("resolved_symbols", {}).get(root)
             if symbol:
                 snap = fetch_snapshot(symbol)
                 save_snapshot(snap)

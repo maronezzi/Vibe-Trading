@@ -42,7 +42,8 @@ def main():
     elif cmd == "ticks":
         symbol = sys.argv[2] if len(sys.argv) > 2 else "WIN$"
         count = int(sys.argv[3]) if len(sys.argv) > 3 else 10
-        ticks = mt5.copy_ticks_from(symbol, 0, count, mt5.COPY_TICKS_ALL)
+        from datetime import datetime as _dt, timedelta as _td
+        ticks = mt5.copy_ticks_from(symbol, _dt.now() - _td(hours=1), count, mt5.COPY_TICKS_ALL)
         if ticks is None or len(ticks) == 0:
             print(f"ERROR: No ticks for {symbol}")
             sys.exit(1)

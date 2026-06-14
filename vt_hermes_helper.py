@@ -25,11 +25,11 @@ def hermes_send(telegram_target: str, message: str, timeout: int = 30) -> bool:
     if not hermes_bin:
         return False
     try:
-        subprocess.run(
+        result = subprocess.run(
             [hermes_bin, "send", "-t", telegram_target, message],
             capture_output=True, timeout=timeout,
             env={**os.environ, "PATH": os.environ.get("PATH", "") + f":{os.path.dirname(hermes_bin)}"},
         )
-        return True
+        return result.returncode == 0
     except Exception:
         return False

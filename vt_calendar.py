@@ -339,11 +339,9 @@ def resolve_all_symbols() -> dict:
 
 
 def _save_config(config: dict):
-    """Salva config atualizado."""
-    config["_updated_at"] = datetime.now().isoformat()
-    config_path = Path(__file__).parent / "vt_config.json"
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
+    """Salva config atualizado (escrita atômica via config_loader)."""
+    from vt_config_loader import save_full_config
+    save_full_config(config, updated_by="calendar_resolve")
 
 
 def _notify(msg: str):

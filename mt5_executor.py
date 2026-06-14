@@ -348,7 +348,7 @@ def cmd_close(symbol):
         else:
             log(f"❌ Falha ao fechar {pos.ticket}: {result.comment if result else 'sem resultado'}", "ERROR")
 
-    print(json.dumps({"closed": closed, "total": len(positions)}))
+    print(json.dumps({"status": "ok", "closed": closed, "total": len(positions)}))
     return closed == len(positions)
 
 
@@ -356,14 +356,20 @@ def cmd_close_all():
     """Fecha TODAS as posições."""
     positions = mt5.positions_get()
     if not positions:
-        print(json.dumps({"info": "nenhuma posição aberta"}))
+        print(json.dumps({"status": "ok", "info": "nenhuma posição aberta"}))
         return True
 
     total = len(positions)
     closed = 0
+    seen_symbols = set()
     for pos in positions:
+        if pos.symbol in seen_symbols:
+            continue  # já fechado
+        seen_symbols.add(pos.symbol)
         if cmd_close(pos.symbol):
             closed += 1
+
+    print(json.dumps({"status": "ok", "closed": closed, "total": total}))
 
 
 def cmd_modify(symbol, ticket, new_sl_pts):
