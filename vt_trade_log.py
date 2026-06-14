@@ -138,7 +138,8 @@ def init_db():
 def get_multiplier(symbol: str) -> float:
     """Retorna o multiplicador R$ por ponto — lê de vt_config.json contract_specs."""
     try:
-        from vt_config_loader import CONFIG as _cfg
+        from vt_config_loader import load_config
+        _cfg = load_config()
         specs = _cfg.get("contract_specs", {})
         # Tenta match por root$ (ex: "WIN$", "WDO$", "BIT$")
         for root, spec in specs.items():
@@ -146,8 +147,8 @@ def get_multiplier(symbol: str) -> float:
                 return spec.get("mult", 1.0)
     except Exception:
         pass
-    # Fallback hardcoded (caso config indisponível)
-    _mults = {"WIN": 0.20, "WDO": 10.00, "DOL": 10.00, "IND": 1.0, "BIT": 0.01, "WSP": 0.50}
+    # Fallback hardcoded (caso config indisponível) — valores REAIS confirmados via PnLs
+    _mults = {"WIN": 0.20, "WDO": 10.00, "DOL": 1.00, "IND": 1.0, "BIT": 1.0, "WSP": 1.0}
     for root, mult in _mults.items():
         if root in symbol:
             return mult

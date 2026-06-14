@@ -597,6 +597,9 @@ def check_and_trade():
                     if result:
                         info = result.get("info", {})
                         info.pop("strategy", None)  # evita conflito com kwarg
+                        # DEFESAS: plugins não chamam _defenses_ok — validar aqui
+                        if not _defenses_ok(symbol, tf, result["direction"], last_bar_ts):
+                            continue
                         _execute_entry(symbol, tf, result["direction"],
                                        last_close, result["sl_pts"], atr,
                                        last_bar_ts, strategy=strategy,
@@ -1250,15 +1253,16 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             new_sl_price = best - trail_dist
             old_sl_price = entry_price - abs(sl_pts) * point_val
             if new_sl_price > old_sl_price and new_sl_price > 0:
-                # BUY: SL abaixo de entry → sl_pts = (entry - new_sl) / point_val (positivo)
+                # sl_pts SIGNED: positivo=abaixo entry (loss), negativo=acima entry (profit lock)
+                # cmd_modify: BUY SL = entry - sl_pts*point → sl_pts negativo = SL acima entry ✓
                 new_sl_pts = int((entry_price - new_sl_price) / point_val)
         else:
             new_sl_price = best + trail_dist
             old_sl_price = entry_price + abs(sl_pts) * point_val
             if new_sl_price < old_sl_price and new_sl_price > 0:
-                # SELL: SL acima de entry → sl_pts = (new_sl - entry) / point_val (positivo)
-                # Mas se new_sl < entry (SL abaixo de entry), usar abs
-                new_sl_pts = abs(int((new_sl_price - entry_price) / point_val))
+                # SELL: sl_pts signed. cmd_modify: SELL SL = entry + sl_pts*point
+                # sl_pts negativo = SL abaixo entry (profit lock) ✓
+                new_sl_pts = int((new_sl_price - entry_price) / point_val)
 
     # ===== BOLLINGER: Tight trailing na banda oposta =====
     if strategy == "BOLLINGER":
@@ -1270,19 +1274,22 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
                 old_sl_price = entry_price - abs(sl_pts) * point_val
                 if tight_sl_price > old_sl_price and tight_sl_price > 0:
                     tight_pts = int((entry_price - tight_sl_price) / point_val)
-                    if tight_pts > 0 and (new_sl_pts is None or tight_pts < new_sl_pts):
+                    if tight_pts != 0 and (new_sl_pts is None or tight_pts < new_sl_pts):
                         new_sl_pts = tight_pts
             elif direction == "SELL" and current_price <= bb_mid and profit_pts > 0:
                 tight_dist = 0.3 * atr
                 tight_sl_price = best + tight_dist
                 old_sl_price = entry_price + abs(sl_pts) * point_val
                 if tight_sl_price < old_sl_price and tight_sl_price > 0:
-                    tight_pts = abs(int((tight_sl_price - entry_price) / point_val))
-                    if tight_pts > 0 and (new_sl_pts is None or tight_pts < new_sl_pts):
+                    tight_pts = int((tight_sl_price - entry_price) / point_val)
+                    if tight_pts != 0 and (new_sl_pts is None or tight_pts < new_sl_pts):
                         new_sl_pts = tight_pts
 
     # Enviar modify SL pro MT5 — só atualiza state se MT5 confirmar
-    if new_sl_pts is not None and new_sl_pts > 0 and new_sl_pts != abs(sl_pts):
+    # sl_pts pode ser NEGATIVO (profit-lock). cmd_modify já suporta:
+    #   BUY: SL = entry - pts*point (pts<0 → SL acima entry ✓)
+    #   SELL: SL = entry + pts*point (pts<0 → SL abaixo entry ✓)
+    if new_sl_pts is not None and new_sl_pts != 0 and new_sl_pts != sl_pts:
         try:
             result = safe_modify_sl(symbol, pos["entry_ticket"], new_sl_pts, entry_price, direction)
             if result.get("status") == "ok":

@@ -170,7 +170,7 @@ def reconcile_orphans():
                 multiplier = get_multiplier(trade["symbol"])
             except Exception:
                 multiplier = 0.20 if "WIN" in trade["symbol"] else 1.00
-            net_pnl = pnl_pts * multiplier * trade.get("volume", 1)
+            net_pnl = pnl_pts * multiplier * (trade["volume"] if trade["volume"] is not None else 1)
             
             conn.execute("""
                 UPDATE trades 

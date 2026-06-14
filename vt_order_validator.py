@@ -234,7 +234,7 @@ def validate_order(order_data: dict, use_llm: bool = True) -> dict:
     # 2. Consulta LLM para análise (SEMPRE, não só quando há alertas)
     if use_llm:
         # Pre-computar point do ativo para prompt limpo (evita double-brace no f-string)
-        _point_map = {"WIN": 1, "BIT": 0.01, "DOL": 0.001, "IND": 1, "WSP": 0.01}
+        _point_map = {"WIN": 1, "WDO": 0.001, "BIT": 0.01, "DOL": 0.001, "IND": 1, "WSP": 0.01}
         _pt = _point_map.get(symbol[:3], 1)
         _native_sl = sl_pts * _pt
         _native_atr = atr

@@ -270,7 +270,13 @@ def detect_anomalies(snapshot: dict) -> list:
         entry = pos.get("price_open", 0)
         atr = snapshot["atr"]
         if atr > 0 and entry > 0 and pnl < 0:
-            drawdown_pts = abs(pnl) / (0.20 if "WIN" in symbol else 10.0)
+            # Usar get_multiplier para multiplicador correto por ativo
+            try:
+                from vt_trade_log import get_multiplier
+                mult = get_multiplier(symbol)
+            except Exception:
+                mult = 0.20 if "WIN" in symbol else 10.0 if "WDO" in symbol else 1.0
+            drawdown_pts = abs(pnl) / mult
             if drawdown_pts > atr * 0.5:
                 anomalies.append({
                     "type": "DRAWDOWN",

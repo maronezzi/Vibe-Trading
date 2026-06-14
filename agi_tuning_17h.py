@@ -1123,7 +1123,7 @@ def apply_changes(llm_result: dict, config: dict, dry_run: bool = False) -> list
         if not dry_run:
             config["disabled_symbols"] = new_disabled
             save_full_config(config, updated_by="agi_17h_llm")
-            config_reload = load_config(force=True)  # refresh in-memory
+            config = load_config(force=True)  # refresh in-memory
         log.info(f"🛑 DESATIVADOS símbolos: {disable_symbols}")
 
     if disable_tfs:
