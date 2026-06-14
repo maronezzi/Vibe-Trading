@@ -1,0 +1,1077 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vibe-Trading — Arquitetura do Sistema</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0a1a;--bg2:#12122a;--bg3:#1a1a3a;--card:rgba(255,255,255,.04);
+  --glass:rgba(255,255,255,.06);--border:rgba(255,255,255,.08);
+  --text:#e0e0ff;--dim:#8888aa;--accent:#6c63ff;--accent2:#00d4aa;
+  --green:#00e676;--red:#ff5252;--yellow:#ffd740;--orange:#ff9100;
+  --blue:#448aff;--cyan:#18ffff;--pink:#ff4081;
+  --code-bg:#0d0d22;--code-keyword:#c792ea;--code-string:#c3e88d;
+  --code-func:#82aaff;--code-comment:#546e7a;--code-num:#f78c6c;
+  --code-decorator:#ffcb6b;--code-op:#89ddff;
+}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;line-height:1.6;overflow-x:hidden}
+
+/* NAV */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;backdrop-filter:blur(20px);background:rgba(10,10,26,.85);border-bottom:1px solid var(--border);padding:.8rem 2rem;display:flex;gap:1.5rem;align-items:center;overflow-x:auto}
+nav .logo{font-weight:700;font-size:1.1rem;color:var(--accent);white-space:nowrap}
+nav a{color:var(--dim);text-decoration:none;font-size:.85rem;white-space:nowrap;transition:.2s}
+nav a:hover{color:var(--accent2)}
+
+/* HERO */
+.hero{padding:6rem 2rem 3rem;text-align:center;background:linear-gradient(135deg,#0a0a1a 0%,#1a1040 50%,#0a0a1a 100%);position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(circle at 30% 50%,rgba(108,99,255,.08) 0%,transparent 50%),radial-gradient(circle at 70% 50%,rgba(0,212,170,.06) 0%,transparent 50%);animation:pulse 8s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.5}50%{opacity:1}}
+.hero h1{font-size:clamp(2rem,5vw,3.5rem);font-weight:800;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;position:relative}
+.hero p{color:var(--dim);margin-top:.5rem;font-size:1.1rem;position:relative}
+.hero .stats{display:flex;gap:2rem;justify-content:center;margin-top:2rem;flex-wrap:wrap;position:relative}
+.hero .stat{background:var(--glass);border:1px solid var(--border);border-radius:12px;padding:1rem 1.5rem;min-width:140px}
+.hero .stat .val{font-size:1.8rem;font-weight:700;color:var(--green)}
+.hero .stat .lbl{font-size:.75rem;color:var(--dim);text-transform:uppercase;letter-spacing:1px}
+
+/* SECTIONS */
+section{padding:4rem 2rem;max-width:1400px;margin:0 auto}
+section h2{font-size:1.8rem;margin-bottom:.5rem;display:flex;align-items:center;gap:.5rem}
+section h2 .emoji{font-size:1.5rem}
+section .subtitle{color:var(--dim);margin-bottom:2rem;font-size:.95rem}
+
+/* CARDS */
+.card{background:var(--glass);border:1px solid var(--border);border-radius:16px;padding:1.5rem;backdrop-filter:blur(10px);transition:.3s}
+.card:hover{border-color:rgba(108,99,255,.3);box-shadow:0 8px 32px rgba(108,99,255,.1)}
+.cards-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1.5rem}
+
+/* FLOW DIAGRAM */
+.flow-container{overflow-x:auto;padding:1rem 0}
+.flow{display:flex;align-items:center;gap:0;min-width:900px;justify-content:center;flex-wrap:wrap}
+.flow-node{background:var(--bg2);border:2px solid var(--border);border-radius:12px;padding:1rem 1.2rem;text-align:center;min-width:140px;cursor:pointer;transition:.3s;position:relative}
+.flow-node:hover,.flow-node.active{border-color:var(--accent);box-shadow:0 0 20px rgba(108,99,255,.3)}
+.flow-node .icon{font-size:1.5rem;margin-bottom:.3rem}
+.flow-node .name{font-weight:600;font-size:.85rem}
+.flow-node .file{font-size:.7rem;color:var(--dim);font-family:monospace}
+.flow-arrow{color:var(--accent);font-size:1.5rem;padding:0 .5rem;animation:arrowPulse 2s ease-in-out infinite}
+@keyframes arrowPulse{0%,100%{opacity:.4}50%{opacity:1}}
+.flow-label{font-size:.65rem;color:var(--accent2);text-align:center;position:absolute;top:-18px;left:50%;transform:translateX(-50%);white-space:nowrap}
+
+/* MATRIX */
+.matrix-wrap{overflow-x:auto}
+.matrix{width:100%;border-collapse:separate;border-spacing:3px;font-size:.85rem}
+.matrix th{background:var(--bg3);padding:.6rem .8rem;text-align:center;border-radius:8px;font-weight:600;color:var(--dim);font-size:.75rem;text-transform:uppercase;letter-spacing:1px}
+.matrix td{background:var(--bg2);padding:.5rem .6rem;text-align:center;border-radius:8px;transition:.2s;cursor:default;position:relative;font-size:.8rem}
+.matrix td:hover{transform:scale(1.05);z-index:2;box-shadow:0 4px 20px rgba(0,0,0,.5)}
+.matrix .asset-name{font-weight:700;color:var(--cyan);background:var(--bg3)}
+.matrix .strat-boll{background:rgba(108,99,255,.15);color:#b8b0ff}
+.matrix .strat-rsi{background:rgba(0,212,170,.15);color:#80ffe0}
+.matrix .strat-ema{background:rgba(255,145,0,.15);color:#ffcc80}
+.matrix .strat-vwap{background:rgba(68,138,255,.15);color:#82b1ff}
+.matrix .strat-strong{background:rgba(255,64,129,.15);color:#ff80ab}
+
+/* CODE BLOCKS */
+.code-block{background:var(--code-bg);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin:1rem 0}
+.code-header{background:var(--bg3);padding:.5rem 1rem;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none}
+.code-header .filename{font-family:monospace;font-size:.8rem;color:var(--accent2)}
+.code-header .toggle{color:var(--dim);transition:.3s;font-size:.8rem}
+.code-header .toggle.open{transform:rotate(180deg)}
+.code-body{padding:1rem;overflow-x:auto;max-height:500px;overflow-y:auto;transition:max-height .4s ease}
+.code-body.collapsed{max-height:0;padding:0 1rem}
+.code-body pre{font-family:'Fira Code','Cascadia Code','JetBrains Mono',monospace;font-size:.78rem;line-height:1.7;color:var(--text)}
+.code-body .line-num{color:var(--dim);user-select:none;display:inline-block;width:3rem;text-align:right;margin-right:1rem;border-right:1px solid var(--border);padding-right:.5rem}
+
+/* SYNTAX HIGHLIGHTING */
+.hl-kw{color:var(--code-keyword)}.hl-str{color:var(--code-string)}.hl-fn{color:var(--code-func)}
+.hl-cm{color:var(--code-comment);font-style:italic}.hl-num{color:var(--code-num)}
+.hl-dec{color:var(--code-decorator)}.hl-op{color:var(--code-op)}
+.hl-bool{color:var(--code-num)}.hl-self{color:#ff5370}
+
+/* CRON TIMELINE */
+.timeline{position:relative;padding:1rem 0}
+.timeline::before{content:'';position:absolute;left:50%;top:0;bottom:0;width:3px;background:linear-gradient(to bottom,var(--accent),var(--accent2));border-radius:2px}
+.tl-item{display:flex;align-items:center;margin:1.5rem 0;position:relative}
+.tl-item:nth-child(odd){flex-direction:row-reverse}
+.tl-item .tl-content{width:45%;background:var(--glass);border:1px solid var(--border);border-radius:12px;padding:1rem 1.2rem}
+.tl-item:nth-child(odd) .tl-content{text-align:right}
+.tl-dot{position:absolute;left:50%;transform:translateX(-50%);width:16px;height:16px;border-radius:50%;background:var(--accent);border:3px solid var(--bg);z-index:2}
+.tl-item .tl-time{font-weight:700;color:var(--yellow);font-size:1.1rem;font-family:monospace}
+.tl-item .tl-desc{color:var(--dim);font-size:.85rem}
+.tl-item .tl-name{font-weight:600;color:var(--text)}
+
+/* HOT RELOAD ANIMATION */
+.hot-reload-demo{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:2rem;position:relative;overflow:hidden}
+.hr-step{display:flex;align-items:center;gap:1rem;margin:1rem 0;opacity:.3;transition:all .6s}
+.hr-step.visible{opacity:1;transform:translateX(0)}
+.hr-step .step-num{width:32px;height:32px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85rem;flex-shrink:0}
+.hr-step .step-text{flex:1}
+.hr-step .step-file{font-family:monospace;color:var(--accent2);font-size:.8rem}
+
+/* BUG FIX */
+.bug-compare{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.bug-before{border:2px solid var(--red);border-radius:12px;padding:1rem;background:rgba(255,82,82,.05)}
+.bug-after{border:2px solid var(--green);border-radius:12px;padding:1rem;background:rgba(0,230,118,.05)}
+.bug-label{font-weight:700;font-size:.85rem;text-transform:uppercase;letter-spacing:1px;margin-bottom:.5rem}
+.bug-before .bug-label{color:var(--red)}
+.bug-after .bug-label{color:var(--green)}
+
+/* LEGEND */
+.legend{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0}
+.legend-item{display:flex;align-items:center;gap:.4rem;font-size:.8rem}
+.legend-dot{width:12px;height:12px;border-radius:4px}
+
+/* ANIMATIONS */
+@keyframes fadeInUp{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:translateY(0)}}
+.animate{animation:fadeInUp .6s ease forwards}
+.fade-section{opacity:0;transform:translateY(30px);transition:all .6s ease}
+.fade-section.visible{opacity:1;transform:translateY(0)}
+
+/* RESPONSIVE */
+@media(max-width:768px){
+  nav{gap:1rem;padding:.6rem 1rem}
+  section{padding:3rem 1rem}
+  .hero .stats{flex-direction:column;align-items:center}
+  .bug-compare{grid-template-columns:1fr}
+  .timeline::before{left:20px}
+  .tl-item,.tl-item:nth-child(odd){flex-direction:column;align-items:flex-start}
+  .tl-dot{left:20px}
+  .tl-item .tl-content,.tl-item:nth-child(odd) .tl-content{width:calc(100% - 50px);margin-left:40px;text-align:left}
+  .flow{flex-direction:column;min-width:auto}
+  .flow-arrow{transform:rotate(90deg)}
+  .cards-grid{grid-template-columns:1fr}
+}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--accent)}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <span class="logo">⚡ Vibe-Trading</span>
+  <a href="#fluxo">Fluxo</a>
+  <a href="#config">Config</a>
+  <a href="#loader">Loader</a>
+  <a href="#autotrader">Autotrader</a>
+  <a href="#estrategias">Estratégias</a>
+  <a href="#matrix">Matriz</a>
+  <a href="#cron">Crons</a>
+  <a href="#hotreload">Hot Reload</a>
+  <a href="#bugfix">Bug Fix</a>
+</nav>
+
+<!-- HERO -->
+<header class="hero">
+  <h1>⚡ Vibe-Trading Architecture</h1>
+  <p>Sistema de trading automático — 6 ativos × 4 timeframes × 5 estratégias</p>
+  <div class="stats">
+    <div class="stat"><div class="val">24</div><div class="lbl">Ativo × TF</div></div>
+    <div class="stat"><div class="val">10</div><div class="lbl">Estratégias</div></div>
+    <div class="stat"><div class="val" style="color:var(--green)">R$ 13.299</div><div class="lbl">Lucro/dia (backtest)</div></div>
+    <div class="stat"><div class="val">7</div><div class="lbl">Crons/dia</div></div>
+    <div class="stat"><div class="val">30s</div><div class="lbl">Hot Reload</div></div>
+  </div>
+</header>
+
+<!-- SECTION 1: FLUXO -->
+<section id="fluxo" class="fade-section">
+  <h2><span class="emoji">🔄</span> Fluxo do Sistema</h2>
+  <p class="subtitle">Como os dados circulam: da configuração à execução</p>
+
+  <div class="flow-container">
+    <div class="flow">
+      <div class="flow-node" data-info="Arquivo JSON — fonte única da verdade. 455 linhas com todas as configs.">
+        <div class="icon">📄</div>
+        <div class="name">vt_config.json</div>
+        <div class="file">vt_config.json</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node" data-info="Hot-reload gateway. Verifica mtime do arquivo. Se mudou, recarrega. Senão, cache hit (zero custo).">
+        <div class="icon">🔄</div>
+        <div class="name">Config Loader</div>
+        <div class="file">vt_config_loader.py</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node active" data-info="Loop principal. A cada 30s: hot-reload config, reload strategies, checa sinais, executa trades.">
+        <div class="icon">🤖</div>
+        <div class="name">Autotrader</div>
+        <div class="file">vt_autotrader.py</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node" data-info="Plugin system. Cada arquivo em strategies/ é carregado dinamicamente. 10 plugins disponíveis.">
+        <div class="icon">🧩</div>
+        <div class="name">Strategy Loader</div>
+        <div class="file">vt_strategy_loader.py</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node" data-info="10 plugins: BOLLINGER, RSI_REVERSION, EMA_PULLBACK, VWAP, STRONG_TREND, MACD_MOMENTUM, etc.">
+        <div class="icon">📊</div>
+        <div class="name">Estratégias</div>
+        <div class="file">strategies/*.py</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node" data-info="MetaTrader 5 — execução real das ordens. Conexão via wine+MT5 no Linux.">
+        <div class="icon">💹</div>
+        <div class="name">MT5</div>
+        <div class="file">MetaTrader 5</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:2rem">
+    <h3 style="color:var(--yellow);margin-bottom:1rem">🔄 Fluxo Reverso — Quem modifica a config</h3>
+    <div class="flow" style="min-width:auto;flex-wrap:wrap;gap:.5rem">
+      <div class="flow-node" style="border-color:var(--yellow)" data-info="Otimização de Meio-Dia — roda 12h, ajusta parâmetros dos indicadores">
+        <div class="icon">🔧</div>
+        <div class="name">Otimização 12h</div>
+        <div class="file">vt_copilot.py</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node" style="border-color:var(--yellow)" data-info="AGI Tuning — roda 17h, tuning end-of-day baseado nos trades do dia">
+        <div class="icon">🧠</div>
+        <div class="name">AGI 17h</div>
+        <div class="file">vt_agi_17h_tuning.py</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node" style="border-color:var(--green)" data-info="save_params() / save_full_config() — escrita atômica (.tmp → os.replace)">
+        <div class="icon">✍️</div>
+        <div class="name">save_params()</div>
+        <div class="file">vt_config_loader.py</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node" style="border-color:var(--green)" data-info="Arquivo atualizado no disco. mtime muda. Próximo load_config() detecta.">
+        <div class="icon">📄</div>
+        <div class="name">vt_config.json</div>
+        <div class="file">mtime atualizado</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node" style="border-color:var(--cyan)" data-info="Próximo ciclo (30s) → hot-reload → novos params ativos. Zero downtime.">
+        <div class="icon">♻️</div>
+        <div class="name">Hot Reload</div>
+        <div class="file">próximo ciclo</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECTION 2: CONFIG -->
+<section id="config" class="fade-section">
+  <h2><span class="emoji">📄</span> vt_config.json — A Fonte da Verdade</h2>
+  <p class="subtitle">455 linhas — tudo que o sistema precisa saber em um único arquivo JSON</p>
+
+  <div class="cards-grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">
+    <div class="card">
+      <h3 style="color:var(--cyan);margin-bottom:.5rem">📋 Símbolos & Timeframes</h3>
+      <div style="font-family:monospace;font-size:.8rem;line-height:1.8">
+        <div><span class="hl-kw">symbols</span>: [WIN, BIT, DOL, IND, WSP, WDO]</div>
+        <div><span class="hl-kw">timeframes</span>: [M5, M15, M30, H1]</div>
+        <div><span class="hl-kw">disabled_symbols</span>: [] (nenhum)</div>
+        <div><span class="hl-kw">disabled_timeframes</span>: [] (nenhum)</div>
+        <div style="margin-top:.5rem;color:var(--dim)">= 6 ativos × 4 TFs = <strong style="color:var(--green)">24 combinações</strong></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="color:var(--yellow);margin-bottom:.5rem">🎯 Estratégia Default</h3>
+      <div style="font-family:monospace;font-size:.8rem;line-height:1.8">
+        <div>WIN: <span style="color:#b8b0ff">BOLLINGER</span></div>
+        <div>BIT: <span style="color:#80ffe0">RSI_REVERSION</span></div>
+        <div>DOL: <span style="color:#ffcc80">EMA_PULLBACK</span></div>
+        <div>IND: <span style="color:#b8b0ff">BOLLINGER</span></div>
+        <div>WSP: <span style="color:#80ffe0">RSI_REVERSION</span></div>
+        <div>WDO: <span style="color:#80ffe0">RSI_REVERSION</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="color:var(--orange);margin-bottom:.5rem">⚙️ Parâmetros Globais</h3>
+      <div style="font-family:monospace;font-size:.8rem;line-height:1.8">
+        <div><span class="hl-kw">start_hour</span>: <span class="hl-num">9</span>:<span class="hl-num">05</span></div>
+        <div><span class="hl-kw">close_hour</span>: <span class="hl-num">16</span>:<span class="hl-num">45</span></div>
+        <div><span class="hl-kw">max_daily_loss</span>: R$ <span class="hl-num">-500</span></div>
+        <div><span class="hl-kw">check_interval</span>: <span class="hl-num">30</span>s</div>
+        <div><span class="hl-kw">hard_exit</span>: <span class="hl-num">45</span>min</div>
+        <div><span class="hl-kw">breakeven</span>: <span class="hl-num">10</span>min</div>
+        <div><span class="hl-kw">trailing</span>: <span class="hl-num">1.0</span>/<span class="hl-num">0.4</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="color:var(--pink);margin-bottom:.5rem">📦 Volume por Ativo</h3>
+      <div style="font-family:monospace;font-size:.8rem;line-height:1.8">
+        <div>BIT: <span class="hl-num">2</span> contratos</div>
+        <div>WDO: <span class="hl-num">2</span> contratos</div>
+        <div>WIN: <span class="hl-num">1</span> contrato</div>
+        <div>DOL: <span class="hl-num">1</span> contrato</div>
+        <div>IND: <span class="hl-num">1</span> contrato</div>
+        <div>WSP: <span class="hl-num">1</span> contrato</div>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="color:var(--blue);margin-bottom:.5rem">🔗 Símbolos Resolvidos (MT5)</h3>
+      <div style="font-family:monospace;font-size:.8rem;line-height:1.8">
+        <div>WIN → <span style="color:var(--accent2)">WINM26</span></div>
+        <div>BIT → <span style="color:var(--accent2)">BITM26</span></div>
+        <div>DOL → <span style="color:var(--accent2)">DOLN26</span></div>
+        <div>IND → <span style="color:var(--accent2)">INDM26</span></div>
+        <div>WSP → <span style="color:var(--accent2)">WSPM26</span></div>
+        <div>WDO → <span style="color:var(--accent2)">WDON26</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="color:var(--red);margin-bottom:.5rem">🛡️ Proteções</h3>
+      <div style="font-family:monospace;font-size:.8rem;line-height:1.8">
+        <div><span class="hl-kw">max_daily_loss</span>: <span style="color:var(--red)">R$ -500</span></div>
+        <div><span class="hl-kw">hard_exit_minutes</span>: <span class="hl-num">45</span></div>
+        <div><span class="hl-kw">max_position_minutes</span>: <span class="hl-num">90</span></div>
+        <div><span class="hl-kw">max_consecutive_losses</span>: <span class="hl-num">3</span></div>
+        <div><span class="hl-kw">warmup</span>: <span class="hl-num">15</span>min</div>
+        <div><span class="hl-kw">winddown</span>: <span class="hl-num">15</span>min</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECTION 3: CONFIG LOADER -->
+<section id="loader" class="fade-section">
+  <h2><span class="emoji">🔄</span> vt_config_loader.py — Hot Reload Gateway</h2>
+  <p class="subtitle">109 linhas — detecta mudanças no JSON e recarrega sem reiniciar o bot</p>
+
+  <div class="card" style="margin-bottom:1.5rem">
+    <h3 style="margin-bottom:1rem">Como funciona o Hot Reload</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem">
+      <div style="background:var(--bg2);border-radius:8px;padding:1rem;text-align:center">
+        <div style="font-size:2rem">📁</div>
+        <div style="font-weight:600;margin:.5rem 0">1. Checa mtime</div>
+        <div style="font-size:.8rem;color:var(--dim)">os.path.getmtime() — timestamp da última modificação do arquivo</div>
+      </div>
+      <div style="background:var(--bg2);border-radius:8px;padding:1rem;text-align:center">
+        <div style="font-size:2rem">🔍</div>
+        <div style="font-weight:600;margin:.5rem 0">2. Comparar</div>
+        <div style="font-size:.8rem;color:var(--dim)">mtime == cache? → Cache hit (zero custo). Mudou? → Recarrega</div>
+      </div>
+      <div style="background:var(--bg2);border-radius:8px;padding:1rem;text-align:center">
+        <div style="font-size:2rem">✅</div>
+        <div style="font-weight:600;margin:.5rem 0">3. Validar</div>
+        <div style="font-size:.8rem;color:var(--dim)">Checa se keys obrigatórias existem: symbols, strategy, wdo, win</div>
+      </div>
+      <div style="background:var(--bg2);border-radius:8px;padding:1rem;text-align:center">
+        <div style="font-size:2rem">♻️</div>
+        <div style="font-weight:600;margin:.5rem 0">4. Atualizar</div>
+        <div style="font-size:.8rem;color:var(--dim)">Substitui cache global + log: "🔄 v48→v49 (by optimizer)"</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header" onclick="toggleCode(this)">
+      <span class="filename">vt_config_loader.py — load_config()</span>
+      <span class="toggle">▼ expandir</span>
+    </div>
+    <div class="code-body collapsed"><pre id="code-loader"></pre></div>
+  </div>
+
+  <div class="code-block" style="margin-top:1rem">
+    <div class="code-header" onclick="toggleCode(this)">
+      <span class="filename">vt_config_loader.py — save_params() / save_full_config()</span>
+      <span class="toggle">▼ expandir</span>
+    </div>
+    <div class="code-body collapsed"><pre id="code-saver"></pre></div>
+  </div>
+</section>
+
+<!-- SECTION 4: AUTOTRADER -->
+<section id="autotrader" class="fade-section">
+  <h2><span class="emoji">🤖</span> vt_autotrader.py — O Coração do Sistema</h2>
+  <p class="subtitle">1.794 linhas — loop principal que lê config, despacha estratégias, executa trades</p>
+
+  <div class="card" style="margin-bottom:1.5rem">
+    <h3 style="margin-bottom:1rem">Fluxo de Decisão por Ativo × TF</h3>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;font-size:.85rem">
+      <span style="background:var(--bg2);padding:.4rem .8rem;border-radius:8px">Para cada <strong>symbol</strong> em symbols</span>
+      <span style="color:var(--accent)">→</span>
+      <span style="background:var(--bg2);padding:.4rem .8rem;border-radius:8px">Para cada <strong>tf</strong> em timeframes_by_symbol</span>
+      <span style="color:var(--accent)">→</span>
+      <span style="background:var(--bg2);padding:.4rem .8rem;border-radius:8px"><strong>_get_strategy_for_tf()</strong></span>
+      <span style="color:var(--accent)">→</span>
+      <span style="background:var(--bg2);padding:.4rem .8rem;border-radius:8px"><strong>_get_params_for_tf()</strong></span>
+      <span style="color:var(--accent)">→</span>
+      <span style="background:var(--bg2);padding:.4rem .8rem;border-radius:8px"><strong>strategy.check_entry()</strong></span>
+      <span style="color:var(--accent)">→</span>
+      <span style="background:var(--bg2);padding:.4rem .8rem;border-radius:8px"><strong>signal? → MT5</strong></span>
+    </div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header" onclick="toggleCode(this)">
+      <span class="filename">vt_autotrader.py — _get_strategy_for_tf() + _get_params_for_tf()</span>
+      <span class="toggle">▼ expandir</span>
+    </div>
+    <div class="code-body collapsed"><pre id="code-autotrader-resolve"></pre></div>
+  </div>
+
+  <div class="code-block" style="margin-top:1rem">
+    <div class="code-header" onclick="toggleCode(this)">
+      <span class="filename">vt_autotrader.py — Loop Principal (while True)</span>
+      <span class="toggle">▼ expandir</span>
+    </div>
+    <div class="code-body collapsed"><pre id="code-autotrader-loop"></pre></div>
+  </div>
+
+  <div class="code-block" style="margin-top:1rem">
+    <div class="code-header" onclick="toggleCode(this)">
+      <span class="filename">vt_autotrader.py — check_and_trade() (dispatch)</span>
+      <span class="toggle">▼ expandir</span>
+    </div>
+    <div class="code-body collapsed"><pre id="code-autotrader-dispatch"></pre></div>
+  </div>
+</section>
+
+<!-- SECTION 5: STRATEGIES -->
+<section id="estrategias" class="fade-section">
+  <h2><span class="emoji">🧩</span> Estratégias — Sistema de Plugins</h2>
+  <p class="subtitle">Cada arquivo em strategies/ é carregado dinamicamente pelo vt_strategy_loader.py</p>
+
+  <div class="card" style="margin-bottom:1.5rem">
+    <h3 style="margin-bottom:1rem">Plugin Interface</h3>
+    <div style="font-family:monospace;font-size:.85rem;background:var(--bg2);padding:1rem;border-radius:8px;line-height:1.8">
+      <div><span class="hl-cm"># Cada plugin DEVE ter:</span></div>
+      <div><span class="hl-kw">STRATEGY_NAME</span> = <span class="hl-str">"NOME_DA_ESTRATEGIA"</span></div>
+      <div><span class="hl-kw">def</span> <span class="hl-fn">check_entry</span>(symbol, tf, price, atr, bar_ts, bars, params, utils):</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-kw">return</span> <span class="hl-bool">None</span> <span class="hl-cm"># sem sinal</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-kw">return</span> {<span class="hl-str">"direction"</span>: <span class="hl-str">"BUY"</span>/<span class="hl-str">"SELL"</span>, <span class="hl-str">"sl_pts"</span>: <span class="hl-num">420</span>, <span class="hl-str">"info"</span>: {...}}</div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:rgba(108,99,255,.4)"></div>BOLLINGER</div>
+    <div class="legend-item"><div class="legend-dot" style="background:rgba(0,212,170,.4)"></div>RSI_REVERSION</div>
+    <div class="legend-item"><div class="legend-dot" style="background:rgba(255,145,0,.4)"></div>EMA_PULLBACK</div>
+    <div class="legend-item"><div class="legend-dot" style="background:rgba(68,138,255,.4)"></div>VWAP</div>
+    <div class="legend-item"><div class="legend-dot" style="background:rgba(255,64,129,.4)"></div>STRONG_TREND</div>
+  </div>
+
+  <div class="cards-grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">
+    <div class="card" style="border-left:3px solid rgba(108,99,255,.5)">
+      <h3 style="color:#b8b0ff">📊 BOLLINGER</h3>
+      <p style="font-size:.85rem;color:var(--dim)">Bandas de Bollinger (10, 1.5) + RSI extremo. Compra no lower band + RSI oversold. Vende no upper band + RSI overbought.</p>
+      <div style="font-size:.75rem;color:var(--accent);margin-top:.5rem">Usado em: 6 TFs (WIN×3, IND×2, WIN_H1)</div>
+    </div>
+    <div class="card" style="border-left:3px solid rgba(0,212,170,.5)">
+      <h3 style="color:#80ffe0">📈 RSI_REVERSION <span style="font-size:.7rem;background:var(--accent2);color:var(--bg);padding:.1rem .4rem;border-radius:4px;vertical-align:middle">NOVA</span></h3>
+      <p style="font-size:.85rem;color:var(--dim)">Mean-reversion pura por RSI. Compra quando RSI &lt; oversold, vende quando RSI &gt; overbought. Sem Bollinger, sem volume — entrada mais cedo.</p>
+      <div style="font-size:.75rem;color:var(--accent);margin-top:.5rem">Usado em: 9 TFs (BIT, DOL, IND, WSP, WDO, WIN_M30)</div>
+    </div>
+    <div class="card" style="border-left:3px solid rgba(255,145,0,.5)">
+      <h3 style="color:#ffcc80">📉 EMA_PULLBACK</h3>
+      <p style="font-size:.85rem;color:var(--dim)">Pullback na EMA em tendência. EMA fast/slow + ADX &gt; threshold. Entra quando preço volta pra EMA após rompimento.</p>
+      <div style="font-size:.75rem;color:var(--accent);margin-top:.5rem">Usado em: 7 TFs (BIT_M15, DOL×2, IND_H1, WSP_M30, WDO×2)</div>
+    </div>
+    <div class="card" style="border-left:3px solid rgba(68,138,255,.5)">
+      <h3 style="color:#82b1ff">📊 VWAP</h3>
+      <p style="font-size:.85rem;color:var(--dim)">Volume Weighted Average Price. Compra acima do VWAP (momentum), vende abaixo (reversão). Parâmetros: period, buy/sell threshold.</p>
+      <div style="font-size:.75rem;color:var(--accent);margin-top:.5rem">Usado em: 2 TFs (BIT_H1, DOL_M30, WSP_H1)</div>
+    </div>
+    <div class="card" style="border-left:3px solid rgba(255,64,129,.5)">
+      <h3 style="color:#ff80ab">💪 STRONG_TREND</h3>
+      <p style="font-size:.85rem;color:var(--dim)">Seguidor de tendência forte. Detecta movimentos com momentum alto e entra na direção. Sem parâmetros extras — usa só ATR e preço.</p>
+      <div style="font-size:.75rem;color:var(--accent);margin-top:.5rem">Usado em: 1 TF (WSP_M15)</div>
+    </div>
+    <div class="card" style="border:1px dashed var(--border)">
+      <h3 style="color:var(--dim)">📦 +5 disponíveis (não usadas)</h3>
+      <p style="font-size:.85rem;color:var(--dim)">MACD_MOMENTUM, ADX_TREND, EMA_CROSSOVER, SMART_EMA, WIN_REVERSION</p>
+      <div style="font-size:.75rem;color:var(--dim);margin-top:.5rem">Carregadas mas sem alocação ativa</div>
+    </div>
+  </div>
+
+  <div class="code-block" style="margin-top:1.5rem">
+    <div class="code-header" onclick="toggleCode(this)">
+      <span class="filename">strategies/rsi_reversion.py — Estratégia nova criada hoje</span>
+      <span class="toggle">▼ expandir</span>
+    </div>
+    <div class="code-body collapsed"><pre id="code-rsi"></pre></div>
+  </div>
+
+  <div class="code-block" style="margin-top:1rem">
+    <div class="code-header" onclick="toggleCode(this)">
+      <span class="filename">vt_strategy_loader.py — Carregamento dinâmico de plugins</span>
+      <span class="toggle">▼ expandir</span>
+    </div>
+    <div class="code-body collapsed"><pre id="code-strategy-loader"></pre></div>
+  </div>
+</section>
+
+<!-- SECTION 6: MATRIX -->
+<section id="matrix" class="fade-section">
+  <h2><span class="emoji">📊</span> Matriz Ativo × Timeframe</h2>
+  <p class="subtitle">24 combinações — todas positivas no backtest (dados até 12/06)</p>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:rgba(108,99,255,.4)"></div>BOLLINGER</div>
+    <div class="legend-item"><div class="legend-dot" style="background:rgba(0,212,170,.4)"></div>RSI_REVERSION</div>
+    <div class="legend-item"><div class="legend-dot" style="background:rgba(255,145,0,.4)"></div>EMA_PULLBACK</div>
+    <div class="legend-item"><div class="legend-dot" style="background:rgba(68,138,255,.4)"></div>VWAP</div>
+    <div class="legend-item"><div class="legend-dot" style="background:rgba(255,64,129,.4)"></div>STRONG_TREND</div>
+  </div>
+
+  <div class="matrix-wrap">
+    <table class="matrix">
+      <thead>
+        <tr><th>Ativo</th><th>M5</th><th>M15</th><th>M30</th><th>H1</th><th>Total</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="asset-name">WIN</td>
+          <td class="strat-boll" title="SL 2.5x | 70% WR | R$185/dia">BOLL<br><small>2.5x</small></td>
+          <td class="strat-boll" title="SL 1.5x | 55% WR | R$48/dia">BOLL<br><small>1.5x</small></td>
+          <td class="strat-rsi" title="SL 0.8x | 67% WR | R$60/dia">RSI<br><small>0.8x</small></td>
+          <td class="strat-boll" title="SL 0.8x | 64% WR | R$35/dia">BOLL<br><small>0.8x</small></td>
+          <td style="color:var(--green);font-weight:700">R$328/dia</td>
+        </tr>
+        <tr>
+          <td class="asset-name">BIT</td>
+          <td class="strat-rsi" title="SL 1.0x | 58% WR | R$4.041/dia">RSI<br><small>1.0x</small></td>
+          <td class="strat-ema" title="SL 0.8x | 22% WR | R$2.139/dia">EMA<br><small>0.8x</small></td>
+          <td class="strat-rsi" title="SL 0.8x | 63% WR | R$1.013/dia">RSI<br><small>0.8x</small></td>
+          <td class="strat-vwap" title="SL 0.8x | 62% WR | R$750/dia">VWAP<br><small>0.8x</small></td>
+          <td style="color:var(--green);font-weight:700">R$7.943/dia</td>
+        </tr>
+        <tr>
+          <td class="asset-name">DOL</td>
+          <td class="strat-rsi" title="SL 0.8x | 33% WR | R$975/dia">RSI<br><small>0.8x</small></td>
+          <td class="strat-ema" title="SL 1.2x | 53% WR | R$515/dia">EMA<br><small>1.2x</small></td>
+          <td class="strat-vwap" title="SL 0.8x | 57% WR | R$141/dia">VWAP<br><small>0.8x</small></td>
+          <td class="strat-ema" title="SL 0.8x | 61% WR | R$255/dia">EMA<br><small>0.8x</small></td>
+          <td style="color:var(--green);font-weight:700">R$1.886/dia</td>
+        </tr>
+        <tr>
+          <td class="asset-name">IND</td>
+          <td class="strat-boll" title="SL 1.2x | 74% WR | R$1.217/dia">BOLL<br><small>1.2x</small></td>
+          <td class="strat-boll" title="SL 1.0x | 53% WR | R$271/dia">BOLL<br><small>1.0x</small></td>
+          <td class="strat-rsi" title="SL 0.8x | 70% WR | R$278/dia">RSI<br><small>0.8x</small></td>
+          <td class="strat-ema" title="SL 0.8x | 61% WR | R$228/dia">EMA<br><small>0.8x</small></td>
+          <td style="color:var(--green);font-weight:700">R$1.994/dia</td>
+        </tr>
+        <tr>
+          <td class="asset-name">WSP</td>
+          <td class="strat-rsi" title="SL 1.5x | 61% WR | R$212/dia">RSI<br><small>1.5x</small></td>
+          <td class="strat-strong" title="SL 1.0x | 51% WR | R$49/dia">STR<br><small>1.0x</small></td>
+          <td class="strat-ema" title="SL 0.8x | 55% WR | R$20/dia">EMA<br><small>0.8x</small></td>
+          <td class="strat-vwap" title="SL 0.8x | 58% WR | R$22/dia">VWAP<br><small>0.8x</small></td>
+          <td style="color:var(--green);font-weight:700">R$303/dia</td>
+        </tr>
+        <tr>
+          <td class="asset-name">WDO</td>
+          <td class="strat-rsi" title="SL 0.8x | 44% WR | R$316/dia">RSI<br><small>0.8x</small></td>
+          <td class="strat-ema" title="SL 1.2x | 46% WR | R$265/dia">EMA<br><small>1.2x</small></td>
+          <td class="strat-rsi" title="SL 0.8x | 60% WR | R$108/dia">RSI<br><small>0.8x</small></td>
+          <td class="strat-ema" title="SL 0.8x | 56% WR | R$156/dia">EMA<br><small>0.8x</small></td>
+          <td style="color:var(--green);font-weight:700">R$845/dia</td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <td style="font-weight:700;border-top:2px solid var(--accent)">TOTAL</td>
+          <td colspan="4" style="border-top:2px solid var(--accent)"></td>
+          <td style="color:var(--green);font-weight:700;font-size:1.1rem;border-top:2px solid var(--accent)">R$13.299/dia</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <div style="margin-top:1.5rem;font-size:.85rem;color:var(--dim)">
+    <strong>Hover</strong> sobre cada célula para ver detalhes (SL, WR%, R$/dia). Todos os 24 timeframes são positivos.
+  </div>
+</section>
+
+<!-- SECTION 7: CRON TIMELINE -->
+<section id="cron" class="fade-section">
+  <h2><span class="emoji">⏰</span> Timeline Diária (Segunda a Sexta)</h2>
+  <p class="subtitle">7 crons orquestram o ciclo completo de trading</p>
+
+  <div class="timeline">
+    <div class="tl-item">
+      <div class="tl-content">
+        <div class="tl-time">08:55</div>
+        <div class="tl-name">🔍 Symbol Resolver</div>
+        <div class="tl-desc">Resolve contratos ativos (WIN→WINM26, BIT→BITM26, etc). Verifica vencimentos.</div>
+      </div>
+      <div class="tl-dot" style="background:var(--cyan)"></div>
+    </div>
+    <div class="tl-item">
+      <div class="tl-content">
+        <div class="tl-time">09:00</div>
+        <div class="tl-name">🤖 Autotrader</div>
+        <div class="tl-desc">Inicia o bot. Hot-reload config, carrega estratégias, entra no loop de 30s. Operações a partir das 09:05.</div>
+      </div>
+      <div class="tl-dot" style="background:var(--green)"></div>
+    </div>
+    <div class="tl-item">
+      <div class="tl-content">
+        <div class="tl-time">11:00</div>
+        <div class="tl-name">🧠 Inteligência Trader</div>
+        <div class="tl-desc">Análise LLM das manhãs. Lê logs, identifica padrões, sugere ajustes de parâmetros.</div>
+      </div>
+      <div class="tl-dot" style="background:var(--accent)"></div>
+    </div>
+    <div class="tl-item">
+      <div class="tl-content">
+        <div class="tl-time">12:00</div>
+        <div class="tl-name">🔧 Otimização Meio-Dia</div>
+        <div class="tl-desc">Ajusta parâmetros dos indicadores (SL, BB std, RSI thresholds). <strong>Escreve na config → hot-reload.</strong></div>
+      </div>
+      <div class="tl-dot" style="background:var(--yellow)"></div>
+    </div>
+    <div class="tl-item">
+      <div class="tl-content">
+        <div class="tl-time">13:00</div>
+        <div class="tl-name">🧠 Inteligência Trader</div>
+        <div class="tl-desc">Análise LLM da tarde. Segunda rodada de insights.</div>
+      </div>
+      <div class="tl-dot" style="background:var(--accent)"></div>
+    </div>
+    <div class="tl-item">
+      <div class="tl-content">
+        <div class="tl-time">16:50</div>
+        <div class="tl-name">📊 Relatório Diário</div>
+        <div class="tl-desc">Gera relatório P&L do dia. Envia pro Telegram com resumo de trades, wins/losses, performance por ativo.</div>
+      </div>
+      <div class="tl-dot" style="background:var(--blue)"></div>
+    </div>
+    <div class="tl-item">
+      <div class="tl-content">
+        <div class="tl-time">17:10</div>
+        <div class="tl-name">🧠 AGI Otimizador</div>
+        <div class="tl-desc">Tuning end-of-day. Analisa todos os trades, identifica underperformers, salva parâmetros otimizados na config para o dia seguinte.</div>
+      </div>
+      <div class="tl-dot" style="background:var(--pink)"></div>
+    </div>
+  </div>
+</section>
+
+<!-- SECTION 8: HOT RELOAD -->
+<section id="hotreload" class="fade-section">
+  <h2><span class="emoji">♻️</span> Hot Reload em Ação</h2>
+  <p class="subtitle">Demonstração animada de como uma mudança na config se propaga</p>
+
+  <div class="hot-reload-demo">
+    <div style="text-align:center;margin-bottom:1.5rem">
+      <button onclick="animateHotReload()" style="background:var(--accent);color:white;border:none;padding:.7rem 2rem;border-radius:8px;cursor:pointer;font-size:1rem;font-weight:600">▶ Simular Mudança de Config</button>
+      <span id="hr-status" style="margin-left:1rem;color:var(--dim);font-size:.9rem"></span>
+    </div>
+
+    <div class="hr-step" id="hr1">
+      <div class="step-num">1</div>
+      <div class="step-text">
+        <div style="font-weight:600">AGI 17h salva novos parâmetros</div>
+        <div style="font-size:.85rem;color:var(--dim)">save_params("win", {"sl_atr_mult": 2.7})</div>
+        <div class="step-file">vt_config_loader.py:save_params()</div>
+      </div>
+    </div>
+    <div class="hr-step" id="hr2">
+      <div class="step-num">2</div>
+      <div class="step-text">
+        <div style="font-weight:600">Escrita atômica: .tmp → os.replace()</div>
+        <div style="font-size:.85rem;color:var(--dim)">vt_config.json v49 → v50 no disco</div>
+        <div class="step-file">vt_config.json (mtime atualizado)</div>
+      </div>
+    </div>
+    <div class="hr-step" id="hr3">
+      <div class="step-num">3</div>
+      <div class="step-text">
+        <div style="font-weight:600">Próximo ciclo do autotrader (30s depois)</div>
+        <div style="font-size:.85rem;color:var(--dim)">CONFIG = load_config()</div>
+        <div class="step-file">vt_autotrader.py:1740</div>
+      </div>
+    </div>
+    <div class="hr-step" id="hr4">
+      <div class="step-num">4</div>
+      <div class="step-text">
+        <div style="font-weight:600">load_config() detecta mtime diferente</div>
+        <div style="font-size:.85rem;color:var(--dim)">current_mtime != _mtime → RECARREGA</div>
+        <div class="step-file">vt_config_loader.py:40</div>
+      </div>
+    </div>
+    <div class="hr-step" id="hr5">
+      <div class="step-num">5</div>
+      <div class="step-text">
+        <div style="font-weight:600">Log: 🔄 Config recarregada! v49→v50 (by agi_17h)</div>
+        <div style="font-size:.85rem;color:var(--dim)">Cache global _config atualizado</div>
+        <div class="step-file">vt_config_loader.py:62</div>
+      </div>
+    </div>
+    <div class="hr-step" id="hr6">
+      <div class="step-num" style="background:var(--green)">✓</div>
+      <div class="step-text">
+        <div style="font-weight:600;color:var(--green)">Novos parâmetros ativos!</div>
+        <div style="font-size:.85rem;color:var(--dim)">WIN_M5 agora usa SL=2.7x em vez de 2.5x. Zero downtime.</div>
+        <div class="step-file">vt_autotrader.py (próximo trade usa params novos)</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECTION 9: BUG FIX -->
+<section id="bugfix" class="fade-section">
+  <h2><span class="emoji">🐛</span> Bug Crítico Corrigido Hoje</h2>
+  <p class="subtitle">Case mismatch: os 24 timeframes operariam com SL errado sem esta correção</p>
+
+  <div class="bug-compare">
+    <div class="bug-before">
+      <div class="bug-label">❌ ANTES (bug)</div>
+      <div style="font-family:monospace;font-size:.85rem;line-height:1.8">
+        <div><span class="hl-fn">_get_params_for_tf</span>(<span class="hl-str">"WIN"</span>, <span class="hl-str">"M5"</span>)</div>
+        <div>&nbsp;&nbsp;key = <span class="hl-str">"win_m5"</span> <span class="hl-cm">← minúsculo!</span></div>
+        <div>&nbsp;&nbsp;params_by_tf[<span class="hl-str">"win_m5"</span>] → <span style="color:var(--red)">NÃO EXISTE</span></div>
+        <div>&nbsp;&nbsp;chave real é <span class="hl-str">"WIN_M5"</span> (maiúsculo)</div>
+        <div>&nbsp;&nbsp;→ fallback: <span style="color:var(--red)">SL=0.8x</span> (genérico)</div>
+        <div style="margin-top:.5rem;color:var(--red);font-weight:600">TODOS os 24 TFs ignoram params otimizados!</div>
+      </div>
+    </div>
+    <div class="bug-after">
+      <div class="bug-label">✅ DEPOIS (fix)</div>
+      <div style="font-family:monospace;font-size:.85rem;line-height:1.8">
+        <div><span class="hl-fn">_get_params_for_tf</span>(<span class="hl-str">"WIN"</span>, <span class="hl-str">"M5"</span>)</div>
+        <div>&nbsp;&nbsp;key = <span class="hl-str">"WIN_M5"</span> <span class="hl-cm">← original</span></div>
+        <div>&nbsp;&nbsp;params_by_tf[<span class="hl-str">"WIN_M5"</span>] → <span style="color:var(--green)">ENCONTRADO</span></div>
+        <div>&nbsp;&nbsp;fallback case-insensitive também</div>
+        <div>&nbsp;&nbsp;→ merge: <span style="color:var(--green)">SL=2.5x</span> + trailing + cooldown</div>
+        <div style="margin-top:.5rem;color:var(--green);font-weight:600">Todos os 24 TFs recebem params corretos!</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:1.5rem">
+    <h3 style="margin-bottom:.5rem">Impacto do bug (exemplos)</h3>
+    <table class="matrix" style="max-width:600px">
+      <thead><tr><th>Ativo_TF</th><th>SL correto</th><th>SL que usaria (bug)</th><th>Diferença</th></tr></thead>
+      <tbody>
+        <tr><td>WIN_M5</td><td style="color:var(--green)">2.5x</td><td style="color:var(--red)">0.8x</td><td style="color:var(--red)">SL 3x mais apertado</td></tr>
+        <tr><td>WIN_M15</td><td style="color:var(--green)">1.5x</td><td style="color:var(--red)">0.8x</td><td style="color:var(--red)">SL 2x mais apertado</td></tr>
+        <tr><td>IND_M5</td><td style="color:var(--green)">1.2x</td><td style="color:var(--red)">0.8x</td><td style="color:var(--red)">SL 1.5x mais apertado</td></tr>
+        <tr><td>DOL_M15</td><td style="color:var(--green)">1.2x</td><td style="color:var(--red)">0.8x</td><td style="color:var(--red)">SL 1.5x mais apertado</td></tr>
+        <tr><td>WSP_M5</td><td style="color:var(--green)">1.5x</td><td style="color:var(--red)">0.8x</td><td style="color:var(--red)">SL 2x mais apertado</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer style="text-align:center;padding:3rem 2rem;color:var(--dim);font-size:.8rem;border-top:1px solid var(--border)">
+  <div>Vibe-Trading v49 — Dashboard de Arquitetura</div>
+  <div style="margin-top:.5rem">Gerado em 14/06/2026 • Dados do backtest até 12/06/2026</div>
+  <div style="margin-top:.5rem">Arquivos: <code>vt_config.json</code> · <code>vt_config_loader.py</code> · <code>vt_autotrader.py</code> · <code>vt_strategy_loader.py</code> · <code>strategies/*.py</code></div>
+</footer>
+
+<script>
+// SYNTAX HIGHLIGHTER
+function hl(code){
+  return code
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/(#.*$)/gm,'<span class="hl-cm">$1</span>')
+    .replace(/("""[\s\S]*?"""|'''[\s\S]*?''')/g,'<span class="hl-str">$1</span>')
+    .replace(/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g,'<span class="hl-str">$1</span>')
+    .replace(/\b(def|class|return|if|elif|else|for|while|try|except|import|from|as|with|in|not|and|or|is|None|True|False|global|continue|break|pass|raise|lambda|yield|async|await)\b/g,'<span class="hl-kw">$1</span>')
+    .replace(/\b(self)\b/g,'<span class="hl-self">$1</span>')
+    .replace(/\b(\d+\.?\d*)\b/g,'<span class="hl-num">$1</span>')
+    .replace(/@(\w+)/g,'<span class="hl-dec">@$1</span>')
+}
+
+function addLineNums(code){
+  const lines=code.split('\n');
+  return lines.map((l,i)=>`<span class="line-num">${i+1}</span>${l}`).join('\n');
+}
+
+// CODE SNIPPETS
+const CODES={
+'code-loader':`def load_config(force: bool = False) -> dict:
+    """Carrega config do JSON. Hot-reload se arquivo mudou (mtime)."""
+    global _config, _mtime
+
+    try:
+        current_mtime = os.path.getmtime(CONFIG_PATH)
+    except FileNotFoundError:
+        log.error(f"Config não encontrado: {CONFIG_PATH}")
+        return _config or {}
+
+    if not force and _config is not None and current_mtime == _mtime:
+        return _config  # Cache hit — zero custo!
+
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            new_config = json.load(f)
+
+        # Validação mínima
+        for key in ["symbols", "strategy", "wdo", "win"]:
+            if key not in new_config:
+                log.error(f"Config inválido: falta chave '{key}'")
+                return _config or {}
+
+        # Detectar mudança de versão
+        old_ver = _config.get("_version", 0) if _config else 0
+        new_ver = new_config.get("_version", 0)
+
+        _config = new_config
+        _mtime = current_mtime
+
+        if old_ver != new_ver or force:
+            by = new_config.get("_updated_by", "?")
+            log.info(f"🔄 Config recarregada! v{old_ver}→v{new_ver} (by {by})")
+
+        return _config`,
+
+'code-saver':`def save_params(symbol_root: str, params: dict, updated_by: str = "optimizer"):
+    """Salva parâmetros de um símbolo no JSON (usado por scripts de otimização)."""
+    cfg = load_config(force=True)
+    key = symbol_root.lower()
+    if key in cfg:
+        cfg[key].update(params)
+    else:
+        cfg[key] = params
+    cfg["_version"] = cfg.get("_version", 0) + 1
+    cfg["_updated_at"] = datetime.now().isoformat()
+    cfg["_updated_by"] = updated_by
+    return _atomic_write(cfg)
+
+def _atomic_write(cfg: dict) -> bool:
+    """Escrita atômica: tmp + rename (evita corrupção)."""
+    tmp_path = CONFIG_PATH.with_suffix(".tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, CONFIG_PATH)  # Atômico no Linux!
+        return True
+    except IOError as e:
+        log.error(f"Erro ao salvar config: {e}")
+        return False`,
+
+'code-autotrader-resolve':`def _get_strategy_for_tf(symbol_root: str, tf: str) -> str:
+    """Retorna a estratégia para o símbolo+TF.
+    Prioridade: strategy_by_tf["SYMBOL_TF"] > strategy[symbol] > VWAP
+    """
+    key = f"{symbol_root}_{tf}"
+    by_tf = CONFIG.get("strategy_by_tf", {})
+    if key in by_tf:
+        return by_tf[key]
+    return CONFIG["strategy"].get(symbol_root, "VWAP")
+
+def _get_params_for_tf(symbol_root: str, tf: str) -> dict:
+    """Retorna parâmetros para o símbolo+TF.
+    Prioridade: params_by_tf["symbol_tf"] > params[symbol] > {}
+    """
+    key = f"{symbol_root}_{tf}"
+    by_tf = CONFIG.get("params_by_tf", {})
+    base = CONFIG.get(symbol_root.lower(), {})
+    if key in by_tf:
+        return {**base, **by_tf[key]}
+    key_lower = key.lower()
+    if key_lower in by_tf:
+        return {**base, **by_tf[key_lower]}
+    return base`,
+
+'code-autotrader-loop':`while True:
+    try:
+        # Hot reload config + strategies
+        CONFIG = load_config()
+        reload_strategies()
+
+        if is_close_time() and not state.closed:
+            close_all_and_report()
+            time.sleep(10)
+            continue
+
+        if not is_trading_time():
+            if state.started_at:
+                log("Fora do horário de trading. Aguardando...")
+            time.sleep(60)
+            continue
+
+        check_and_trade()
+    except Exception as e:
+        log(f"[ERRO] {e}")
+        import traceback
+        traceback.print_exc()`,
+
+'code-autotrader-dispatch':`# Dentro de check_and_trade():
+for symbol_root in CONFIG["symbols"]:
+    symbol = state.resolved_symbols.get(symbol_root, symbol_root)
+
+    timeframes = CONFIG.get("timeframes_by_symbol", {}).get(symbol_root, CONFIG["timeframes"])
+
+    for tf in timeframes:
+        # Kill switch
+        if f"{symbol_root}_{tf}" in CONFIG.get("disabled_timeframes", []):
+            continue
+
+        strategy = _get_strategy_for_tf(symbol_root, tf)
+        params = _get_params_for_tf(symbol_root, tf)
+        bars = fetch_bars(symbol, tf, CONFIG["bars_count"])
+
+        atr = calculate_atr(bars, params.get("atr_period", 14))
+        last_close = bars[1]["close"]
+
+        pos = state.positions.get(f"{symbol}_{tf}")
+        if pos:
+            manage_position(symbol, tf, pos, atr, strategy, params)
+        else:
+            # Dispatch dinâmico de estratégia
+            strategy_func = get_strategy_func(strategy)
+            signal = strategy_func(symbol, tf, last_close, atr, ..., params, utils)
+            if signal:
+                # Executa trade no MT5
+                open_position(symbol, tf, signal, params)`,
+
+'code-rsi':`STRATEGY_NAME = "RSI_REVERSION"
+
+def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
+    """Mean-reversion por RSI extremo."""
+    calculate_rsi = utils["calculate_rsi"]
+    calculate_ema = utils["calculate_ema"]
+    calc_sl = utils["calc_sl"]
+
+    rsi_period = params.get("rsi_period", 14)
+    rsi_ob = params.get("rsi_overbought", 70)
+    rsi_os = params.get("rsi_oversold", 30)
+    ema_period = params.get("ema_period", 0)
+    max_ema_dist = params.get("max_ema_distance_pct", 5.0) / 100.0
+
+    if not bars or len(bars) < rsi_period + 5:
+        return None
+    if atr <= 0:
+        return None
+
+    rsi = calculate_rsi(bars, rsi_period)
+    if rsi is None or rsi == 0:
+        return None
+
+    direction = None
+    if rsi < rsi_os:       # RSI oversold → compra
+        direction = "BUY"
+    elif rsi > rsi_ob:     # RSI overbought → vende
+        direction = "SELL"
+
+    if not direction:
+        return None
+
+    # Filtro de tendência opcional
+    if ema_period > 0 and len(bars) >= ema_period + 5:
+        ema_val = calculate_ema(bars, ema_period)
+        if ema_val and ema_val > 0:
+            ema_dist = abs(price - ema_val) / ema_val
+            if ema_dist > max_ema_dist:
+                return None  # Trend forte demais
+
+    sl_pts = calc_sl(symbol, atr, params)
+
+    return {
+        "direction": direction,
+        "sl_pts": sl_pts,
+        "info": {"strategy": "RSI_REVERSION", "rsi": rsi, "atr": atr},
+    }`,
+
+'code-strategy-loader':`def load_strategies(force: bool = False) -> dict:
+    """Carrega todas as estratégias de strategies/."""
+    global _strategies, _loaded, _file_mtimes
+
+    if _loaded and not force:
+        return _strategies  # Cache hit
+
+    _strategies.clear()
+
+    for py_file in sorted(STRATEGIES_DIR.glob("*.py")):
+        if py_file.name.startswith("_"):
+            continue
+
+        try:
+            spec = importlib.util.spec_from_file_location(
+                f"strategies.{module_name}", str(py_file)
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+
+            name = getattr(module, "STRATEGY_NAME", module_name.upper())
+            check_func = getattr(module, "check_entry", None)
+
+            if check_func is None:
+                continue
+
+            _strategies[name] = {
+                "module": module,
+                "check_entry": check_func,
+                "name": name,
+                "file": str(py_file),
+            }
+        except Exception as e:
+            log.error(f"Erro ao carregar estratégia {module_name}: {e}")
+
+    _loaded = True
+    _file_mtimes = _get_file_mtimes()
+    return _strategies`
+};
+
+// Render code blocks
+Object.entries(CODES).forEach(([id,code])=>{
+  const el=document.getElementById(id);
+  if(el) el.innerHTML=addLineNums(hl(code));
+});
+
+// Toggle code blocks
+function toggleCode(header){
+  const body=header.nextElementSibling;
+  const toggle=header.querySelector('.toggle');
+  body.classList.toggle('collapsed');
+  toggle.classList.toggle('open');
+  toggle.textContent=body.classList.contains('collapsed')?'▼ expandir':'▲ recolher';
+}
+
+// Intersection Observer for fade-in
+const observer=new IntersectionObserver((entries)=>{
+  entries.forEach(e=>{
+    if(e.isIntersecting){
+      e.target.classList.add('visible');
+    }
+  });
+},{threshold:0.1});
+document.querySelectorAll('.fade-section').forEach(s=>observer.observe(s));
+
+// Hot Reload animation
+function animateHotReload(){
+  const steps=['hr1','hr2','hr3','hr4','hr5','hr6'];
+  const status=document.getElementById('hr-status');
+  steps.forEach(id=>{
+    const el=document.getElementById(id);
+    el.style.opacity='.3';
+    el.style.transform='translateX(-20px)';
+  });
+  status.textContent='Iniciando...';
+  steps.forEach((id,i)=>{
+    setTimeout(()=>{
+      const el=document.getElementById(id);
+      el.style.opacity='1';
+      el.style.transform='translateX(0)';
+      const label=['AGI salva params','Escrita atômica no disco','load_config() chamado','mtime diferente → RECARREGA','Cache atualizado','Novos params ATIVOS!'][i];
+      status.textContent=label;
+      if(i===steps.length-1){
+        setTimeout(()=>status.textContent='✅ Pronto! Zero downtime.',1000);
+      }
+    },(i+1)*800);
+  });
+}
+
+// Flow node click
+document.querySelectorAll('.flow-node').forEach(node=>{
+  node.addEventListener('click',()=>{
+    const info=node.getAttribute('data-info');
+    if(info){
+      const tooltip=document.createElement('div');
+      tooltip.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg2);border:1px solid var(--accent);border-radius:12px;padding:1.5rem 2rem;z-index:1000;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,.5);animation:fadeInUp .3s ease';
+      tooltip.innerHTML=`<div style="margin-bottom:.5rem;font-weight:600">${node.querySelector('.name').textContent}</div><div style="font-size:.9rem;color:var(--dim)">${info}</div><div style="margin-top:1rem;text-align:center;font-size:.75rem;color:var(--accent)">clique pra fechar</div>`;
+      tooltip.onclick=()=>tooltip.remove();
+      document.body.appendChild(tooltip);
+    }
+  });
+});
+</script>
+</body>
+</html>
