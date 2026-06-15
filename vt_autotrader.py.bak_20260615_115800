@@ -1420,7 +1420,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
                     )
 
         notify_telegram(
-            f"⚡ *Fechou {symbol} {tf}*\n"
+            f"⚡ *Fechou {symbol}*\n"
             f"• {direction} | R$ {pnl:+.2f}\n"
             f"• SL atingido no servidor"
         )
