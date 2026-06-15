@@ -89,7 +89,7 @@ DEBOUNCE_MINUTES = {
 _SILENT_EVENTS = {"VWAP_CROSS"}  # VWAP cross é informação, não alerta
 
 
-def notify(event_type: str, symbol: str, msg: str):
+def notify(event_type: str, symbol: str, msg: str, tf: str = ""):
     """Alerta rápido via Telegram (zero LLM). Com debounce anti-spam."""
     # Eventos silenciosos: só log, sem Telegram
     if event_type in _SILENT_EVENTS:
@@ -113,9 +113,10 @@ def notify(event_type: str, symbol: str, msg: str):
         "BREAKOUT": "🚀",
     }
     icon = icons.get(event_type, "🔔")
+    symbol_label = f"{symbol} {tf}" if tf else symbol
     try:
         from vt_hermes_helper import hermes_send
-        hermes_send("telegram:-1004284773048", f"{icon} *{event_type}* {symbol}\n{msg}")
+        hermes_send("telegram:-1004284773048", f"{icon} *{event_type}* {symbol_label}\n{msg}")
     except Exception:
         pass
 
@@ -235,6 +236,7 @@ def detect_anomalies(snapshot: dict) -> list:
     """Detecta eventos anômalos que merecem atenção."""
     anomalies = []
     symbol = snapshot["symbol"]
+    tf = snapshot.get("timeframe", "")
     root = symbol[:3]
     buf = METRICS_BUFFER.get(root)
 
@@ -251,7 +253,8 @@ def detect_anomalies(snapshot: dict) -> list:
         anomalies.append({
             "type": "VOLUME_SPIKE",
             "severity": "ALTO" if ratio > 3 else "MÉDIO",
-            "msg": f"Volume alto: {ratio:.0f}x acima do normal"
+            "msg": f"Volume alto: {ratio:.0f}x acima do normal",
+            "tf": tf
         })
 
     # 2. Volatilidade spike
@@ -260,7 +263,8 @@ def detect_anomalies(snapshot: dict) -> list:
         anomalies.append({
             "type": "VOLATILITY_SPIKE",
             "severity": "ALTO" if ratio > 2.5 else "MÉDIO",
-            "msg": f"Volatilidade alta: {ratio:.0f}x acima do normal"
+            "msg": f"Volatilidade alta: {ratio:.0f}x acima do normal",
+            "tf": tf
         })
 
     # 3. Drawdown na posição (só quando pnl < 0 — prejuízo real)
@@ -281,7 +285,8 @@ def detect_anomalies(snapshot: dict) -> list:
                 anomalies.append({
                     "type": "DRAWDOWN",
                     "severity": "ALTO" if drawdown_pts > atr else "MÉDIO",
-                    "msg": f"Posição perdendo R$ {abs(pnl):.0f}"
+                    "msg": f"Posição perdendo R$ {abs(pnl):.0f}",
+                    "tf": tf
                 })
 
     # 4. VWAP cruzamento — info only, não alerta
@@ -290,7 +295,8 @@ def detect_anomalies(snapshot: dict) -> list:
         anomalies.append({
             "type": "VWAP_CROSS",
             "severity": "BAIXO",
-            "msg": f"Preço no VWAP ({vwap_dist:+.3f}%)"
+            "msg": f"Preço no VWAP ({vwap_dist:+.3f}%)",
+            "tf": tf
         })
 
     # 5. Breakout de sessão
@@ -299,13 +305,15 @@ def detect_anomalies(snapshot: dict) -> list:
         anomalies.append({
             "type": "BREAKOUT",
             "severity": "ALTO",
-            "msg": f"Rompeu máxima da sessão: {current:.0f}"
+            "msg": f"Rompeu máxima da sessão: {current:.0f}",
+            "tf": tf
         })
     elif current < snapshot["session_low"] * 0.999:
         anomalies.append({
             "type": "BREAKOUT",
             "severity": "ALTO",
-            "msg": f"Rompeu mínima da sessão: {current:.0f}"
+            "msg": f"Rompeu mínima da sessão: {current:.0f}",
+            "tf": tf
         })
 
     # 6. Reversão forte
@@ -315,7 +323,8 @@ def detect_anomalies(snapshot: dict) -> list:
         anomalies.append({
             "type": "REVERSAL",
             "severity": "MÉDIO",
-            "msg": f"Movimento forte {direction} ({abs(mom):.1f}%)"
+            "msg": f"Movimento forte {direction} ({abs(mom):.1f}%)",
+            "tf": tf
         })
 
     return anomalies
@@ -437,7 +446,7 @@ def analyze():
             icon = "🔴" if a["severity"] == "ALTO" else "🟡" if a["severity"] == "MÉDIO" else "🟢"
             print(f"  {icon} {a['type']}: {a['msg']}")
             log_anomaly(symbol, a["type"], a["data"] if "data" in a else {"msg": a["msg"], "severity": a["severity"]})
-            notify(a["type"], symbol, a["msg"])
+            notify(a["type"], symbol, a["msg"], a.get("tf", ""))
 
     return build_analysis_prompt()
 
@@ -467,7 +476,7 @@ def watch_loop():
                         anomalies = detect_anomalies(snap)
                         for a in anomalies:
                             log_anomaly(symbol, a["type"], a)
-                            notify(a["type"], symbol, a["msg"])
+                            notify(a["type"], symbol, a["msg"], a.get("tf", ""))
 
                 if bar_count % 6 == 0:
                     print(f"[{snap_time}] Barra #{bar_count} — snapshot salvo")

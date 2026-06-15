@@ -578,7 +578,7 @@ def check_and_trade():
             anomalies = detect_anomalies(snap)
             for a in anomalies:
                 log_anomaly(symbol, a["type"], a)
-                analyst_notify(a["type"], symbol, a["msg"])
+                analyst_notify(a["type"], symbol, a["msg"], a.get("tf", ""))
 
         # Strategy/params per TF (with fallback to symbol-level)
         _default_strategy = _get_strategy(symbol_root)
