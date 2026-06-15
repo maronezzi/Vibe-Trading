@@ -1,0 +1,24 @@
+# Vibe-Trading — Cron schedule completo (Bruno Maronezzi, 2026-06-15)
+# Instalado por: vt_pre_flight + scripts/start_autotrader.sh
+#
+# Importante: cron roda com PATH=/usr/bin:/bin — scripts devem usar caminhos absolutos.
+# O vt_pre_flight valida TUDO antes do autotrader iniciar; se falhar, autotrader NÃO inicia.
+
+# ─── PRE-FLIGHT 08:55 (seg-sex) — garante dia útil, MT5 up, config OK, state limpo ──
+55 8 * * 1-5 /usr/bin/python3 /home/bruno/Projects/Vibe-Trading/vt_pre_flight.py >> /tmp/vt_pre_flight.log 2>&1
+
+# ─── AUTOTRADER START 09:00 (seg-sex) — pkill+start idempotente ────────────────────
+0 9 * * 1-5 /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/start_autotrader.sh >> /tmp/vt_start.log 2>&1
+
+# ─── INTELIGÊNCIA TRADER 11:00 / 13:00 (seg-sex) — análise + ajuste de params ─────
+# (Reutiliza vt_copilot.py que já existia)
+0 10,12,15 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 vt_copilot.py >> /tmp/vt_copilot.log 2>&1
+
+# ─── RELATÓRIO DIÁRIO 16:50 (seg-sex) — fecha posições + P&L do dia ──────────────
+50 16 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 vt_daily_report.py >> /tmp/vt_daily_report.log 2>&1
+
+# ─── AGI OTIMIZADOR 17:10 (seg-sex) — análise 7d + LLM + apply_changes ──────────
+10 17 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 agi_tuning_17h.py >> /tmp/vt_agi.log 2>&1
+
+# ─── RELATÓRIO SEMANAL sexta 17:30 — resumo + 6 gráficos PNG + CSV ─────────────
+30 17 * * 5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 vt_weekly_report.py >> /tmp/vt_weekly.log 2>&1
