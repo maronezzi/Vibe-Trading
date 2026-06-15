@@ -46,42 +46,58 @@ def _log(msg: str, file=None):
 
 
 def _ask_llm(prompt: str, timeout: int = 60) -> Optional[str]:
-    """Consulta LLM ativo no Hermes (mesmo modelo que está rodando).
+    """Consulta LLM com cadeia de fallback.
+
+    Ordem de modelos:
+    1. minimax/minimax-m3 (openrouter) — padrão
+    2. zhipu/glm-5.2 (zai) — fallback 1
+    3. xiaomi/mimo-v2.5-pro (zai) — fallback 2
 
     Política:
-    - SEMPRE tenta consultar (sem fallback local)
-    - Timeout padrão 60s (LLM com latência pode demorar)
-    - Erros transient (timeout, 5xx): loga warning, retorna None
-    - Erros de saldo (HTTP 429): loga warning, retorna None
-    - Próxima chamada tenta novamente
+    - Tenta cada modelo em sequência
+    - Se modelo retorna resposta válida, retorna imediatamente
+    - Se falha (timeout, 429, 5xx), loga e tenta o próximo
+    - Se todos falham, retorna None
     """
-    try:
-        from vt_hermes_helper import find_hermes
-        hermes_bin = find_hermes()
-        if not hermes_bin:
-            _log("[WARN] hermes CLI não encontrado no sistema")
-            return None
-        result = subprocess.run(
-            [hermes_bin, "-z", prompt, "-m", "minimax/minimax-m3", "--provider", "openrouter"],
-            capture_output=True,
-            text=True,
-            timeout=timeout
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-        # Detectar tipo de erro para log apropriado
-        stderr = (result.stderr or "")[:200]
-        if "429" in stderr or "balance" in stderr.lower() or "quota" in stderr.lower():
-            _log(f"[WARN] LLM sem saldo (HTTP 429): {stderr[:100]}")
-        else:
-            _log(f"[WARN] LLM erro (rc={result.returncode}): {stderr[:100]}")
+    from vt_hermes_helper import find_hermes
+    hermes_bin = find_hermes()
+    if not hermes_bin:
+        _log("[WARN] hermes CLI não encontrado no sistema")
         return None
-    except subprocess.TimeoutExpired:
-        _log(f"[WARN] LLM timeout ({timeout}s) — próxima chamada tentará novamente")
-        return None
-    except Exception as e:
-        _log(f"[WARN] Erro LLM: {e}")
-        return None
+
+    models = [
+        ("minimax/minimax-m3", "openrouter"),
+        ("glm-5.2", "zai"),
+        ("mimo-v2.5-pro", "zai"),
+    ]
+
+    for model, provider in models:
+        try:
+            result = subprocess.run(
+                [hermes_bin, "-z", prompt, "-m", model, "--provider", provider],
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                if model != models[0][0]:
+                    _log(f"[LLM] Fallback {model} ({provider}) respondeu OK")
+                return result.stdout.strip()
+
+            # Erro — logar e tentar próximo
+            stderr = (result.stderr or "")[:200]
+            if "429" in stderr or "balance" in stderr.lower() or "quota" in stderr.lower():
+                _log(f"[WARN] {model} ({provider}): sem saldo (429) — tentando próximo")
+            else:
+                _log(f"[WARN] {model} ({provider}): erro rc={result.returncode}: {stderr[:80]}")
+
+        except subprocess.TimeoutExpired:
+            _log(f"[WARN] {model} ({provider}): timeout ({timeout}s) — tentando próximo")
+        except Exception as e:
+            _log(f"[WARN] {model} ({provider}): {e}")
+
+    _log("[WARN] Todos os modelos LLM falharam — validação local apenas")
+    return None
 
 
 def _validate_sl_locally(order_data: dict) -> list:
