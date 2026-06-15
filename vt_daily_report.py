@@ -70,8 +70,9 @@ def get_trades_report(target_date: str = None) -> dict:
         SELECT symbol, timeframe, direction, strategy,
                entry_time, entry_price, entry_sl,
                exit_time, exit_price, exit_reason,
-               gross_pnl, fees, swap, net_pnl
-        FROM trades 
+               gross_pnl, fees, swap, net_pnl,
+               signal_detail, notes
+        FROM trades
         WHERE date(entry_time) = ?
         ORDER BY entry_time
     ''', (target_date,)).fetchall()
@@ -207,10 +208,31 @@ def format_report(report: dict, close_info: dict) -> str:
             # Horário real de saída (não o motivo)
             exit_time = t['exit_time'].split(" ")[1][:5] if t['exit_time'] else "?"
             lines.append(
-                f"{i}. {icon} {t['symbol']} {t['direction']} | "
+                f"{i}. {icon} {t['symbol']} {t['direction']} {t.get('timeframe','')} | "
+                f"{t.get('strategy','')} | "
                 f"{entry_time} @ {t['entry_price']} → {exit_time} @ {exit_price} | "
                 f"R$ {pnl:+.2f} | {exit_reason}"
             )
+            # Signal detail (indicadores no momento da entrada)
+            sig = t.get('signal_detail')
+            if sig:
+                try:
+                    sd = json.loads(sig) if isinstance(sig, str) else sig
+                    parts = []
+                    if 'rsi' in sd: parts.append(f"RSI={sd['rsi']:.1f}")
+                    if 'vwap' in sd: parts.append(f"VWAP={sd['vwap']:.2f}")
+                    if 'bb_upper' in sd: parts.append(f"BB={sd.get('bb_lower',0):.0f}/{sd.get('bb_mid',0):.0f}/{sd.get('bb_upper',0):.0f}")
+                    if 'atr' in sd: parts.append(f"ATR={sd['atr']:.1f}")
+                    if 'adx' in sd: parts.append(f"ADX={sd['adx']:.1f}")
+                    if 'ema_fast' in sd: parts.append(f"EMA={sd.get('ema_fast',0):.0f}/{sd.get('ema_slow',0):.0f}")
+                    if parts:
+                        lines.append(f"   📐 {' | '.join(parts)}")
+                except Exception:
+                    pass
+            # Notas (se houver)
+            notes = t.get('notes')
+            if notes and 'fees_synced' in str(notes):
+                lines.append(f"   ✅ Fees sincronizados com MT5")
         
         if len(report["trades"]) > 10:
             lines.append(f"... e mais {len(report['trades']) - 10} trades")

@@ -18,9 +18,12 @@ Campos necessários:
 
 import sqlite3
 import json
+import logging
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger("vt_trade_log")
 
 DB_PATH = Path("/home/bruno/Projects/Vibe-Trading/vt_trades.db")
 NOTIFICATION_FILE = Path("/tmp/vt_notifications.jsonl")  # fila de notificações
@@ -329,34 +332,123 @@ def _queue_notification(event: str, symbol: str, direction: str, volume: float,
 
 def import_mt5_history(positions_data: list):
     """
-    Importa posições fechadas do MT5 para o histórico.
-    positions_data: lista de dicts com campos da posição MT5.
+    Importa deals do MT5 para a tabela trade_history_from_mt5.
+    Aceita tanto formato de deals (cmd_history) quanto de positions.
     """
+    if not positions_data:
+        return 0
+
     conn = get_db()
+    imported = 0
     for pos in positions_data:
         ticket = str(pos.get("ticket", ""))
         symbol = pos.get("symbol", "")
-        conn.execute("""
-            INSERT OR REPLACE INTO trade_history_from_mt5
-            (ticket, symbol, direction, volume, price_open, price_close,
-             price_current, sl, tp, profit, swap, commission, comment,
-             magic, time_open, time_close, reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            ticket, symbol,
-            "BUY" if pos.get("type") == 0 else "SELL",
-            pos.get("volume", 0), pos.get("price_open", 0),
-            pos.get("price_close", 0), pos.get("price_current", 0),
-            pos.get("sl", 0), pos.get("tp", 0),
-            pos.get("profit", 0), pos.get("swap", 0),
-            pos.get("commission", 0), pos.get("comment", ""),
-            pos.get("magic", 0),
-            str(pos.get("time_open", "")),
-            str(pos.get("time_close", "")),
-            "MT5_IMPORTED",
-        ))
+        if not ticket or not symbol:
+            continue
+
+        # Mapear type: cmd_history retorna "BUY"/"SELL" (string),
+        # positions retornam 0/1 (int). Normalizar pra string.
+        raw_type = pos.get("type", "")
+        if isinstance(raw_type, int):
+            direction = "BUY" if raw_type == 0 else "SELL"
+        elif isinstance(raw_type, str):
+            direction = raw_type.upper()
+        else:
+            direction = "BUY"
+
+        # cmd_history retorna "price" (único), positions têm price_open/price_close
+        price = pos.get("price", 0)
+        price_open = pos.get("price_open", price)
+        price_close = pos.get("price_close", price)
+
+        # cmd_history retorna "time", positions têm time_open/time_close
+        time_val = pos.get("time", "")
+        time_open = str(pos.get("time_open", time_val))
+        time_close = str(pos.get("time_close", time_val))
+
+        try:
+            conn.execute("""
+                INSERT OR REPLACE INTO trade_history_from_mt5
+                (ticket, symbol, direction, volume, price_open, price_close,
+                 price_current, sl, tp, profit, swap, commission, comment,
+                 magic, time_open, time_close, reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                ticket, symbol, direction,
+                pos.get("volume", 0), price_open, price_close,
+                pos.get("price_current", 0),
+                pos.get("sl", 0), pos.get("tp", 0),
+                pos.get("profit", 0), pos.get("swap", 0),
+                pos.get("commission", 0), pos.get("comment", ""),
+                pos.get("magic", 0),
+                time_open, time_close, "MT5_IMPORTED",
+            ))
+            imported += 1
+        except Exception as e:
+            log.warning(f"Erro ao importar deal {ticket}: {e}")
+
     conn.commit()
     conn.close()
+    log.info(f"MT5 history: {imported}/{len(positions_data)} deals importados")
+    return imported
+
+
+def sync_fees_from_mt5(date_str: str = None):
+    """
+    Busca deals reais do MT5 e atualiza fees/swap nos trades do dia.
+    Chamado após close_all_and_report para usar taxas reais.
+    """
+    if date_str is None:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+    conn = get_db()
+
+    # Buscar deals importados do dia
+    deals = conn.execute("""
+        SELECT ticket, symbol, profit, swap, commission
+        FROM trade_history_from_mt5
+        WHERE reason = 'MT5_IMPORTED'
+        AND date(time_close) = ?
+    """, (date_str,)).fetchall()
+
+    if not deals:
+        conn.close()
+        return 0
+
+    updated = 0
+    for deal in deals:
+        # Encontrar trade correspondente pelo ticket de saída ou symbol+data
+        trade = conn.execute("""
+            SELECT id, exit_ticket, symbol, entry_time, exit_time
+            FROM trades
+            WHERE date(entry_time) = ?
+            AND symbol LIKE ?
+            AND exit_time IS NOT NULL
+            ORDER BY id DESC LIMIT 1
+        """, (date_str, f"%{deal['symbol']}%")).fetchone()
+
+        if not trade:
+            continue
+
+        real_commission = deal["commission"] or 0
+        real_swap = deal["swap"] or 0
+        real_fees = abs(real_commission)  # commission já vem negativa
+
+        conn.execute("""
+            UPDATE trades SET
+                fees = ?,
+                swap = ?,
+                net_pnl = gross_pnl - ? + ?,
+                notes = COALESCE(notes, '') || ' [fees_synced_mt5]',
+                updated_at = datetime('now', 'localtime')
+            WHERE id = ?
+        """, (real_fees, real_swap, real_fees, real_swap, trade["id"]))
+        updated += 1
+
+    conn.commit()
+    conn.close()
+    log.info(f"sync_fees: {updated} trades atualizados com taxas reais do MT5")
+    return updated
 
 
 def get_daily_summary(date_str: str = None) -> dict:

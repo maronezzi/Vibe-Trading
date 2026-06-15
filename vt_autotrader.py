@@ -35,7 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary
+from vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary, sync_fees_from_mt5
 from mt5_orchestrator import status, buy, sell, close, close_all, tick, modify_sl, _run_wine, EXECUTOR_WIN
 from mt5_error_recovery import safe_buy, safe_sell, safe_modify_sl, safe_close
 from vt_config_loader import load_config
@@ -1374,7 +1374,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             exit_reason="SL_SERVIDOR",
             exit_ticket="server",
             swap=0,
-            notes=f"Posição fechada pelo servidor MT5. PnL estimado: R${profit:.2f}",
+            notes=f"Posição fechada pelo servidor MT5. PnL estimado: R${profit:.2f}. Fees serão sincronizados no EOD.",
         )
         if exit_result:
             pnl = exit_result.get("net_pnl", 0)
@@ -1443,12 +1443,19 @@ def close_all_and_report():
                 state.consecutive_losses[symbol] = state.consecutive_losses.get(symbol, 0) + 1
 
     time.sleep(2)
+    # Importar deals reais do MT5 e sincronizar taxas
     try:
         hist_result = _run_wine(EXECUTOR_WIN, "history")
         if isinstance(hist_result, dict) and "history" in hist_result:
-            import_mt5_history(hist_result["history"])
-    except Exception:
-        pass
+            n_imported = import_mt5_history(hist_result["history"])
+            log(f"MT5 history: {n_imported} deals importados")
+            # Sync fees/swap reais do MT5 para os trades do dia
+            n_synced = sync_fees_from_mt5()
+            log(f"Fees sync: {n_synced} trades atualizados com taxas reais")
+        else:
+            log(f"MT5 history: resposta inválida: {hist_result}")
+    except Exception as e:
+        log(f"[WARN] import_mt5_history falhou: {e}")
 
     state.closed = True
 
