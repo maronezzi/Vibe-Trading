@@ -66,9 +66,8 @@ def _ask_llm(prompt: str, timeout: int = 60) -> Optional[str]:
         return None
 
     models = [
-        ("mimo-v2.5-pro", "xiaomi"),               # primário desde 2026-06-15
-        ("minimax/minimax-m3", "minimax-portal"),  # fallback 1
-        ("glm-5.2", "zai"),                        # fallback 2
+        ("minimax/minimax-m3", "minimax-portal"),   # primário
+        ("glm-5.2", "zai"),                        # fallback 1
     ]
 
     for model, provider in models:
