@@ -243,7 +243,9 @@ TELEGRAM_TARGET = "telegram:-1004284773048"
 def notify_telegram(msg: str):
     try:
         from vt_hermes_helper import hermes_send
-        hermes_send(TELEGRAM_TARGET, msg)
+        ok = hermes_send(TELEGRAM_TARGET, msg)
+        if not ok:
+            log(f"[NOTIFY FAIL] hermes_send retornou False")
     except Exception as e:
         log(f"[NOTIFY FAIL] {e}")
 
@@ -1419,6 +1421,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
                         f"Aguardando reset (próximo dia)"
                     )
 
+        log(f"[FECHADO] {symbol} {tf} — PnL estimado R\${pnl:+.2f}, notificando Telegram...")
         notify_telegram(
             f"⚡ *Fechou {symbol} {tf}*\n"
             f"• {direction} | R$ {pnl:+.2f}\n"
