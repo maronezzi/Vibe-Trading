@@ -65,8 +65,9 @@ def _ask_llm(prompt: str, timeout: int = None) -> dict:
     if timeout is None:
         timeout = LLM_TIMEOUT
     try:
+        # Provider alterado em 2026-06-15: OpenRouter → minimax-portal (MiniMax direto)
         result = subprocess.run(
-            ["hermes", "-z", prompt, "-m", "minimax/minimax-m3", "--provider", "openrouter"],
+            ["hermes", "-z", prompt, "-m", "minimax/minimax-m3", "--provider", "minimax-portal"],
             capture_output=True, text=True, timeout=timeout,
             env={**__import__('os').environ, "WINEDEBUG": "-all"}
         )

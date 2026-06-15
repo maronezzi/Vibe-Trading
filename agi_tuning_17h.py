@@ -755,8 +755,9 @@ def ask_llm(prompt: str, timeout: int = 300) -> str | None:
         log.warning("hermes CLI não encontrado no sistema")
         return None
     try:
+        # Provider alterado em 2026-06-15: OpenRouter → minimax-portal (MiniMax direto)
         result = subprocess.run(
-            [hermes_bin, "-z", prompt, "-m", "minimax/minimax-m3", "--provider", "openrouter"],
+            [hermes_bin, "-z", prompt, "-m", "minimax/minimax-m3", "--provider", "minimax-portal"],
             capture_output=True, text=True, timeout=timeout,
             cwd=str(PROJECT_DIR),
         )
