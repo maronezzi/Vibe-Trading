@@ -83,7 +83,7 @@ class SessionState:
         self.current_day = None
         self.daily_trade_by_symbol = {}  # {symbol: count}
         self.consecutive_losses = {}      # per-symbol tracking: {symbol: count}
-        self.max_consecutive_losses = 3   # halt after N consecutive losses per symbol
+        self.max_consecutive_losses = 999  # DESATIVADO (demo mode) — era 3
         self.halt_until = {}              # per-symbol: {symbol: datetime} — halt until this time
         self.resolved_symbols = {}        # cache: {"WDO": "WDON26", "WIN": "WINM26"}
         self.resolved_day = ""            # dia do cache (reseta a cada dia)
@@ -1396,6 +1396,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             swap=0,
             notes=f"Posição fechada pelo servidor MT5. PnL estimado: R${profit:.2f}. Fees serão sincronizados no EOD.",
         )
+        pnl = 0  # default para quando exit_result falha
         if exit_result:
             pnl = exit_result.get("net_pnl", 0)
             state.daily_pnl += pnl
