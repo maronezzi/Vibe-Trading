@@ -1035,6 +1035,22 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                            "IND": {"min": 200, "max": 3000}, "WSP": {"min": 500, "max": 30000}
                           }.get(_root, {"min": 200, "max": 50000})
                 if isinstance(new_sl, (int, float)) and _limits["min"] <= new_sl <= _limits["max"]:
+                    # Pitfall fix: re-aplicar max_native DEPOIS da correção do validator.
+                    # Sem isso, validator pode amplificar SL além do risco máximo por trade.
+                    _specs = {
+                        "WIN": {"max_native": 800,  "point_mult": 1},
+                        "WDO": {"max_native": 12,   "point_mult": 1000},
+                        "BIT": {"max_native": 500,  "point_mult": 100},
+                        "DOL": {"max_native": 200,  "point_mult": 1000},
+                        "IND": {"max_native": 350,  "point_mult": 1},
+                        "WSP": {"max_native": 200,  "point_mult": 100},
+                    }
+                    _spec = _specs.get(_root, {"max_native": 500, "point_mult": 1})
+                    _sl_native = new_sl / _spec["point_mult"]
+                    _max_exec = _spec["max_native"] * _spec["point_mult"]
+                    if new_sl > _max_exec:
+                        log(f"[VALIDATOR] SL {int(new_sl)}pts ({_sl_native:.0f} nativos) excede max_native {_spec['max_native']}pts → clampado para {_max_exec}pts")
+                        new_sl = _max_exec
                     log(f"[VALIDATOR] Corrigindo SL: {sl_pts}pts → {int(new_sl)}pts ({reason})")
                     fix_result = safe_modify_sl(symbol, ticket, int(new_sl), exec_price, direction)
                     if fix_result.get("status") == "ok":
