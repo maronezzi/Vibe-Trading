@@ -125,7 +125,7 @@ Responda APENAS com JSON (sem markdown):
 
     if "error" in response and "text" not in response:
         _log(f"LLM falhou: {response['error']}")
-        return {"action": "none", "params": {}}
+        return {"action": "none", "params": {"retry": False, "abort": True}}
 
     # Parse response
     raw = response.get("text", "")
@@ -149,7 +149,7 @@ Responda APENAS com JSON (sem markdown):
         return parsed
     except json.JSONDecodeError:
         _log(f"LLM resposta não-JSON: {raw[:200]}")
-        return {"action": "none", "params": {}, "raw": raw}
+        return {"action": "none", "params": {"retry": False, "abort": True}, "raw": raw}
 
 
 # ─── Fix strategies (pattern-based, fast) ───

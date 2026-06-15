@@ -514,7 +514,7 @@ def _check_max_trades(params: dict, symbol: str = "") -> bool:
         return False
 
     # Limite global (segurança)
-    if state.daily_trade_count >= 30:
+    if state.daily_trade_count >= 50:
         return False
     # Limite por símbolo
     sym_count = state.daily_trade_by_symbol.get(symbol, 0)
