@@ -629,7 +629,11 @@ def check_and_trade():
                                            params=params, utils=_strategy_utils)
                     if result:
                         info = result.get("info", {})
-                        info.pop("strategy", None)  # evita conflito com kwarg
+                        # Pitfall #2 fix: pop TODOS os campos que conflitam com
+                        # _execute_entry params (strategy, atr, sl_pts, direction, price, symbol, tf, bar_ts).
+                        # Sem isso, spread **info causa "got multiple values for argument X".
+                        for k in ("strategy", "atr", "sl_pts", "direction", "price", "symbol", "tf", "bar_ts"):
+                            info.pop(k, None)
                         # DEFESAS: plugins não chamam _defenses_ok — validar aqui
                         if not _defenses_ok(symbol, tf, result["direction"], last_bar_ts):
                             continue
