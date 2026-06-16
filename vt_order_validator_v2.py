@@ -93,7 +93,7 @@ def _ask_llm(prompt: str, timeout: int = 30) -> Optional[str]:
         return None
 
     models = [
-        ("minimax/minimax-m3", "minimax-portal"),
+        ("MiniMax-M3", "minimax-oauth"),
         ("glm-5.2", "zai"),
     ]
 

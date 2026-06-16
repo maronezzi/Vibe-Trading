@@ -49,9 +49,8 @@ def _ask_llm(prompt: str, timeout: int = 60) -> Optional[str]:
     """Consulta LLM com cadeia de fallback.
 
     Ordem de modelos:
-    1. minimax/minimax-m3 (minimax-portal) — padrão desde 2026-06-15 (MiniMax direto)
-    2. zhipu/glm-5.2 (zai) — fallback 1
-    3. xiaomi/mimo-v2.5-pro (zai) — fallback 2
+    1. MiniMax-M3 (minimax-oauth) — provider ativo do Hermes
+    2. glm-5.2 (zai) — fallback 1
 
     Política:
     - Tenta cada modelo em sequência
@@ -66,8 +65,8 @@ def _ask_llm(prompt: str, timeout: int = 60) -> Optional[str]:
         return None
 
     models = [
-        ("minimax/minimax-m3", "minimax-portal"),   # primário
-        ("glm-5.2", "zai"),                        # fallback 1
+        ("MiniMax-M3", "minimax-oauth"),   # primário (provider ativo)
+        ("glm-5.2", "zai"),                # fallback 1
     ]
 
     for model, provider in models:

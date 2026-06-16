@@ -232,10 +232,10 @@ def check_llm() -> tuple[bool, str]:
         return False, "sem hermes"
     try:
         # Ping rápido: pede "ok" em <100 tokens
-        # Provider alterado em 2026-06-15: OpenRouter → minimax-portal (MiniMax direto)
+        # Provider: minimax-oauth (ativo no Hermes), fallback automático
         r = subprocess.run(
             [hermes_bin, "-z", "responda apenas: OK",
-             "-m", "minimax/minimax-m3", "--provider", "minimax-portal"],
+             "-m", "MiniMax-M3", "--provider", "minimax-oauth"],
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode == 0 and "OK" in r.stdout.upper()[:50]:
