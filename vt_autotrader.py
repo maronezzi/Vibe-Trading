@@ -40,7 +40,7 @@ from mt5_orchestrator import status, buy, sell, close, close_all, tick, modify_s
 from mt5_error_recovery import safe_buy, safe_sell, safe_modify_sl, safe_close
 from vt_config_loader import load_config
 from vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
-from vt_order_validator import validate_order
+from vt_order_validator_v2 import validate_order
 from vt_calendar import is_trading_day, resolve_all_symbols, resolve_symbol, get_contract_expiry, _parse_contract_code
 
 # ===== CONFIGURAÇÃO =====
@@ -1015,6 +1015,8 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             order_data = {
                 "symbol": symbol,
                 "direction": direction,
+                "tf": tf,
+                "timeframe": tf,
                 "entry_price": exec_price,
                 "sl_pts": sl_pts,
                 "atr": atr,
