@@ -30,12 +30,26 @@ DB_PATH = Path(__file__).parent / "vt_trades.db"
 LOG_PATH = Path("/tmp/vt_autotrader.log")
 TELEGRAM_TARGET = "telegram:-1004284773048"
 
-# Critérios de pausa automática
-PAUSE_CRITERIA = {
-    "min_trades": 15,      # Mínimo de trades pra decidir pausar
-    "max_wr": 35,          # Win rate máximo pra pausar (%)
-    "max_pnl": 0,          # PnL máximo (negativo = perda)
-}
+# Critérios de pausa automática — LIDOS DO vt_config.json (pause_criteria)
+# Não hardcodar aqui. Fonte única: vt_config.json
+PAUSE_CRITERIA = {"min_trades": 15, "max_wr": 35, "max_pnl": 0}  # fallback (config é autoridade)
+
+
+def _load_pause_criteria():
+    """Carrega pause_criteria do vt_config.json. Se disabled ou ausente, retorna None."""
+    try:
+        from vt_config_loader import load_config
+        cfg = load_config()
+        pc = cfg.get("pause_criteria", {})
+        if not pc.get("enabled", False):
+            return None  # pausa automática desativada
+        return {
+            "min_trades": pc.get("min_trades", 15),
+            "max_wr": pc.get("max_wr_pct", 35),
+            "max_pnl": pc.get("max_pnl", 0),
+        }
+    except Exception:
+        return PAUSE_CRITERIA  # fallback hardcoded
 
 # ===== FUNÇÕES =====
 
@@ -354,6 +368,12 @@ def _apply_pauses(paused_items: list, today: str):
 def evaluate_and_pause():
     """Avalia performance por símbolo+timeframe e pausa se necessário.
     Retorna lista de itens pausados."""
+    # Verificar se pausa automática está habilitada no config
+    pc = _load_pause_criteria()
+    if pc is None:
+        log("[PAUSA] Pausa automática desativada no config (pause_criteria.enabled=false)")
+        return []
+
     stats = check_performance()
     paused = []
     import json
@@ -381,9 +401,9 @@ def evaluate_and_pause():
         if not sym_root:
             continue
 
-        if ops >= PAUSE_CRITERIA["min_trades"]:
+        if ops >= pc["min_trades"]:
             wr = (wins / ops * 100) if ops > 0 else 0
-            if wr < PAUSE_CRITERIA["max_wr"] and total_pnl < PAUSE_CRITERIA["max_pnl"]:
+            if wr < pc["max_wr"] and total_pnl < pc["max_pnl"]:
                 pause_key = f"{sym_root}_{tf}"
                 log(f"[PAUSA] {pause_key} qualifica: WR={wr:.1f}% "
                     f"E PnL=R${total_pnl:+.2f} E ops={ops}")

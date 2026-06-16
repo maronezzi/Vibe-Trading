@@ -1,7 +1,7 @@
 {
-  "_version": 163,
-  "_updated_at": "2026-06-16T12:05:31.917418",
-  "_updated_by": "trader_12h_meio_dia",
+  "_version": 164,
+  "_updated_at": "2026-06-16T12:30:00",
+  "_updated_by": "bruno_kill_switch_off",
   "_notes": "auto-resolve vencimento: WDO: ? → WDOM26",
   "start_hour": 9,
   "start_minute": 5,
@@ -283,24 +283,9 @@
     "vwap_sell_threshold": 0.997,
     "hard_exit_minutes": 45
   },
-  "disabled_symbols": [
-    "WDO"
-  ],
-  "disabled_timeframes": [
-    "DOL_M15",
-    "WSP_M15",
-    "WIN_M15",
-    "WIN_M5",
-    "IND_M5",
-    "DOL_M5",
-    "WSP_M5",
-    "WSP_H1",
-    "BIT_H1",
-    "WDO_M5",
-    "BIT_M5",
-    "BIT_M30"
-  ],
-  "max_daily_loss": -3500,
+  "disabled_symbols": [],
+  "disabled_timeframes": [],
+  "max_daily_loss": -999999,
   "params_by_tf": {
     "WIN_M5": {
       "sl_atr_mult": 2.5,
@@ -483,5 +468,11 @@
   "max_daily_trades": 999,
   "halt_trading": false,
   "halt_new_trades": false,
-  "halt_on_loss": false
+  "halt_on_loss": false,
+  "pause_criteria": {
+    "enabled": false,
+    "min_trades": 15,
+    "max_wr_pct": 35,
+    "max_pnl": 0
+  }
 }

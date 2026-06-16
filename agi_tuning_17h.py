@@ -986,14 +986,14 @@ Retorne APENAS um JSON válido (sem markdown, sem comentários):
   "disable_tfs": ["BIT_M15", "BIT_H1"],
   "reenable_symbols": ["WDO"],
   "max_daily_loss": -300
-}}
+  }}
 
-O JSON deve ter obrigatoriamente "analysis" (string) e "changes" (array).
-- "disable_symbols": lista de símbolos para DESATIVAR totalmente (ex: ["BIT"])
-- "disable_tfs": lista de "SYMBOL_TF" para desativar (ex: ["BIT_M15", "WIN_H1"])
-- "reenable_symbols": lista de símbolos para REATIVAR (tirar de disabled_symbols) — só inclua se o memo pedir ou se a config atual estiver comprovadamente boa
-- "max_daily_loss": valor em R$ — se PnL diário cair abaixo disso, PARA TUDO (ex: -300)
-Use disable_symbols/disable_tfs AGRESSIVAMENTE para ativos/timeframes que estão perdendo sistematicamente."""
+  O JSON deve ter obrigatoriamente "analysis" (string) e "changes" (array).
+  - "disable_symbols": lista de símbolos para DESATIVAR totalmente (ex: ["BIT"])
+  - "disable_tfs": lista de "SYMBOL_TF" para desativar (ex: ["BIT_M15", "WIN_H1"])
+  - "reenable_symbols": lista de símbolos para REATIVAR (tirar de disabled_symbols) — só inclua se o memo pedir ou se a config atual estiver comprovadamente boa
+  - "max_daily_loss": valor em R$ — se PnL diário cair abaixo disso, PARA TUDO (ex: -300)
+  IMPORTANTE: Verifique "pause_criteria.enabled" e "halt_trading" no config atual. Se "halt_trading"=true ou "pause_criteria.enabled"=false, NÃO use disable_symbols/disable_tfs — o kill switch está desativado pelo operador. Foque em otimizar parâmetros e estratégias em vez de desativar ativos."""
 
     return prompt
 

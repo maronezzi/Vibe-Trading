@@ -552,6 +552,16 @@ def check_and_trade():
 
     _reset_daily_counter()  # ← sempre resetar no início do ciclo
 
+    # ── KILL SWITCH centralizado (vt_config.json) ──
+    if CONFIG.get("halt_trading", False):
+        log("🛑 halt_trading=true no config — PARADO")
+        return
+    if CONFIG.get("halt_new_trades", False):
+        # Permite gerenciar posições abertas mas não abre novas
+        if not state.positions:
+            log("ℹ️ halt_new_trades=true e sem posições — aguardando")
+            return
+
     # Safety: avoid first/last 15 min of session
     if not _is_safe_time_window():
         return
