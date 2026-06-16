@@ -1294,10 +1294,28 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             close_result = safe_close(symbol)
             if close_result and close_result.get("status") == "ok":
                 # PnL será calculado no próximo ciclo quando servidor fechar
+                _volume = pos.get("volume", "?")
+                _ticket = pos.get("entry_ticket", "?")
+                _ts = datetime.now().strftime("%H:%M:%S")
+                _entry_price = pos.get("entry_price", 0)
+                # Estimar PnL rápido do hard exit
+                _point_map = {"WIN": 1.0, "WDO": 0.001, "BIT": 0.01, "DOL": 0.001, "IND": 1.0, "WSP": 0.01}
+                _root = "WIN" if "WIN" in symbol else "WDO" if "WDO" in symbol else \
+                        "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
+                        "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else "WIN"
+                _pv = _point_map.get(_root, 1.0)
+                if direction == "BUY":
+                    _pnl_est = (current_price - _entry_price) * _pv
+                else:
+                    _pnl_est = (_entry_price - current_price) * _pv
+                _pnl_emoji = "🟢" if _pnl_est > 0 else "🔴" if _pnl_est < 0 else "⚪"
                 notify_telegram(
-                    f"⏱️ *HARD EXIT* {symbol}\n"
-                    f"• {direction} | {pos_minutes:.0f}min\n"
-                    f"• Fechado por tempo máximo"
+                    f"⏱️ *HARD EXIT* {symbol} {tf}\n"
+                    f"• {direction} | {_pnl_emoji} R$ {_pnl_est:+.2f} (est.)\n"
+                    f"• Entrada: {_entry_price:.2f} → Saída: {current_price:.2f}\n"
+                    f"• Volume: {_volume} contrato(s) | Ticket: {_ticket}\n"
+                    f"• Motivo: Tempo máximo ({pos_minutes:.0f}min >= {hard_exit_min}min)\n"
+                    f"• PnL Dia: R$ {state.daily_pnl:+.2f} | {_ts}"
                 )
                 return  # posição será detectada como fechada no próximo ciclo
             else:
