@@ -590,9 +590,18 @@ def check_and_trade():
 
         for tf in timeframes:
             # ── KILL SWITCH: TF desativado pelo AGI ──
+            # Se TF está desativado MAS existe posição aberta, ainda gerenciar
+            # (não pode abandonar trade em curso só porque o AGI desativou a estratégia).
+            # Se TF está desativado E sem posição aberta, pula (não abre nova).
             disabled_tfs = CONFIG.get("disabled_timeframes", [])
-            if f"{symbol_root}_{tf}" in disabled_tfs:
-                continue
+            tf_disabled = f"{symbol_root}_{tf}" in disabled_tfs
+            if tf_disabled:
+                # Verificar se há posição aberta (precisa gerenciar mesmo com TF off)
+                existing_pos = state.positions.get(f"{symbol}_{tf}")
+                if not existing_pos:
+                    continue  # sem posição → pula
+                log(f"[ORPHAN_RECOVERY] {symbol} {tf}: TF desativado mas posição aberta, gerenciando")
+                # Continua pra gerenciar — fall through
 
             strategy = _get_strategy_for_tf(symbol_root, tf)
             params = _get_params_for_tf(symbol_root, tf)
