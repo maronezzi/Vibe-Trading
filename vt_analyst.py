@@ -250,20 +250,45 @@ def detect_anomalies(snapshot: dict) -> list:
     # 1. Volume spike
     if snapshot["current_volume"] > avg_vol * 2 and avg_vol > 0:
         ratio = snapshot["current_volume"] / avg_vol
+        price = snapshot.get("price", 0)
+        vwap = snapshot.get("vwap", 0)
+        trend = snapshot.get("trend", "?")
+        pos = snapshot.get("position")
+        msg_parts = [
+            f"Volume {ratio:.0f}x acima do normal",
+            f"• Preço: {price:.2f} | VWAP: {vwap:.2f} ({snapshot.get('vwap_distance_pct', 0):+.2f}%)",
+            f"• Tendência: {trend} | ATR: {snapshot.get('atr', 0):.0f}",
+        ]
+        if pos:
+            pdir = "BUY" if str(pos.get("type", "")).endswith("BUY") or pos.get("type") in (0,) else "SELL"
+            pnl = pos.get("profit", 0)
+            emoji = "🟢" if pnl >= 0 else "🔴"
+            msg_parts.append(f"• Posição: {pdir} {pos.get('price_open', 0):.2f} {emoji} R$ {pnl:.2f}")
         anomalies.append({
             "type": "VOLUME_SPIKE",
             "severity": "ALTO" if ratio > 3 else "MÉDIO",
-            "msg": f"Volume alto: {ratio:.0f}x acima do normal",
+            "msg": "\n".join(msg_parts),
             "tf": tf
         })
 
     # 2. Volatilidade spike
     if avg_atr > 0 and snapshot["atr"] > avg_atr * 2:
         ratio = snapshot["atr"] / avg_atr
+        price = snapshot.get("price", 0)
+        pos = snapshot.get("position")
+        msg_parts = [
+            f"ATR {snapshot['atr']:.0f} = {ratio:.0f}x acima da média ({avg_atr:.0f})",
+            f"• Preço: {price:.2f} | Spread: {snapshot.get('spread', 0):.2f}",
+        ]
+        if pos:
+            pdir = "BUY" if str(pos.get("type", "")).endswith("BUY") or pos.get("type") in (0,) else "SELL"
+            pnl = pos.get("profit", 0)
+            emoji = "🟢" if pnl >= 0 else "🔴"
+            msg_parts.append(f"• Posição: {pdir} {pos.get('price_open', 0):.2f} {emoji} R$ {pnl:.2f}")
         anomalies.append({
             "type": "VOLATILITY_SPIKE",
             "severity": "ALTO" if ratio > 2.5 else "MÉDIO",
-            "msg": f"Volatilidade alta: {ratio:.0f}x acima do normal",
+            "msg": "\n".join(msg_parts),
             "tf": tf
         })
 
@@ -363,17 +388,43 @@ def detect_anomalies(snapshot: dict) -> list:
     # 5. Breakout de sessão
     current = snapshot["price"]
     if current > snapshot["session_high"] * 1.001:
+        breakout_pct = (current - snapshot["session_high"]) / snapshot["session_high"] * 100
+        pos = snapshot.get("position")
+        msg_parts = [
+            f"⬆ Rompeu MÁXIMA: {current:.2f} (+{breakout_pct:.2f}%)",
+            f"• Máxima anterior: {snapshot['session_high']:.2f}",
+            f"• VWAP: {snapshot.get('vwap', 0):.2f} ({snapshot.get('vwap_distance_pct', 0):+.2f}%)",
+            f"• Tendência: {snapshot.get('trend', '?')} | ATR: {snapshot.get('atr', 0):.0f}",
+        ]
+        if pos:
+            pdir = "BUY" if str(pos.get("type", "")).endswith("BUY") or pos.get("type") in (0,) else "SELL"
+            pnl = pos.get("profit", 0)
+            emoji = "🟢" if pnl >= 0 else "🔴"
+            msg_parts.append(f"• Posição: {pdir} {pos.get('price_open', 0):.2f} {emoji} R$ {pnl:.2f}")
         anomalies.append({
             "type": "BREAKOUT",
             "severity": "ALTO",
-            "msg": f"Rompeu máxima da sessão: {current:.0f}",
+            "msg": "\n".join(msg_parts),
             "tf": tf
         })
     elif current < snapshot["session_low"] * 0.999:
+        breakout_pct = (snapshot["session_low"] - current) / snapshot["session_low"] * 100
+        pos = snapshot.get("position")
+        msg_parts = [
+            f"⬇ Rompeu MÍNIMA: {current:.2f} (-{breakout_pct:.2f}%)",
+            f"• Mínima anterior: {snapshot['session_low']:.2f}",
+            f"• VWAP: {snapshot.get('vwap', 0):.2f} ({snapshot.get('vwap_distance_pct', 0):+.2f}%)",
+            f"• Tendência: {snapshot.get('trend', '?')} | ATR: {snapshot.get('atr', 0):.0f}",
+        ]
+        if pos:
+            pdir = "BUY" if str(pos.get("type", "")).endswith("BUY") or pos.get("type") in (0,) else "SELL"
+            pnl = pos.get("profit", 0)
+            emoji = "🟢" if pnl >= 0 else "🔴"
+            msg_parts.append(f"• Posição: {pdir} {pos.get('price_open', 0):.2f} {emoji} R$ {pnl:.2f}")
         anomalies.append({
             "type": "BREAKOUT",
             "severity": "ALTO",
-            "msg": f"Rompeu mínima da sessão: {current:.0f}",
+            "msg": "\n".join(msg_parts),
             "tf": tf
         })
 
@@ -381,12 +432,57 @@ def detect_anomalies(snapshot: dict) -> list:
     mom = snapshot["momentum_5bar"]
     if abs(mom) > 0.5:
         direction = "⬆ subindo" if mom > 0 else "⬇ caindo"
+        price = snapshot.get("price", 0)
+        pos = snapshot.get("position")
+        msg_parts = [
+            f"Movimento forte {direction} ({abs(mom):.1f}%)",
+            f"• Preço: {price:.2f} | VWAP: {snapshot.get('vwap', 0):.2f}",
+            f"• Tendência: {snapshot.get('trend', '?')} | ATR: {snapshot.get('atr', 0):.0f}",
+        ]
+        if pos:
+            pdir = "BUY" if str(pos.get("type", "")).endswith("BUY") or pos.get("type") in (0,) else "SELL"
+            pnl = pos.get("profit", 0)
+            # Reversão a favor ou contra a posição?
+            if (mom > 0 and pdir == "BUY") or (mom < 0 and pdir == "SELL"):
+                favor = "✅ a favor da posição"
+            else:
+                favor = "⚠️ contra a posição"
+            emoji = "🟢" if pnl >= 0 else "🔴"
+            msg_parts.append(f"• Posição: {pdir} {pos.get('price_open', 0):.2f} {emoji} R$ {pnl:.2f} — {favor}")
         anomalies.append({
             "type": "REVERSAL",
             "severity": "MÉDIO",
-            "msg": f"Movimento forte {direction} ({abs(mom):.1f}%)",
+            "msg": "\n".join(msg_parts),
             "tf": tf
         })
+
+    # 7. Streak de perdas (lê do state do autotrader)
+    try:
+        import json as _sj
+        _sstate = _sj.load(open("/tmp/vt_autotrader_state.json"))
+        _losses = _sstate.get("consecutive_losses", {})
+        _max = _sstate.get("max_consecutive_losses", 3)
+        root_sym = symbol[:3]
+        _sl = _losses.get(symbol, _losses.get(root_sym, 0))
+        if _sl >= _max:
+            _dp = _sstate.get("daily_pnl", 0)
+            _halt = _sstate.get("halt_until", {}).get(symbol, _sstate.get("halt_until", {}).get(root_sym, ""))
+            msg_parts = [
+                f"{_sl} perdas consecutivas em {symbol}",
+                f"• Limite: {_max} | PnL Dia: R$ {_dp:+.0f}",
+            ]
+            if _halt:
+                msg_parts.append(f"• HALT ativo até {_halt}")
+            else:
+                msg_parts.append("• Próxima perda ativa HALT de 1h")
+            anomalies.append({
+                "type": "STREAK_LOSS",
+                "severity": "ALTO",
+                "msg": "\n".join(msg_parts),
+                "tf": tf
+            })
+    except Exception:
+        pass
 
     return anomalies
 
