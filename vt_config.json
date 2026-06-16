@@ -1,7 +1,7 @@
 {
-  "_version": 162,
-  "_updated_at": "2026-06-16T11:05:38.886034",
-  "_updated_by": "trader_11h",
+  "_version": 163,
+  "_updated_at": "2026-06-16T12:05:31.917418",
+  "_updated_by": "trader_12h_meio_dia",
   "_notes": "auto-resolve vencimento: WDO: ? → WDOM26",
   "start_hour": 9,
   "start_minute": 5,
@@ -200,14 +200,14 @@
     "sl_atr_mult": 0.6,
     "trail_activate": 0.8,
     "trail_distance": 0.3,
-    "cooldown_seconds": 900,
+    "cooldown_seconds": 1500,
     "max_daily_trades": 999,
     "breakeven_minutes": 5,
     "time_trail_minutes": 15,
     "max_position_minutes": 63,
     "rsi_period": 7,
-    "rsi_overbought": 82,
-    "rsi_oversold": 18,
+    "rsi_overbought": 85,
+    "rsi_oversold": 15,
     "ema_fast": 9,
     "ema_slow": 21,
     "adx_period": 14,
@@ -297,9 +297,10 @@
     "WSP_H1",
     "BIT_H1",
     "WDO_M5",
-    "BIT_M5"
+    "BIT_M5",
+    "BIT_M30"
   ],
-  "max_daily_loss": -5000,
+  "max_daily_loss": -3500,
   "params_by_tf": {
     "WIN_M5": {
       "sl_atr_mult": 2.5,
@@ -350,9 +351,9 @@
     "BIT_M30": {
       "sl_atr_mult": 0.8,
       "rsi_period": 7,
-      "rsi_overbought": 82,
-      "rsi_oversold": 18,
-      "cooldown_seconds": 900
+      "rsi_overbought": 85,
+      "rsi_oversold": 15,
+      "cooldown_seconds": 1800
     },
     "BIT_H1": {
       "sl_atr_mult": 0.8,
