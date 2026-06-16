@@ -834,9 +834,34 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
                 relevant.update({k: sym_config[k] for k in ["macd_signal", "adx_threshold"] if k in sym_config})
             config_lines.append(f"  {sym_key.upper()} ({strategy}): {json.dumps(relevant)}")
 
+    # Carregar memorando do Bruno (opcional) — `/tmp/vt_agi_memo.json`
+    # Formato: {"text": "...", "reenable_symbols": ["WDO"], "issued_at": "...", "issued_by": "..."}
+    memo_block = ""
+    memo_path = "/tmp/vt_agi_memo.json"
+    try:
+        if os.path.exists(memo_path):
+            with open(memo_path) as _mf:
+                _memo = json.load(_mf)
+            _memo_text = _memo.get("text", "").strip()
+            _memo_reenable = _memo.get("reenable_symbols", [])
+            if _memo_text or _memo_reenable:
+                _memo_lines = ["## 📋 MEMO DO BRUNO (prioridade alta)"]
+                if _memo_text:
+                    _memo_lines.append(_memo_text)
+                if _memo_reenable:
+                    _memo_lines.append(
+                        f"\n⚠️ REATIVAÇÃO SOLICITADA: você PODE incluir `reenable_symbols: {_memo_reenable}` no JSON retornado se a análise (performance 7d + Strategy Explorer) confirmar edge positivo para esses ativos. Eles estão atualmente em `disabled_symbols` e devem voltar a operar AMANHÃ (17/06) se a config for validada."
+                    )
+                _memo_lines.append(
+                    "\nLembre-se: 'reenable_symbols' é uma CHAVE EXTRA no JSON, junto com 'changes', 'disable_symbols', 'disable_tfs', 'max_daily_loss'."
+                )
+                memo_block = "\n".join(_memo_lines) + "\n"
+    except Exception as e:
+        log.warning(f"Falha ao carregar memo {memo_path}: {e}")
+
     prompt = f"""Você é o AGI de tuning do bot Vibe-Trading (B3 futuros). Analise a performance abaixo e sugira ajustes CIRÚRGICOS nos parâmetros.
 
-## PERFORMANCE ({perf['period_days']} dias, desde {perf['cutoff_date']})
+{memo_block}## PERFORMANCE ({perf['period_days']} dias, desde {perf['cutoff_date']})
 {chr(10).join(perf_lines)}
 
 ### Por timeframe:
@@ -959,12 +984,14 @@ Retorne APENAS um JSON válido (sem markdown, sem comentários):
   ],
   "disable_symbols": ["BIT"],
   "disable_tfs": ["BIT_M15", "BIT_H1"],
+  "reenable_symbols": ["WDO"],
   "max_daily_loss": -300
 }}
 
 O JSON deve ter obrigatoriamente "analysis" (string) e "changes" (array).
 - "disable_symbols": lista de símbolos para DESATIVAR totalmente (ex: ["BIT"])
 - "disable_tfs": lista de "SYMBOL_TF" para desativar (ex: ["BIT_M15", "WIN_H1"])
+- "reenable_symbols": lista de símbolos para REATIVAR (tirar de disabled_symbols) — só inclua se o memo pedir ou se a config atual estiver comprovadamente boa
 - "max_daily_loss": valor em R$ — se PnL diário cair abaixo disso, PARA TUDO (ex: -300)
 Use disable_symbols/disable_tfs AGRESSIVAMENTE para ativos/timeframes que estão perdendo sistematicamente."""
 
@@ -1112,6 +1139,21 @@ def apply_changes(llm_result: dict, config: dict, dry_run: bool = False) -> list
 
     for w in all_warnings:
         log.warning(f"⚠️ {w}")
+
+    # ── REATIVAÇÃO (oposto do kill switch) — tirar de disabled_symbols ──
+    reenable_symbols = llm_result.get("reenable_symbols", [])
+    if reenable_symbols:
+        current_disabled = config.get("disabled_symbols", [])
+        to_reenable = [s for s in reenable_symbols if s in current_disabled]
+        if to_reenable:
+            new_disabled = [s for s in current_disabled if s not in to_reenable]
+            if not dry_run:
+                config["disabled_symbols"] = new_disabled
+                save_full_config(config, updated_by="agi_17h_llm")
+                config = load_config(force=True)  # refresh in-memory
+            log.info(f"♻️ REATIVADOS símbolos: {to_reenable} (sairão de disabled_symbols)")
+        else:
+            log.info(f"ℹ️ reenable_symbols={reenable_symbols} mas nenhum estava em disabled_symbols — no-op")
 
     # ── KILL SWITCH: Desativar símbolos/timeframes ruins ──
     disable_symbols = llm_result.get("disable_symbols", [])
