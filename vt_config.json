@@ -1,7 +1,7 @@
 {
-  "_version": 164,
-  "_updated_at": "2026-06-16T12:30:00",
-  "_updated_by": "bruno_kill_switch_off",
+  "_version": 169,
+  "_updated_at": "2026-06-16T13:02:22.953420",
+  "_updated_by": "trader_ia_13h",
   "_notes": "auto-resolve vencimento: WDO: ? → WDOM26",
   "start_hour": 9,
   "start_minute": 5,
@@ -197,17 +197,17 @@
     "vwap_period": 30,
     "vwap_buy_threshold": 1.01,
     "vwap_sell_threshold": 0.99,
-    "sl_atr_mult": 0.6,
+    "sl_atr_mult": 0.8,
     "trail_activate": 0.8,
     "trail_distance": 0.3,
     "cooldown_seconds": 1500,
-    "max_daily_trades": 999,
+    "max_daily_trades": 4,
     "breakeven_minutes": 5,
     "time_trail_minutes": 15,
     "max_position_minutes": 63,
     "rsi_period": 7,
-    "rsi_overbought": 85,
-    "rsi_oversold": 15,
+    "rsi_overbought": 80,
+    "rsi_oversold": 20,
     "ema_fast": 9,
     "ema_slow": 21,
     "adx_period": 14,
@@ -334,11 +334,11 @@
       "pullback_pct": 0.1
     },
     "BIT_M30": {
-      "sl_atr_mult": 0.8,
+      "sl_atr_mult": 1.0,
       "rsi_period": 7,
-      "rsi_overbought": 85,
-      "rsi_oversold": 15,
-      "cooldown_seconds": 1800
+      "rsi_overbought": 80,
+      "rsi_oversold": 20,
+      "cooldown_seconds": 2400
     },
     "BIT_H1": {
       "sl_atr_mult": 0.8,
@@ -379,7 +379,7 @@
       "pullback_pct": 0.05
     },
     "IND_M5": {
-      "sl_atr_mult": 1.2,
+      "sl_atr_mult": 1.5,
       "bb_period": 10,
       "bb_std": 1.5,
       "rsi_period": 7,
@@ -437,10 +437,11 @@
       "vwap_sell_threshold": 0.997
     },
     "WDO_M5": {
-      "sl_atr_mult": 0.8,
+      "sl_atr_mult": 1.2,
       "rsi_period": 7,
       "rsi_overbought": 75,
-      "rsi_oversold": 25
+      "rsi_oversold": 25,
+      "cooldown_seconds": 600
     },
     "WDO_M15": {
       "sl_atr_mult": 1.2,
@@ -474,5 +475,19 @@
     "min_trades": 15,
     "max_wr_pct": 35,
     "max_pnl": 0
+  },
+  "bit_m30": {
+    "rsi_overbought": 80,
+    "rsi_oversold": 20,
+    "cooldown_seconds": 2400,
+    "sl_atr_mult": 1.0,
+    "max_daily_trades": 4
+  },
+  "ind_m5": {
+    "sl_atr_mult": 1.5
+  },
+  "wdo_m5": {
+    "sl_atr_mult": 1.2,
+    "cooldown_seconds": 600
   }
 }
