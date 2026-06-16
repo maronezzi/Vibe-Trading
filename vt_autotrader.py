@@ -1099,10 +1099,15 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                         _sl_sug_str = _parsed_llm.get('sl_sugerido', '?')
                 except Exception:
                     pass
-                log(f"[VALIDATOR] LLM OK (SL mantido {sl_pts}pts, sugerido {_sl_sug_str}): {_resumo_short[:300]}")
+                # Converter sl_pts (executor) para pontos reais (legível)
+                _pm_map = {"WIN": 1, "WDO": 1000, "BIT": 100, "DOL": 1000, "IND": 1, "WSP": 100}
+                _vm_root = next((k for k in _pm_map if k in symbol), "")
+                _pm = _pm_map.get(_vm_root, 1)
+                _sl_real = sl_pts / _pm if _pm else sl_pts
+                log(f"[VALIDATOR] LLM OK (SL mantido {sl_pts}pts = {_sl_real:.0f}pts reais, sugerido {_sl_sug_str}): {_resumo_short[:300]}")
                 notify_telegram(
                     f"✅ [VALIDATOR] {symbol} {direction} {tf} | "
-                    f"SL mantido em {sl_pts}pts\n📝 {_resumo_short[:200]}"
+                    f"SL mantido em {_sl_real:.0f}pts\n📝 {_resumo_short[:200]}"
                 )
             elif not validation.get("llm_analysis") and validation.get("alerts"):
                 # LLM falhou mas há alertas locais — aplicar correção local
