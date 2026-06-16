@@ -1,7 +1,7 @@
 {
-  "_version": 169,
+  "_version": 170,
   "_updated_at": "2026-06-16T13:02:22.953420",
-  "_updated_by": "trader_ia_13h",
+  "_updated_by": "bruno_fix_max_trades",
   "_notes": "auto-resolve vencimento: WDO: ? → WDOM26",
   "start_hour": 9,
   "start_minute": 5,
@@ -201,7 +201,7 @@
     "trail_activate": 0.8,
     "trail_distance": 0.3,
     "cooldown_seconds": 1500,
-    "max_daily_trades": 4,
+    "max_daily_trades": 999,
     "breakeven_minutes": 5,
     "time_trail_minutes": 15,
     "max_position_minutes": 63,

@@ -282,10 +282,71 @@ def detect_anomalies(snapshot: dict) -> list:
                 mult = 0.20 if "WIN" in symbol else 10.0 if "WDO" in symbol else 1.0
             drawdown_pts = abs(pnl) / mult
             if drawdown_pts > atr * 0.5:
+                # Coletar dados para mensagem rica
+                direction = pos.get("type", "")
+                if isinstance(direction, int):
+                    direction = "BUY" if direction in (0,) else "SELL"
+                sl_price = pos.get("sl", 0)
+                current = snapshot.get("price", 0)
+                ticket = pos.get("ticket", pos.get("id", ""))
+                volume = pos.get("volume", 1)
+                # Distância até o SL
+                if sl_price and entry:
+                    if direction == "BUY":
+                        sl_dist = abs(current - sl_price) if current else 0
+                        sl_total = abs(entry - sl_price)
+                    else:
+                        sl_dist = abs(sl_price - current) if current else 0
+                        sl_total = abs(sl_price - entry)
+                    sl_pct = (1 - sl_dist / sl_total * 100) if sl_total > 0 else 0
+                else:
+                    sl_dist = sl_total = sl_pct = 0
+                # Duração
+                duration = ""
+                try:
+                    import json as _json
+                    _state = _json.load(open("/tmp/vt_autotrader_state.json"))
+                    _pos_key = f"{symbol}_{tf}"
+                    _pos_state = _state.get("positions", {}).get(_pos_key, {})
+                    _entry_time = _pos_state.get("entry_time", "")
+                    if _entry_time:
+                        from datetime import datetime as _dt
+                        _et = _dt.fromisoformat(_entry_time) if "T" in str(_entry_time) else None
+                        if _et:
+                            _mins = int((_dt.now() - _et).total_seconds() / 60)
+                            duration = f"{_mins}min"
+                except Exception:
+                    pass
+                # PnL dia
+                pnl_dia = ""
+                try:
+                    import json as _json2
+                    _state2 = _json2.load(open("/tmp/vt_autotrader_state.json"))
+                    _dp = _state2.get("daily_pnl", 0)
+                    pnl_dia = f"R$ {_dp:+.0f}"
+                except Exception:
+                    pass
+                # ATR ratio
+                atr_ratio = drawdown_pts / atr if atr > 0 else 0
+                severity = "ALTO" if drawdown_pts > atr else "MÉDIO"
+                msg_parts = [
+                    f"{direction} {symbol} {tf}",
+                    f"• Prejuízo: R$ {abs(pnl):.2f}",
+                    f"• Entrada: {entry:.2f} → Atual: {current:.2f}",
+                ]
+                if sl_price:
+                    msg_parts.append(f"• SL: {sl_price:.2f} ({sl_dist:.0f}pts restantes)")
+                msg_parts.append(f"• ATR: {atr:.0f} | Drawdown: {atr_ratio:.1f}x ATR")
+                if ticket:
+                    msg_parts.append(f"• Ticket: {ticket} | Vol: {volume}")
+                if duration:
+                    msg_parts.append(f"• Duração: {duration}")
+                if pnl_dia:
+                    msg_parts.append(f"• PnL Dia: {pnl_dia}")
                 anomalies.append({
                     "type": "DRAWDOWN",
-                    "severity": "ALTO" if drawdown_pts > atr else "MÉDIO",
-                    "msg": f"Posição perdendo R$ {abs(pnl):.0f}",
+                    "severity": severity,
+                    "msg": "\n".join(msg_parts),
                     "tf": tf
                 })
 
