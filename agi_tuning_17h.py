@@ -61,7 +61,7 @@ PARAM_BOUNDS = {
     "adx_threshold":        (10, 35),
     "cooldown_seconds":     (120, 3600),
     "max_daily_trades":     (2, 12),
-    "sl_atr_mult":          (0.8, 3.0),
+    "sl_atr_mult":          (0.5, 3.0),
     "trail_activate":       (0.8, 3.0),
     "trail_distance":       (0.3, 1.5),
     "pullback_pct":         (0.03, 0.30),
@@ -1172,8 +1172,13 @@ def notify_telegram(msg: str):
 
 def print_report(perf: dict, issues: list, llm_result: dict | None,
                  applied: list, config: dict, dry_run: bool, web_intel: dict = None,
-                 optimization: dict = None):
+                 optimization: dict = None, iterations: list = None,
+                 converged: bool = False, paused: dict = None):
     """Imprime relatório consolidado."""
+    web_intel = web_intel or {}
+    optimization = optimization or {}
+    iterations = iterations or []
+    paused = paused or {"paused": [], "skipped": []}
     print("\n" + "=" * 60)
     print(f"🤖 AGI 17H TUNING — {TODAY} {'[DRY-RUN]' if dry_run else ''}")
     print("=" * 60)
@@ -1253,6 +1258,35 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
     else:
         print(f"\n✏️ Nenhuma mudança {'aplicada' if not dry_run else 'sugerida'}")
 
+    # Iteration history (loop de convergência)
+    if iterations and len(iterations) > 1:
+        print(f"\n🔄 ITERAÇÕES DE CONVERGÊNCIA ({len(iterations)}):")
+        for it in iterations:
+            status = "✅ convergiu" if it.get("converged") else (
+                "⏸️  n/a (dry-run)" if it.get("converged") is None else "❌ falhou"
+            )
+            n = it.get("n_changes", 0)
+            failing = it.get("failing_pairs", [])
+            print(f"  Iter {it['iteration']}: {n} mudanças | {status} | "
+                  f"failing={failing if failing else '∅'}")
+
+    # Fallback de pausa
+    if paused and paused.get("paused"):
+        print(f"\n🛑 FALLBACK — PARES PAUSADOS:")
+        for p in paused["paused"]:
+            print(f"  🛑 {p}  (não convergiu após iterações)")
+        if paused.get("skipped"):
+            print(f"  ⏭️  skipped: {paused['skipped']}")
+
+    # Status final por par (lucrativo / pausado)
+    if perf.get("by_symbol_tf"):
+        print(f"\n📋 STATUS FINAL POR SÍMBOLO/TIMEFRAME:")
+        for key, data in sorted(perf.get("by_symbol_tf", {}).items()):
+            paused_flag = " 🛑 PAUSADO" if key in (paused.get("paused") or []) else ""
+            icon = "🟢" if data["total_pnl"] > 0 else "🔴"
+            print(f"  {icon} {key} ({data['strategy']}): "
+                  f"WR {data['win_rate']}% | PnL R${data['total_pnl']:+.2f}{paused_flag}")
+
     # Config version
     print(f"\n📌 Config atual: v{config.get('_version', '?')} by {config.get('_updated_by', '?')}")
     print("=" * 60)
@@ -1262,6 +1296,300 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
 # MAIN
 # ═══════════════════════════════════════════════════════════════════
 
+def _is_profitable_enough(perf: dict, by_symbol_tf: bool = True) -> tuple[bool, list[str]]:
+    """Critério de convergência: TODOS os pares SYM_TF devem ter PnL > 0 com amostra >= MIN_TRADES.
+
+    Retorna (convergiu, lista_de_pares_falhando).
+
+    NOTA: Esta função legada usa apenas valor absoluto. Para o loop de
+    convergência do AGI, prefira check_convergence(..., mode="delta") que
+    mede melhoria vs baseline.
+    """
+    MIN_TRADES = 3  # mínimo pra considerar representativo
+    failing = []
+    for key, data in (perf.get("by_symbol_tf") or {}).items():
+        if data["n_trades"] < MIN_TRADES:
+            continue
+        if data["total_pnl"] <= 0:
+            failing.append(key)
+    # Se não tem by_symbol_tf, usar by_symbol como fallback (agregado)
+    if not perf.get("by_symbol_tf") and not by_symbol_tf:
+        for sym, data in (perf.get("by_symbol") or {}).items():
+            if data["n_trades"] < MIN_TRADES:
+                continue
+            if data["total_pnl"] <= 0:
+                failing.append(sym)
+    return (len(failing) == 0, failing)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# CONVERGÊNCIA POR DELTA (substitui _is_profitable_enough no loop)
+# ═══════════════════════════════════════════════════════════════════
+
+# Thresholds para check_convergence(mode="delta")
+DELTA_IMPROVEMENT_PCT = 0.30   # par negativo precisa melhorar >=30% vs baseline
+DELTA_REGRESSION_PCT = 0.20    # par que piorou >20% bloqueia convergência
+MIN_TRADES_FOR_DELTA = 3       # mínimo de trades pra considerar representativo
+
+
+def snapshot_performance(perf: dict) -> dict:
+    """Captura um snapshot imutável do PnL por SYM_TF a partir de `perf`.
+
+    Usado no início do loop de convergência do AGI como baseline. O
+    snapshot é independente de mutações posteriores em perf (o caller
+    passa cópias).
+
+    Args:
+        perf: dict no formato retornado por collect_performance().
+
+    Returns:
+        dict[str, dict] — chave é "SYM_TF" (ex: "WIN_M5"), valor tem
+        {"pnl": float, "n_trades": int, "win_rate": float}.
+    """
+    snap = {}
+    for key, data in (perf.get("by_symbol_tf") or {}).items():
+        snap[key] = {
+            "pnl": float(data.get("total_pnl", 0.0)),
+            "n_trades": int(data.get("n_trades", 0)),
+            "win_rate": float(data.get("win_rate", 0.0)),
+        }
+    return snap
+
+
+def check_convergence(current_perf: dict, baseline_snapshot: dict,
+                      mode: str = "delta") -> tuple[bool, list[str]]:
+    """Avalia se o portfolio convergiu (atingiu meta de lucratividade).
+
+    Args:
+        current_perf: dict no formato de collect_performance() (atual).
+        baseline_snapshot: dict retornado por snapshot_performance() (inicial).
+        mode:
+          - "absolute": legado. PnL > 0 em todos os pares com amostra >= MIN.
+          - "delta": compara PnL atual vs baseline. Par positivo: OK.
+            Par negativo: exige melhoria >= DELTA_IMPROVEMENT_PCT vs baseline.
+            Par que piorou > DELTA_REGRESSION_PCT vs baseline: bloqueia
+            convergência mesmo se outros melhoraram.
+            Par sem baseline (novo): OK se PnL > 0.
+
+    Returns:
+        (converged, failing_pairs) — failing é lista de "SYM_TF" que
+        não atenderam o critério.
+    """
+    if mode == "absolute":
+        # Reutiliza o legado
+        conv, failing = _is_profitable_enough(current_perf)
+        return conv, failing
+
+    if mode != "delta":
+        raise ValueError(f"mode inválido: {mode!r} (use 'absolute' ou 'delta')")
+
+    failing = []
+    for key, data in (current_perf.get("by_symbol_tf") or {}).items():
+        n = data.get("n_trades", 0)
+        if n < MIN_TRADES_FOR_DELTA:
+            continue  # amostra insuficiente, ignora
+
+        current_pnl = float(data.get("total_pnl", 0.0))
+        baseline = baseline_snapshot.get(key)
+
+        # Par novo (sem baseline) — só conta se já está positivo
+        if baseline is None:
+            if current_pnl <= 0:
+                failing.append(key)
+            continue
+
+        baseline_pnl = baseline["pnl"]
+
+        # Caso 1: PnL positivo atual — OK por si só
+        if current_pnl > 0:
+            # Mas verifica regressão: se baseline era MUITO melhor e agora
+            # estamos só marginalmente positivos, é suspeita de regressão
+            if baseline_pnl > 0 and (baseline_pnl - current_pnl) > abs(baseline_pnl) * DELTA_REGRESSION_PCT:
+                failing.append(key)  # PnL positivo mas regrediu >20%
+            # senão: OK, segue
+            continue
+
+        # Caso 2: PnL não-positivo atual — exige melhoria >=30% vs baseline
+        # Se baseline também era negativo: a perda precisa ENCOLHER
+        if baseline_pnl < 0:
+            baseline_loss = abs(baseline_pnl)
+            current_loss = abs(current_pnl)
+            # baseline -200, current -50: loss caiu de 200→50, redução de 75% → OK
+            # baseline -200, current -180: loss caiu de 200→180, redução de 10% → FAIL
+            if baseline_loss > 0:
+                reduction = (baseline_loss - current_loss) / baseline_loss
+                if reduction < DELTA_IMPROVEMENT_PCT:
+                    failing.append(key)
+            else:
+                # Baseline era exatamente 0, qualquer loss atual é regressão
+                if current_loss > 0:
+                    failing.append(key)
+        else:
+            # baseline era positivo e agora é negativo — REGRESSÃO total
+            failing.append(key)
+
+    return (len(failing) == 0, failing)
+
+
+def _pause_failing_pairs(failing_pairs: list[str], config: dict, dry_run: bool) -> dict:
+    """Auto-pausa pares (SYMBOL_TF) que não convergiram após N iterações.
+
+    Cada par é adicionado em disabled_timeframes. Autotrader hot-reload
+    faz o resto. Retorna dict com o que foi pausado.
+    """
+    if not failing_pairs:
+        return {"paused": [], "skipped": []}
+
+    paused = []
+    skipped = []
+    current_disabled = set(config.get("disabled_timeframes", []) or [])
+
+    for pair in failing_pairs:
+        if pair in current_disabled:
+            skipped.append(f"{pair} (já pausado)")
+            continue
+        # Validar formato SYMBOL_TF (ex: "WIN_M5", "WDO_H1")
+        if "_" not in pair:
+            skipped.append(f"{pair} (formato inválido)")
+            continue
+        current_disabled.add(pair)
+        paused.append(pair)
+
+    if paused and not dry_run:
+        config["disabled_timeframes"] = sorted(current_disabled)
+        save_full_config(config, updated_by="agi_17h_fallback")
+        log.warning(f"🛑 FALLBACK: pausados {len(paused)} pares não-convergentes: {paused}")
+    elif paused and dry_run:
+        log.info(f"🔍 [DRY-RUN] pausaria {paused}")
+
+    return {"paused": paused, "skipped": skipped}
+
+
+def build_iteration_history_entry(
+    iter_num: int,
+    iter_applied: list,
+    failing_pairs: list,
+    converged: bool | None,
+) -> dict:
+    """Constrói uma entrada de iteration_history pro audit JSON (#4).
+
+    Garante a estrutura canônica usada tanto no loop quanto na auditoria:
+    cada iteração registra n_changes, changes (lista completa com
+    symbol/params/reason), failing_pairs e converged.
+
+    Args:
+        iter_num: número da iteração (1-indexed).
+        iter_applied: lista de mudanças aplicadas nesta iteração. Cada
+            item é um dict com chaves "symbol" (str), "params" (dict) e
+            "reason" (str), conforme retornado por apply_changes().
+        failing_pairs: lista de pares SYM_TF que falharam o convergence
+            gate nesta iteração.
+        converged: True se convergiu nesta iteração (e o loop quebrou),
+            False se ainda não convergiu, None se dry-run (sem opinião).
+
+    Returns:
+        Dict com a estrutura canônica de uma entrada do audit JSON.
+    """
+    return {
+        "iteration": iter_num,
+        "n_changes": len(iter_applied),
+        "changes": list(iter_applied),  # cópia pra audit não referenciar lista mutável
+        "failing_pairs": list(failing_pairs),
+        "converged": converged,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# DECISÃO DE TROCA DE ESTRATÉGIA (Buffett rule — #3c)
+# ═══════════════════════════════════════════════════════════════════
+
+# Thresholds para should_change_strategy() — baseados em Warren Buffett
+# "Rule #1: don't lose money. Rule #2: don't forget Rule #1."
+STRATEGY_CHANGE_MIN_WINDOW_DAYS = 30  # mínimo de dias de evidência
+STRATEGY_CHANGE_MIN_IMPROVEMENT_BRL = 100  # improvement médio mínimo
+STRATEGY_CHANGE_MAX_WORST_CASE_BRL = 100  # loss máximo aceitável em 1 caso
+
+
+def should_change_strategy(
+    symbol: str,
+    current_strategy: str,
+    proposed_strategy: str,
+    window_days: int,
+    improvement_brl: float,
+    worst_case_loss_brl: float,
+) -> dict:
+    """Decide se o AGI deve propor troca de estratégia (Buffett-style).
+
+    Inspirado nas regras de Warren Buffett:
+    - Janela mínima de 30 dias (Buffett: "10 years, not 7 days")
+    - Improvement médio > R$ 100 (não troca por migalhas)
+    - Worst case < R$ 100 de loss (Rule #1: don't lose money)
+
+    Args:
+        symbol: ex: "WIN", "BIT".
+        current_strategy: nome da estratégia atual (ex: "BOLLINGER").
+        proposed_strategy: nome da proposta (ex: "RSI_REVERSION").
+        window_days: quantos dias de dados sustentam a proposta.
+        improvement_brl: PnL adicional médio esperado pela troca.
+        worst_case_loss_brl: maior loss isolado observado se a troca
+            for aplicada (pode ser em outro timeframe do mesmo symbol).
+
+    Returns:
+        Dict com:
+        - change: bool (True = AGI deve propor troca)
+        - reason: str ("OK" | "INSUFFICIENT_EVIDENCE" | "WORST_CASE_RISK")
+        - recommended_window_days: int (>=30 se bloqueado por janela curta)
+        - detail: str (explicação legível)
+    """
+    if window_days < STRATEGY_CHANGE_MIN_WINDOW_DAYS:
+        return {
+            "change": False,
+            "reason": "INSUFFICIENT_EVIDENCE",
+            "recommended_window_days": STRATEGY_CHANGE_MIN_WINDOW_DAYS,
+            "detail": (
+                f"{symbol}: troca {current_strategy}→{proposed_strategy} "
+                f"bloqueada — apenas {window_days} dias de dados "
+                f"(mínimo {STRATEGY_CHANGE_MIN_WINDOW_DAYS}). "
+                f"Buffett: '10 years, not 7 days'."
+            ),
+        }
+
+    if improvement_brl < STRATEGY_CHANGE_MIN_IMPROVEMENT_BRL:
+        return {
+            "change": False,
+            "reason": "INSUFFICIENT_EVIDENCE",
+            "recommended_window_days": window_days,
+            "detail": (
+                f"{symbol}: improvement=R$ {improvement_brl:.0f} < "
+                f"R$ {STRATEGY_CHANGE_MIN_IMPROVEMENT_BRL} mínimo. "
+                f"Não vale o risco de mudança em produção."
+            ),
+        }
+
+    if abs(worst_case_loss_brl) > STRATEGY_CHANGE_MAX_WORST_CASE_BRL:
+        return {
+            "change": False,
+            "reason": "WORST_CASE_RISK",
+            "recommended_window_days": window_days,
+            "detail": (
+                f"{symbol}: worst case=-R$ {abs(worst_case_loss_brl):.0f} > "
+                f"R$ {STRATEGY_CHANGE_MAX_WORST_CASE_BRL} aceitável. "
+                f"Buffett Rule #1: don't lose money. Bloqueado."
+            ),
+        }
+
+    return {
+        "change": True,
+        "reason": "OK",
+        "recommended_window_days": window_days,
+        "detail": (
+            f"{symbol}: troca {current_strategy}→{proposed_strategy} APROVADA "
+            f"(improvement=R$ {improvement_brl:.0f}, worst case=-R$ "
+            f"{abs(worst_case_loss_brl):.0f}, {window_days} dias)."
+        ),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="AGI 17h Tuning — otimização dinâmica de parâmetros")
     parser.add_argument("--days", type=int, default=7, help="Janela de análise em dias (default: 7)")
@@ -1270,7 +1598,18 @@ def main():
     parser.add_argument("--no-web", action="store_true", help="Não usar tinyfish para web intel")
     parser.add_argument("--timeout", type=int, default=120, help="Timeout LLM em segundos")
     parser.add_argument("--web-timeout", type=int, default=60, help="Timeout tinyfish em segundos (total)")
+    parser.add_argument("--max-iterations", type=int, default=1,
+                        help="Máximo de iterações do loop de convergência (1-5, default: 1 — single-shot)")
+    parser.add_argument("--pause-failing", action="store_true",
+                        help="Fallback final: auto-pausar pares SYM_TF com PnL≤0 após max-iterations")
+    parser.add_argument("--convergence-mode", choices=["delta", "absolute"], default="delta",
+                        help="Critério de convergência: 'delta' (compara PnL vs baseline inicial, "
+                             "permite melhoria parcial) ou 'absolute' (legado: PnL>0 em todos). "
+                             "Default: 'delta' — recomendado pra loops iterativos.")
     args = parser.parse_args()
+
+    # Clamp iterations
+    args.max_iterations = max(1, min(5, args.max_iterations))
 
     log.info(f"🤖 AGI 17H iniciado — janela: {args.days} dias | dry-run: {args.dry_run} | "
              f"llm: {not args.no_llm} | web: {not args.no_web}")
@@ -1374,37 +1713,130 @@ def main():
         else:
             log.warning("LLM não respondeu — usando apenas diagnóstico local")
 
-    # 6. Aplicar mudanças
+    # 6-7. LOOP DE ITERAÇÕES (convergência: todos SYM_TF com PnL > 0)
+    iteration_history = []  # histórico de cada iteração
+    converged = False
+    final_paused = {"paused": [], "skipped": []}
     applied = []
-    if llm_result and llm_result.get("changes") and not args.dry_run:
-        applied = apply_changes(llm_result, config, dry_run=False)
-        # Recarregar config após mudanças
-        config = load_config(force=True)
-    elif llm_result and llm_result.get("changes") and args.dry_run:
-        applied = apply_changes(llm_result, config, dry_run=True)
 
-    # 7. Relatório
-    print_report(perf, issues, llm_result, applied, config, args.dry_run, web_intel, optimization)
+    # Captura snapshot ANTES do loop (baseline imutável pra convergence por delta)
+    baseline_snapshot = snapshot_performance(perf) if args.convergence_mode == "delta" else {}
+    log.info(f"📸 Baseline snapshot: {len(baseline_snapshot)} pares (modo={args.convergence_mode})")
 
-    # 8. Notificação Telegram (resumo)
-    if applied:
-        summary_lines = [f"🤖 AGI 17H — {len(applied)} mudanças {'aplicadas' if not args.dry_run else 'sugeridas'}"]
+    for it_num in range(1, args.max_iterations + 1):
+        log.info(f"{'='*60}\n🔄 ITERAÇÃO {it_num}/{args.max_iterations}\n{'='*60}")
+
+        # Recarregar perf fresca (do DB) a cada iteração, exceto na 1ª
+        if it_num > 1:
+            perf = collect_performance(days=args.days)
+            issues = diagnose_issues(perf)
+            # Recarregar config (já com mudanças da iteração anterior aplicadas)
+            config = load_config(force=True)
+
+        # 5. LLM (se habilitado) — reconstrói prompt a cada iteração
+        llm_result = None
+        if not args.no_llm:
+            log.info(f"Consultando LLM (iteração {it_num})...")
+            prompt = build_llm_prompt(perf, issues, config, web_intel=web_intel,
+                                       optimization=optimization)
+            response = ask_llm(prompt, timeout=args.timeout)
+            if response:
+                llm_result = parse_llm_response(response)
+                if llm_result:
+                    log.info(f"LLM iteração {it_num}: {len(llm_result.get('changes', []))} mudanças")
+                else:
+                    log.warning(f"LLM it {it_num} respondeu mas JSON inválido")
+            else:
+                log.warning(f"LLM it {it_num} sem resposta")
+
+        # 6. Aplicar mudanças desta iteração
+        iter_applied = []
+        if llm_result and llm_result.get("changes"):
+            if args.dry_run:
+                iter_applied = apply_changes(llm_result, config, dry_run=True)
+            else:
+                iter_applied = apply_changes(llm_result, config, dry_run=False)
+                config = load_config(force=True)
+        applied.extend(iter_applied)
+
+        # 7. Validar convergência (só faz sentido se não dry-run, pq dry-run não muda o DB)
+        iter_paused = {"paused": [], "skipped": []}
+        if not args.dry_run:
+            # Re-ler perf atualizada (após mudanças)
+            perf_after = collect_performance(days=args.days)
+            converged, failing_pairs = check_convergence(
+                perf_after, baseline_snapshot, mode=args.convergence_mode
+            )
+            log.info(f"📈 Convergência it {it_num}: {'SIM ✅' if converged else 'NÃO ❌'} "
+                     f"({len(failing_pairs)} pares falhando: {failing_pairs})")
+            perf = perf_after  # usa essa pra relatório
+
+            # Registrar no histórico (helper testável — #4)
+            iteration_history.append(
+                build_iteration_history_entry(
+                    it_num, iter_applied, failing_pairs, converged
+                )
+            )
+
+            if converged:
+                log.info(f"🎯 CONVERGÊNCIA atingida na iteração {it_num}!")
+                break
+        else:
+            # dry-run: converged=None, failing=[]
+            iteration_history.append(
+                build_iteration_history_entry(it_num, iter_applied, [], None)
+            )
+            # Em dry-run, single-shot é suficiente — sem iteração real
+            break
+
+    # 8. FALLBACK — Auto-pausar pares não-convergentes
+    if not converged and args.pause_failing and not args.dry_run:
+        # Pegar pares que falharam na última iteração
+        last_iter = iteration_history[-1] if iteration_history else {}
+        failing = last_iter.get("failing_pairs", [])
+        if failing:
+            log.warning(f"⚠️ FALLBACK ATIVADO: pausando {len(failing)} pares não-convergentes")
+            final_paused = _pause_failing_pairs(failing, config, dry_run=False)
+            config = load_config(force=True)
+        else:
+            log.info("✅ Nenhum par falhando — fallback não necessário")
+
+    # 9. Relatório final (consolidado com histórico de iterações)
+    print_report(perf, issues, llm_result, applied, config, args.dry_run,
+                 web_intel, optimization, iterations=iteration_history,
+                 converged=converged, paused=final_paused)
+
+    # 10. Notificação Telegram (resumo)
+    if applied or final_paused["paused"]:
+        summary_lines = [
+            f"🤖 AGI 17H — {len(iteration_history)} iteração(ões) | "
+            f"{'CONVERGIU ✅' if converged else 'NÃO convergiu ❌'}"
+        ]
         total_pnl = sum(d["total_pnl"] for d in perf.get("by_symbol", {}).values())
-        summary_lines.append(f"📊 Período {args.days}d: {sum(d['n_trades'] for d in perf.get('by_symbol', {}).values())} trades | PnL R${total_pnl:+.2f}")
+        total_trades = sum(d["n_trades"] for d in perf.get("by_symbol", {}).values())
+        summary_lines.append(f"📊 {args.days}d: {total_trades} trades | PnL R${total_pnl:+.2f}")
         if web_intel:
-            summary_lines.append(f"🌐 Web intel: {len(web_intel)} símbolos analisados")
-        for a in applied:
-            params_str = ", ".join(f"{k}={v}" for k, v in a["params"].items())
-            summary_lines.append(f"  {'✅' if a['applied'] else '🔍'} {a['symbol']}: {params_str}")
+            summary_lines.append(f"🌐 Web intel: {len(web_intel)} símbolos")
+        if applied:
+            summary_lines.append(f"✏️ {len(applied)} mudanças aplicadas no total")
+            for a in applied[:5]:  # top 5 pra não estourar limite Telegram
+                params_str = ", ".join(f"{k}={v}" for k, v in a["params"].items())
+                summary_lines.append(f"  {'✅' if a['applied'] else '🔍'} {a['symbol']}: {params_str}")
+        if final_paused["paused"]:
+            summary_lines.append(f"🛑 FALLBACK: pausados {final_paused['paused']}")
         if llm_result and llm_result.get("analysis"):
-            summary_lines.append(f"🧠 {llm_result['analysis'][:300]}")
+            summary_lines.append(f"🧠 {llm_result['analysis'][:200]}")
         notify_telegram("\n".join(summary_lines))
 
-    # 9. Salvar resultado para auditoria
+    # 11. Salvar resultado para auditoria
     audit = {
         "timestamp": datetime.now().isoformat(),
         "period_days": args.days,
         "dry_run": args.dry_run,
+        "max_iterations": args.max_iterations,
+        "iterations": iteration_history,
+        "converged": converged,
+        "paused_by_fallback": final_paused,
         "performance": perf,
         "issues": issues,
         "web_intel": web_intel,
@@ -1421,7 +1853,8 @@ def main():
     except Exception as e:
         log.warning(f"Erro ao salvar auditoria: {e}")
 
-    log.info("🤖 AGI 17H concluído")
+    log.info(f"🤖 AGI 17H concluído — {len(iteration_history)} iteração(ões) | "
+             f"convergiu: {converged}")
 
 
 if __name__ == "__main__":
