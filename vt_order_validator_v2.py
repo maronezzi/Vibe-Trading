@@ -85,8 +85,8 @@ def _cache_put(key: str, response: str):
     _llm_cache[key] = {"response": response, "ts": datetime.now()}
 
 
-def _ask_llm(prompt: str, timeout: int = 60) -> Optional[str]:
-    """Consulta LLM (com fallback). Mesmo padrão do v1."""
+def _ask_llm(prompt: str, timeout: int = 30) -> Optional[str]:
+    """Consulta LLM (com fallback). Timeout reduzido para 30s."""
     from vt_hermes_helper import find_hermes
     hermes_bin = find_hermes()
     if not hermes_bin:
@@ -104,10 +104,17 @@ def _ask_llm(prompt: str, timeout: int = 60) -> Optional[str]:
                 capture_output=True, text=True, timeout=timeout
             )
             if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
-        except (subprocess.TimeoutExpired, Exception) as e:
+                resp = result.stdout.strip()
+                _log(f"[LLM] {model} respondeu ({len(resp)} chars)")
+                return resp
+            else:
+                _log(f"[WARN] {model} returncode={result.returncode}, stderr={result.stderr[:200]}")
+        except subprocess.TimeoutExpired:
+            _log(f"[WARN] {model}: timeout após {timeout}s")
+        except Exception as e:
             _log(f"[WARN] {model}: {e}")
 
+    _log("[ERROR] Todos os modelos falharam")
     return None
 
 
@@ -460,15 +467,33 @@ Retorne APENAS JSON:
 
     def _parse_llm_response(self, llm_response, result, order_data, base,
                               daily_pnl, streak):
-        """Parseia resposta da LLM e aplica contexto de sessão."""
+        """Parseia resposta da LLM com recuperação de JSON truncado."""
         try:
             start = llm_response.find("{")
             end = llm_response.rfind("}") + 1
-            if start < 0 or end <= start:
+            if start < 0:
+                _log(f"[WARN] parse: sem '{{' na resposta: {llm_response[:200]}")
                 return
-            data = json.loads(llm_response[start:end])
+            if end <= start:
+                # JSON truncado — tentar fechar manualmente
+                _log(f"[WARN] parse: JSON sem '}}' — tentando recuperar: {llm_response[start:start+200]}")
+                raw = llm_response[start:]
+                # Tentar fechar string e objeto
+                if '"' in raw and not raw.rstrip().endswith('"'):
+                    raw = raw.rstrip().rstrip(',') + '"'
+                if not raw.rstrip().endswith('}'):
+                    raw = raw.rstrip() + '}'
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    _log(f"[WARN] parse: JSON irrecuperável")
+                    return
+            else:
+                data = json.loads(llm_response[start:end])
+
             new_sl = data.get("sl_sugerido")
             if not isinstance(new_sl, (int, float)) or new_sl <= 0:
+                _log(f"[WARN] parse: sl_sugerido inválido: {new_sl}")
                 return
 
             new_sl = int(new_sl)
@@ -499,8 +524,11 @@ Retorne APENAS JSON:
                     "reason": data.get("resumo", "LLM sugere ajuste"),
                 }
                 _log(f"[LLM] Sugere SL {sl_pts} → {new_sl}")
+            else:
+                # SL mantido — logar motivo pro debug
+                _log(f"[LLM] SL mantido em {sl_pts} (sugerido {new_sl}, diff {diff}pts) — {data.get('resumo', '')[:100]}")
         except (json.JSONDecodeError, ValueError) as e:
-            _log(f"[WARN] parse_llm_response: {e}")
+            _log(f"[WARN] parse_llm_response: {e} — raw: {llm_response[:300]}")
 
 
 # Função de compatibilidade com v1

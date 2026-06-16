@@ -1076,8 +1076,24 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                 else:
                     log(f"[VALIDATOR] LLM sugeriu SL fora dos limites ({new_sl}pts [{_limits['min']}-{_limits['max']}]), ignorado")
             elif validation.get("llm_analysis"):
-                # LLM analisou e não sugeriu mudança — loga resumo
-                log(f"[VALIDATOR] LLM OK: {validation['llm_analysis'][:150]}")
+                # LLM analisou e não sugeriu mudança — notificar Telegram + log completo
+                _llm_raw = validation['llm_analysis']
+                _resumo_short = _llm_raw[:200]
+                _sl_sug_str = "?"
+                try:
+                    _s = _llm_raw.find('{')
+                    _e = _llm_raw.rfind('}') + 1
+                    if _s >= 0 and _e > _s:
+                        _parsed_llm = json.loads(_llm_raw[_s:_e])
+                        _resumo_short = _parsed_llm.get('resumo', _resumo_short)
+                        _sl_sug_str = _parsed_llm.get('sl_sugerido', '?')
+                except Exception:
+                    pass
+                log(f"[VALIDATOR] LLM OK (SL mantido {sl_pts}pts, sugerido {_sl_sug_str}): {_resumo_short[:300]}")
+                notify_telegram(
+                    f"✅ [VALIDATOR] {symbol} {direction} {tf} | "
+                    f"SL mantido em {sl_pts}pts\n📝 {_resumo_short[:200]}"
+                )
             elif not validation.get("llm_analysis") and validation.get("alerts"):
                 # LLM falhou mas há alertas locais — aplicar correção local
                 for alert in validation["alerts"]:
