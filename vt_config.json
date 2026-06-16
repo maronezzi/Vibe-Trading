@@ -1,7 +1,7 @@
 {
-  "_version": 147,
-  "_updated_at": "2026-06-15T21:50:34.797831",
-  "_updated_by": "agi_17h_llm",
+  "_version": 161,
+  "_updated_at": "2026-06-16T10:35:00",
+  "_updated_by": "bruno_manual",
   "_notes": "auto-resolve vencimento: WDO: ? → WDOM26",
   "start_hour": 9,
   "start_minute": 5,
@@ -71,11 +71,11 @@
     "vwap_period": 20,
     "vwap_buy_threshold": 1.002,
     "vwap_sell_threshold": 0.998,
-    "sl_atr_mult": 0.5,
+    "sl_atr_mult": 0.8,
     "trail_activate": 0.8,
     "trail_distance": 0.3,
     "cooldown_seconds": 270,
-    "max_daily_trades": 4,
+    "max_daily_trades": 999,
     "ema_fast": 5,
     "ema_slow": 13,
     "rsi_period": 7,
@@ -100,7 +100,7 @@
     "trail_activate": 0.8,
     "trail_distance": 0.3,
     "cooldown_seconds": 270,
-    "max_daily_trades": 2,
+    "max_daily_trades": 999,
     "breakeven_minutes": 5,
     "time_trail_minutes": 15,
     "max_position_minutes": 35,
@@ -108,8 +108,8 @@
   },
   "volume": 1,
   "volume_by_symbol": {
-    "BIT": 2,
-    "WDO": 2,
+    "BIT": 1,
+    "WDO": 1,
     "WIN": 1,
     "DOL": 1,
     "IND": 1,
@@ -201,7 +201,7 @@
     "trail_activate": 0.8,
     "trail_distance": 0.3,
     "cooldown_seconds": 270,
-    "max_daily_trades": 6,
+    "max_daily_trades": 999,
     "breakeven_minutes": 5,
     "time_trail_minutes": 15,
     "max_position_minutes": 63,
@@ -227,8 +227,8 @@
     "sl_atr_mult": 0.6,
     "trail_activate": 1.0,
     "trail_distance": 0.4,
-    "cooldown_seconds": 180,
-    "max_daily_trades": 10,
+    "cooldown_seconds": 300,
+    "max_daily_trades": 999,
     "breakeven_minutes": 10,
     "time_trail_minutes": 20,
     "max_position_minutes": 90,
@@ -247,7 +247,7 @@
     "trail_activate": 0.8,
     "trail_distance": 0.3,
     "cooldown_seconds": 180,
-    "max_daily_trades": 8,
+    "max_daily_trades": 999,
     "breakeven_minutes": 7,
     "time_trail_minutes": 20,
     "max_position_minutes": 63,
@@ -272,8 +272,8 @@
     "sl_atr_mult": 0.5,
     "trail_activate": 0.8,
     "trail_distance": 0.3,
-    "cooldown_seconds": 3600,
-    "max_daily_trades": 2,
+    "cooldown_seconds": 600,
+    "max_daily_trades": 999,
     "breakeven_minutes": 5,
     "time_trail_minutes": 20,
     "max_position_minutes": 63,
@@ -283,7 +283,9 @@
     "vwap_sell_threshold": 0.997,
     "hard_exit_minutes": 45
   },
-  "disabled_symbols": [],
+  "disabled_symbols": [
+    "WDO"
+  ],
   "disabled_timeframes": [
     "DOL_M15",
     "WSP_M15",
@@ -297,7 +299,7 @@
     "WDO_M5",
     "BIT_M5"
   ],
-  "max_daily_loss": -250,
+  "max_daily_loss": -5000,
   "params_by_tf": {
     "WIN_M5": {
       "sl_atr_mult": 2.5,
@@ -475,5 +477,9 @@
       "adx_threshold": 20,
       "pullback_pct": 0.1
     }
-  }
+  },
+  "max_daily_trades": 999,
+  "halt_trading": false,
+  "halt_new_trades": false,
+  "halt_on_loss": false
 }
