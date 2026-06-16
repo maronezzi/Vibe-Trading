@@ -1191,6 +1191,8 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             "strategy": strategy,
             "bb_mid": kwargs.get("bb_mid", 0),
             "entry_time": datetime.now(),
+            "volume": _vol,
+            "tf": tf,
         }
 
         # Cooldown (por symbol, tf, direction — evita reversões rápidas)
@@ -1202,15 +1204,20 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
         state.daily_trade_by_symbol[symbol] = state.daily_trade_by_symbol.get(symbol, 0) + 1
         state.save()  # persistir estado
 
-        # Notificação
+        # Notificação de abertura — informações completas do servidor
         sl_label = exec_price - sl_pts * point_val if direction == "BUY" else exec_price + sl_pts * point_val
-        strategy_label_map = {"VWAP": "VWAP", "BOLLINGER": "Bollinger", "EMA_CROSSOVER": "EMA Cross"}
+        strategy_label_map = {"VWAP": "VWAP", "BOLLINGER": "Bollinger", "EMA_CROSSOVER": "EMA Cross",
+                              "EMA_PULLBACK": "EMA Pullback", "RSI_REVERSION": "RSI Reversion",
+                              "MACD_MOMENTUM": "MACD Momentum", "SMART_EMA": "Smart EMA"}
         strategy_label = strategy_label_map.get(strategy, strategy)
+        _ts = datetime.now().strftime("%H:%M:%S")
+        _atr_mult = sl_pts / (atr * point_val * 100) if atr > 0 and point_val > 0 else 0
         notify_telegram(
             f"📊 *{direction} {symbol} {tf}* ({strategy_label})\n"
             f"• Entrada: {exec_price:.2f} | SL: {sl_label:.2f}\n"
-            f"• ATR: {atr:.0f} | RSI: {kwargs.get('rsi', 50):.1f}\n"
-            f"• Trade {state.daily_trade_count}/dia"
+            f"• ATR: {atr:.0f} | RSI: {kwargs.get('rsi', 50):.1f} | SL: {_atr_mult:.1f}x ATR\n"
+            f"• Volume: {_vol} contrato(s) | Ticket: {ticket}\n"
+            f"• Trade {state.daily_trade_count}/dia | {_ts}"
         )
     else:
         reason = result.get("comment", result.get("error", "desconhecido"))
@@ -1448,11 +1455,29 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
                         f"Aguardando reset (próximo dia)"
                     )
 
-        log(f"[FECHADO] {symbol} {tf} — PnL estimado R\${pnl:+.2f}, notificando Telegram...")
+        log(f"[FECHADO] {symbol} {tf} — PnL estimado R\\${pnl:+.2f}, notificando Telegram...")
+        # Notificação de fechamento — informações completas do servidor
+        _ts = datetime.now().strftime("%H:%M:%S")
+        _volume = pos.get("volume", "?")
+        _ticket = pos.get("entry_ticket", "?")
+        _entry_time = pos.get("entry_time")
+        _duracao = ""
+        if _entry_time:
+            try:
+                if isinstance(_entry_time, str):
+                    _entry_time = datetime.fromisoformat(_entry_time)
+                _duracao_min = (datetime.now() - _entry_time).total_seconds() / 60
+                _duracao = f" | Duração: {_duracao_min:.0f}min"
+            except Exception:
+                pass
+        _pnl_emoji = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
         notify_telegram(
             f"⚡ *Fechou {symbol} {tf}*\n"
-            f"• {direction} | R$ {pnl:+.2f}\n"
-            f"• SL atingido no servidor"
+            f"• {direction} | {_pnl_emoji} R$ {pnl:+.2f}\n"
+            f"• Entrada: {entry_price:.2f} → Saída: {current_price:.2f}\n"
+            f"• Volume: {_volume} contrato(s) | Ticket: {_ticket}\n"
+            f"• Motivo: SL atingido no servidor{_duracao}\n"
+            f"• PnL Dia: R$ {state.daily_pnl:+.2f} | {_ts}"
         )
 
         del state.positions[key]
