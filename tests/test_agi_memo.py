@@ -83,44 +83,69 @@ class TestReenableSymbols(unittest.TestCase):
     """apply_changes() deve HONRAR reenable_symbols e remover de disabled_symbols."""
 
     def setUp(self):
-        # Import lazy para não quebrar se outros testes rodam
-        pass
+        # Backup do config de produção — testes não podem tocar o real
+        import shutil
+        from vt_config_loader import load_config, save_full_config
+        self._load = load_config
+        self._save = save_full_config
+        # Salvar config real em tmp
+        self._real_config = load_config(force=True)
+        with open("/tmp/_vt_config_real_backup.json", "w") as f:
+            json.dump(self._real_config, f)
 
-    def _call_apply_changes(self, llm_result, config):
-        """Wrapper: importa apply_changes do AGI."""
+    def tearDown(self):
+        # Restaurar config real após teste
+        import shutil
+        with open("/tmp/_vt_config_real_backup.json") as f:
+            real = json.load(f)
+        self._save(real, updated_by="test_agi_memo_teardown")
+
+    def _call_apply_changes(self, llm_result, config_overrides):
+        """Wrapper: importa apply_changes e usa config real + overrides.
+
+        IMPORTANTE: testes NÃO podem passar um dict minúsculo para apply_changes,
+        senão save_full_config() sobrescreve vt_config.json real com só os
+        campos do test → CORRUPÇÃO DE PRODUÇÃO. Sempre passar a config real
+        com overrides pontuais.
+        """
         from agi_tuning_17h import apply_changes
-        return apply_changes(llm_result, config, dry_run=False)
+        # Copiar config real e aplicar overrides do teste
+        cfg = json.loads(json.dumps(self._real_config))
+        for k, v in config_overrides.items():
+            cfg[k] = v
+        return apply_changes(llm_result, cfg, dry_run=True)  # DRY-RUN: não toca disco
 
     def test_reenable_removes_from_disabled_symbols(self):
-        """Se LLM pede reenable de WDO, deve sair de disabled_symbols."""
-        cfg = {
-            "disabled_symbols": ["WDO", "BIT"],
-            "disabled_timeframes": ["WDO_M5"],
-            "win": {"sl_atr_mult": 0.8},
-        }
+        """Se LLM pede reenable de WDO, dry-run deve remover WDO de disabled_symbols (em memória).
+
+        NOTA: dry_run=True não persiste no disco, mas o `config` in-memory
+        deve refletir o estado pós-aplicação para o chamador poder inspecionar.
+        """
+        cfg_in = self._real_config.copy()
+        cfg_in["disabled_symbols"] = ["WDO", "BIT"]  # override pontual
         llm = {
             "analysis": "ok",
             "changes": [],
             "reenable_symbols": ["WDO"],
         }
-        self._call_apply_changes(llm, cfg)
+        from agi_tuning_17h import apply_changes
+        apply_changes(llm, cfg_in, dry_run=True)
         # WDO deve ter saído, BIT deve continuar
-        self.assertNotIn("WDO", cfg["disabled_symbols"])
-        self.assertIn("BIT", cfg["disabled_symbols"])
+        self.assertNotIn("WDO", cfg_in["disabled_symbols"])
+        self.assertIn("BIT", cfg_in["disabled_symbols"])
 
     def test_reenable_idempotent_when_symbol_not_disabled(self):
         """Se símbolo pedido não está em disabled_symbols, não deve quebrar."""
-        cfg = {
-            "disabled_symbols": ["BIT"],
-            "win": {"sl_atr_mult": 0.8},
-        }
         llm = {
             "analysis": "ok",
             "changes": [],
-            "reenable_symbols": ["WIN"],  # WIN não está desativado
+            "reenable_symbols": ["WIN"],  # WIN não está desativado (no real)
         }
+        cfg_in = self._real_config.copy()
+        # Não precisa adicionar nada em disabled_symbols
+        from agi_tuning_17h import apply_changes
         # Não pode quebrar
-        result = self._call_apply_changes(llm, cfg)
+        result = apply_changes(llm, cfg_in, dry_run=True)
         self.assertIsNotNone(result)
 
 

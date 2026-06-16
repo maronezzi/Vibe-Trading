@@ -1147,8 +1147,10 @@ def apply_changes(llm_result: dict, config: dict, dry_run: bool = False) -> list
         to_reenable = [s for s in reenable_symbols if s in current_disabled]
         if to_reenable:
             new_disabled = [s for s in current_disabled if s not in to_reenable]
+            # SEMPRE mutar in-memory (dry_run só não persiste em disco) — assim
+            # o chamador pode inspecionar o estado pós-aplicação via `config`.
+            config["disabled_symbols"] = new_disabled
             if not dry_run:
-                config["disabled_symbols"] = new_disabled
                 save_full_config(config, updated_by="agi_17h_llm")
                 config = load_config(force=True)  # refresh in-memory
             log.info(f"♻️ REATIVADOS símbolos: {to_reenable} (sairão de disabled_symbols)")
@@ -1163,8 +1165,9 @@ def apply_changes(llm_result: dict, config: dict, dry_run: bool = False) -> list
     if disable_symbols:
         current_disabled = config.get("disabled_symbols", [])
         new_disabled = list(set(current_disabled + disable_symbols))
+        # SEMPRE mutar in-memory (dry_run só não persiste em disco) — consistência com reenable
+        config["disabled_symbols"] = new_disabled
         if not dry_run:
-            config["disabled_symbols"] = new_disabled
             save_full_config(config, updated_by="agi_17h_llm")
             config = load_config(force=True)  # refresh in-memory
         log.info(f"🛑 DESATIVADOS símbolos: {disable_symbols}")
@@ -1173,8 +1176,9 @@ def apply_changes(llm_result: dict, config: dict, dry_run: bool = False) -> list
         config = load_config(force=True)  # pegar versão atualizada
         current_disabled_tfs = config.get("disabled_timeframes", [])
         new_disabled_tfs = list(set(current_disabled_tfs + disable_tfs))
+        # SEMPRE mutar in-memory
+        config["disabled_timeframes"] = new_disabled_tfs
         if not dry_run:
-            config["disabled_timeframes"] = new_disabled_tfs
             save_full_config(config, updated_by="agi_17h_llm")
         log.info(f"🛑 DESATIVADOS timeframes: {disable_tfs}")
 
