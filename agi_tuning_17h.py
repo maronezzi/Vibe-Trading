@@ -1184,12 +1184,16 @@ def apply_changes(llm_result: dict, config: dict, dry_run: bool = False) -> list
         log.info(f"🛑 DESATIVADOS timeframes: {disable_tfs}")
 
     if max_daily_loss is not None:
-        max_daily_loss = max(-2000, min(-50, max_daily_loss))  # bounds: -50 a -2000
-        if not dry_run:
+        max_daily_loss = max(-999999, min(-50, max_daily_loss))  # bounds: -50 a -999999 (demo = sem limite real)
+        current_loss = config.get("max_daily_loss", -500)
+        # Se já está em -999999 (demo mode), não sobrescrever com valor mais restritivo
+        if current_loss <= -999999 and max_daily_loss > -999999:
+            log.info(f"🛑 Max daily loss em modo demo (R$ {current_loss:.0f}) — LLM sugeriu R$ {max_daily_loss:.0f}, ignorado")
+        elif not dry_run:
             config = load_config(force=True)
             config["max_daily_loss"] = max_daily_loss
             save_full_config(config, updated_by="agi_17h_llm")
-        log.info(f"🛑 Max daily loss configurado: R$ {max_daily_loss:.2f}")
+            log.info(f"🛑 Max daily loss configurado: R$ {max_daily_loss:.2f}")
 
     return applied
 
