@@ -1199,18 +1199,22 @@ def apply_changes(llm_result: dict, config: dict, dry_run: bool = False) -> list
 # ═══════════════════════════════════════════════════════════════════
 
 def notify_telegram(msg: str):
-    """Envia notificação para o Telegram (fila que o autotrader processa)."""
-    notif_file = Path("/tmp/vt_notifications.jsonl")
-    entry = {
-        "time": datetime.now().strftime("%H:%M:%S"),
-        "event": "AGI_TUNING",
-        "message": msg,
-    }
+    """Envia notificação para o Telegram via hermes CLI (direto, sem depender do autotrader)."""
+    hermes_bin = _find_hermes()
+    if not hermes_bin:
+        log.warning("hermes CLI não encontrado — notificação não enviada")
+        return
     try:
-        with open(notif_file, "a") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+        result = subprocess.run(
+            [hermes_bin, "send", "-t", "telegram:-1004284773048", msg],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            log.info("📤 Relatório enviado ao Telegram")
+        else:
+            log.warning(f"Telegram send erro (rc={result.returncode}): {result.stderr[:200]}")
+    except Exception as e:
+        log.warning(f"Telegram send exceção: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════
