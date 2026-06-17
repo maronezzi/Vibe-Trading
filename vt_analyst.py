@@ -40,6 +40,59 @@ from vt_config_loader import load_config
 SNAPSHOT_FILE = Path("/tmp/vt_market_state.json")
 ANOMALY_FILE = Path("/tmp/vt_anomalies.jsonl")
 SNAPSHOT_HISTORY = Path("/tmp/vt_market_history.jsonl")
+AUTOTRADER_STATE_FILE = Path("/tmp/vt_autotrader_state.json")
+
+
+def load_state_from_disk() -> dict:
+    """Lê o state do autotrader do disco, com fallback seguro.
+
+    Returns:
+        Dict com state, ou dict vazio se arquivo não existe / malformado.
+    """
+    try:
+        if AUTOTRADER_STATE_FILE.exists():
+            import json as _j
+            with open(AUTOTRADER_STATE_FILE) as _f:
+                return _j.load(_f)
+    except Exception:
+        pass
+    return {}
+
+
+def find_real_position(symbol: str, tf_hint: str = "") -> tuple[dict | None, str]:
+    """Busca a posição REAL aberta no state do autotrader.
+
+    Diferente de fetch_snapshot (que usa status()["positions"] e retorna agregado
+    do MT5 por symbol), esta função busca em state.positions que tem chaves
+    f"{symbol}_{tf}" — uma chave por trade específica. Isso garante volume, tf
+    e atr corretos nos alerts (DRAWDOWN, VOLATILITY_SPIKE etc).
+
+    Args:
+        symbol: Símbolo do ativo (ex: "INDM26").
+        tf_hint: TF preferido (ex: "M30"). Se vazio, pega a primeira posição
+            aberta do symbol.
+
+    Returns:
+        (position_dict, tf_real) — position pode ter campos extras como
+        entry_price, atr, volume, tf, sl_pts. tf_real é o TF da posição.
+        Retorna (None, "") se não achar.
+    """
+    state = load_state_from_disk()
+    positions = state.get("positions", {})
+
+    # Primeiro tenta a chave exata com tf_hint
+    if tf_hint:
+        key = f"{symbol}_{tf_hint}"
+        if key in positions:
+            return positions[key], tf_hint
+
+    # Senão pega a primeira posição do symbol (qualquer TF)
+    for key, pos in positions.items():
+        if key.startswith(f"{symbol}_"):
+            tf_real = key.split("_", 1)[1] if "_" in key else ""
+            return pos, tf_real
+
+    return None, ""
 
 # Médias históricas (populadas ao longo do dia) — inicializadas para TODOS os ativos
 def _init_metrics_buffer():
@@ -247,6 +300,43 @@ def detect_anomalies(snapshot: dict) -> list:
     avg_atr = sum(buf["atrs"]) / len(buf["atrs"])
     avg_spread = sum(buf["spreads"]) / len(buf["spreads"]) if any(s > 0 for s in buf["spreads"]) else 0
 
+    # Enriquece snapshot com posição REAL do state (se houver).
+    # snapshot.position vem de status()["positions"] (agregado MT5 do symbol),
+    # o que causa: (a) TF errado (usa tf da iteração, não da trade),
+    # (b) volume inflado (soma de múltiplas ordens), (c) atr/atr_ratio
+    # calculado com ATR do snapshot, não da posição.
+    # state.positions tem chave f"{symbol}_{tf}" — uma chave por trade.
+    snap_pos = snapshot.get("position")
+    real_pos, tf_real = find_real_position(symbol, tf)
+    if real_pos and snap_pos:
+        # Substitui o tf da iteração pelo tf da posição real
+        tf = tf_real or tf
+        # Sobrescreve campos com dados do state
+        # volume: state guarda o volume da trade (1), não agregado MT5
+        if "volume" in real_pos:
+            snap_pos["volume"] = real_pos["volume"]
+        # atr: state guarda o ATR capturado na entrada (real, não do snapshot)
+        if "atr" in real_pos and real_pos["atr"] > 0:
+            snap_pos["atr"] = real_pos["atr"]
+        # SL em pontos: state guarda sl_pts (200), em vez do SL_price
+        if "sl_pts" in real_pos and "sl" in snap_pos:
+            # Mantém sl_price (do MT5), mas exibe o sl_pts nos logs
+            snap_pos["sl_pts"] = real_pos["sl_pts"]
+    elif real_pos and not snap_pos:
+        # State tem posição mas snapshot não (raro — divergence)
+        snapshot["position"] = {
+            "type": real_pos.get("direction", ""),
+            "symbol": symbol,
+            "volume": real_pos.get("volume", 1),
+            "price_open": real_pos.get("entry_price", 0),
+            "sl": real_pos.get("entry_price", 0) - real_pos.get("sl_pts", 0) if real_pos.get("direction") == "BUY" else real_pos.get("entry_price", 0) + real_pos.get("sl_pts", 0),
+            "profit": 0,
+            "ticket": real_pos.get("entry_ticket", ""),
+            "atr": real_pos.get("atr", 0),
+        }
+        tf = tf_real or tf
+
+
     # 1. Volume spike
     if snapshot["current_volume"] > avg_vol * 2 and avg_vol > 0:
         ratio = snapshot["current_volume"] / avg_vol
@@ -297,7 +387,9 @@ def detect_anomalies(snapshot: dict) -> list:
     if pos:
         pnl = pos.get("profit", 0)
         entry = pos.get("price_open", 0)
-        atr = snapshot["atr"]
+        # Preferir atr da posição real (state) sobre o atr do snapshot,
+        # pois o snapshot pode estar usando o atr de outro TF (M5 vs M30)
+        atr = pos.get("atr", 0) or snapshot["atr"]
         if atr > 0 and entry > 0 and pnl < 0:
             # Usar get_multiplier para multiplicador correto por ativo
             try:
