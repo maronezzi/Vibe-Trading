@@ -1054,16 +1054,18 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                         "BIT" if "BIT" in symbol else "DOL" if "DOL" in symbol else \
                         "IND" if "IND" in symbol else "WSP" if "WSP" in symbol else "WIN"
                 _limits = {"WDO": {"min": 3000, "max": 300000}, "WIN": {"min": 200, "max": 3000},
-                           "BIT": {"min": 3000, "max": 500000}, "DOL": {"min": 3000, "max": 300000},
+                           "BIT": {"min": 3000, "max": 2000000}, "DOL": {"min": 3000, "max": 300000},
                            "IND": {"min": 200, "max": 3000}, "WSP": {"min": 500, "max": 30000}
                           }.get(_root, {"min": 200, "max": 50000})
                 if isinstance(new_sl, (int, float)) and _limits["min"] <= new_sl <= _limits["max"]:
                     # Pitfall fix: re-aplicar max_native DEPOIS da correção do validator.
                     # Sem isso, validator pode amplificar SL além do risco máximo por trade.
+                    # NOTA: max_native cobre SL de ~1.2x ATR. Para BIT com ATR=1624, 1.2x ATR = 1948
+                    # nativos = 194800 pts executores. max_native=2000 cobre isso com folga.
                     _specs = {
                         "WIN": {"max_native": 800,  "point_mult": 1},
                         "WDO": {"max_native": 12,   "point_mult": 1000},
-                        "BIT": {"max_native": 500,  "point_mult": 100},
+                        "BIT": {"max_native": 2000, "point_mult": 100},
                         "DOL": {"max_native": 200,  "point_mult": 1000},
                         "IND": {"max_native": 350,  "point_mult": 1},
                         "WSP": {"max_native": 200,  "point_mult": 100},
