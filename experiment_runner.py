@@ -287,3 +287,118 @@ def apply_swap_to_config(config: dict, experiment_result: dict) -> dict:
         new_config["strategy"][sym] = winner_strategy
 
     return new_config
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Grid Search de Parâmetros
+# ════════════════════════════════════════════════════════════════════════
+
+# Grid de parâmetros por estratégia (3 valores × 4 params = 81 variações)
+PARAM_GRID = {
+    "RSI_REVERSION": {
+        "rsi_period": [7, 10, 14],
+        "rsi_overbought": [70, 75, 80],
+        "rsi_oversold": [20, 25, 30],
+        "sl_atr_mult": [0.5, 1.0, 1.5],
+    },
+    "EMA_PULLBACK": {
+        "ema_fast": [5, 8, 12],
+        "ema_slow": [13, 21, 26],
+        "pullback_pct": [0.05, 0.10, 0.15],
+        "sl_atr_mult": [0.5, 1.0, 1.5],
+    },
+    "BOLLINGER": {
+        "bb_period": [10, 20, 30],
+        "bb_std": [1.5, 2.0, 2.5],
+        "sl_atr_mult": [0.5, 1.0, 1.5],
+    },
+    "MACD_MOMENTUM": {
+        "macd_fast": [8, 12, 15],
+        "macd_slow": [21, 26, 30],
+        "macd_signal": [7, 9, 12],
+        "sl_atr_mult": [0.5, 1.0, 1.5],
+    },
+    "VWAP": {
+        "vwap_period": [20, 30, 50],
+        "vwap_buy_threshold": [1.002, 1.005, 1.010],
+        "vwap_sell_threshold": [0.998, 0.995, 0.990],
+        "sl_atr_mult": [0.5, 1.0, 1.5],
+    },
+}
+
+
+def optimize_pair_params(
+    sym: str, tf: str, strategy: str, config: dict, days: int = 7
+) -> dict:
+    """Grid search de parâmetros para um par (sym, tf) com uma estratégia específica.
+
+    Testa variações de parâmetros chave e retorna a melhor combinação.
+
+    Args:
+        sym: símbolo (ex: "BIT")
+        tf: timeframe (ex: "M30")
+        strategy: estratégia a otimizar (ex: "RSI_REVERSION")
+        config: vt_config dict
+        days: janela de backtest (default 7)
+
+    Returns:
+        dict com:
+          - best_params: dict de parâmetros otimizados
+          - best_pnl: PnL da melhor combinação
+          - default_pnl: PnL com parâmetros atuais
+          - delta: diferença (best - default)
+          - best_n_trades: número de trades da melhor combinação
+          - best_wr: win rate da melhor combinação
+    """
+    import copy
+
+    grid = PARAM_GRID.get(strategy, {})
+    if not grid:
+        return {
+            "best_params": {},
+            "best_pnl": 0,
+            "default_pnl": 0,
+            "delta": 0,
+            "best_n_trades": 0,
+            "best_wr": 0,
+        }
+
+    # Get default PnL
+    try:
+        default_result = run_mini_backtest_pair(sym, tf, config, days=days)
+        default_pnl = default_result.get("pnl", 0)
+    except Exception:
+        default_pnl = 0
+
+    best_pnl = default_pnl
+    best_params = {}
+    best_n = 0
+    best_wr = 0
+
+    # Grid search: test each param independently (not full cartesian)
+    for param_name, values in grid.items():
+        for val in values:
+            cfg = copy.deepcopy(config)
+            sym_lower = sym.lower()
+            cfg.setdefault(sym_lower, {})[param_name] = val
+
+            try:
+                bt = run_mini_backtest_pair(sym, tf, cfg, days=days)
+                pnl = bt.get("pnl", 0)
+                n = bt.get("n_trades", 0)
+                if pnl > best_pnl and bt.get("decision") == "ok" and n > 0:
+                    best_pnl = pnl
+                    best_params = {param_name: val}
+                    best_n = n
+                    best_wr = bt.get("wr", 0)
+            except Exception:
+                pass
+
+    return {
+        "best_params": best_params,
+        "best_pnl": best_pnl,
+        "default_pnl": default_pnl,
+        "delta": best_pnl - default_pnl,
+        "best_n_trades": best_n,
+        "best_wr": best_wr,
+    }

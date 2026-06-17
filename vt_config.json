@@ -1,7 +1,7 @@
 {
-  "_version": 436,
-  "_updated_at": "2026-06-17T19:04:37.296787",
-  "_updated_by": "experiment_swap_reactivate",
+  "_version": 447,
+  "_updated_at": "2026-06-17T20:11:17.599015",
+  "_updated_by": "test_agi_memo_teardown",
   "_notes": "auto-resolve vencimento: IND: INDU26 → INDM26 | DOL/IND são contratos CHEIOS B3 → vol=5 (TinyFish 17/06) | WIN/WDO/BIT/WSP minis → vol=1",
   "start_hour": 9,
   "start_minute": 5,
@@ -131,29 +131,29 @@
   "validate_with_llm": true,
   "strategy_by_tf": {
     "WIN_M5": "EMA_PULLBACK",
-    "WIN_M15": "BOLLINGER",
-    "WIN_M30": "EMA_PULLBACK",
-    "WIN_H1": "BOLLINGER",
-    "BIT_M5": "EMA_PULLBACK",
-    "BIT_M15": "EMA_PULLBACK",
-    "BIT_M30": "BOLLINGER",
-    "BIT_H1": "VWAP",
-    "DOL_M5": "RSI_REVERSION",
-    "DOL_M15": "EMA_PULLBACK",
-    "DOL_M30": "VWAP",
-    "DOL_H1": "EMA_PULLBACK",
+    "WIN_M15": "RSI_REVERSION",
+    "WIN_M30": "RSI_REVERSION",
+    "WIN_H1": "RSI_REVERSION",
+    "BIT_M5": "MACD_MOMENTUM",
+    "BIT_M15": "RSI_REVERSION",
+    "BIT_M30": "RSI_REVERSION",
+    "BIT_H1": "RSI_REVERSION",
+    "DOL_M5": "BOLLINGER",
+    "DOL_M15": "MACD_MOMENTUM",
+    "DOL_M30": "EMA_PULLBACK",
+    "DOL_H1": "RSI_REVERSION",
     "IND_M5": "RSI_REVERSION",
     "IND_M15": "BOLLINGER",
     "IND_M30": "RSI_REVERSION",
-    "IND_H1": "EMA_PULLBACK",
-    "WSP_M5": "RSI_REVERSION",
-    "WSP_M15": "STRONG_TREND",
-    "WSP_M30": "EMA_PULLBACK",
-    "WSP_H1": "VWAP",
-    "WDO_M5": "MACD_MOMENTUM",
-    "WDO_M15": "EMA_PULLBACK",
+    "IND_H1": "RSI_REVERSION",
+    "WSP_M5": "EMA_PULLBACK",
+    "WSP_M15": "MACD_MOMENTUM",
+    "WSP_M30": "MACD_MOMENTUM",
+    "WSP_H1": "RSI_REVERSION",
+    "WDO_M5": "RSI_REVERSION",
+    "WDO_M15": "MACD_MOMENTUM",
     "WDO_M30": "EMA_PULLBACK",
-    "WDO_H1": "EMA_PULLBACK"
+    "WDO_H1": "MACD_MOMENTUM"
   },
   "contract_specs": {
     "WIN$": {
@@ -291,7 +291,7 @@
   "max_daily_loss": -999999,
   "params_by_tf": {
     "WIN_M5": {
-      "sl_atr_mult": 2.5,
+      "sl_atr_mult": 1.5,
       "bb_period": 10,
       "bb_std": 1.5,
       "rsi_period": 7,
@@ -304,7 +304,7 @@
       "bb_std": 1.5,
       "rsi_period": 7,
       "rsi_overbought": 75,
-      "rsi_oversold": 25
+      "rsi_oversold": 30
     },
     "WIN_M30": {
       "sl_atr_mult": 0.8,
@@ -326,7 +326,8 @@
       "rsi_period": 14,
       "rsi_overbought": 75,
       "rsi_oversold": 25,
-      "cooldown_seconds": 720
+      "cooldown_seconds": 720,
+      "macd_fast": 8
     },
     "BIT_M15": {
       "sl_atr_mult": 0.8,
@@ -334,13 +335,14 @@
       "ema_slow": 21,
       "adx_period": 14,
       "adx_threshold": 18,
-      "pullback_pct": 0.1
+      "pullback_pct": 0.1,
+      "rsi_overbought": 70
     },
     "BIT_M30": {
       "sl_atr_mult": 1.0,
       "rsi_period": 7,
       "rsi_overbought": 80,
-      "rsi_oversold": 20,
+      "rsi_oversold": 30,
       "cooldown_seconds": 2400
     },
     "BIT_H1": {
@@ -350,14 +352,15 @@
       "vwap_sell_threshold": 0.99,
       "rsi_period": 14,
       "rsi_overbought": 80,
-      "rsi_oversold": 20,
+      "rsi_oversold": 30,
       "cooldown_seconds": 900
     },
     "DOL_M5": {
       "sl_atr_mult": 0.8,
       "rsi_period": 14,
       "rsi_overbought": 70,
-      "rsi_oversold": 30
+      "rsi_oversold": 30,
+      "bb_std": 1.5
     },
     "DOL_M15": {
       "sl_atr_mult": 1.2,
@@ -365,13 +368,15 @@
       "ema_slow": 21,
       "adx_period": 14,
       "adx_threshold": 18,
-      "pullback_pct": 0.1
+      "pullback_pct": 0.1,
+      "macd_signal": 12
     },
     "DOL_M30": {
       "sl_atr_mult": 0.8,
       "vwap_period": 50,
       "vwap_buy_threshold": 1.005,
-      "vwap_sell_threshold": 0.995
+      "vwap_sell_threshold": 0.995,
+      "ema_slow": 21
     },
     "DOL_H1": {
       "sl_atr_mult": 0.8,
@@ -379,7 +384,8 @@
       "ema_slow": 13,
       "adx_period": 14,
       "adx_threshold": 15,
-      "pullback_pct": 0.05
+      "pullback_pct": 0.05,
+      "rsi_oversold": 25
     },
     "IND_M5": {
       "sl_atr_mult": 1.5,
@@ -400,7 +406,7 @@
     },
     "IND_M30": {
       "sl_atr_mult": 0.8,
-      "rsi_period": 14,
+      "rsi_period": 10,
       "rsi_overbought": 70,
       "rsi_oversold": 30
     },
@@ -410,13 +416,15 @@
       "ema_slow": 21,
       "adx_period": 14,
       "adx_threshold": 30,
-      "pullback_pct": 0.2
+      "pullback_pct": 0.2,
+      "rsi_overbought": 80
     },
     "WSP_M5": {
       "sl_atr_mult": 1.5,
       "rsi_period": 7,
       "rsi_overbought": 75,
-      "rsi_oversold": 25
+      "rsi_oversold": 25,
+      "pullback_pct": 0.05
     },
     "WSP_M15": {
       "sl_atr_mult": 1.0,
@@ -431,7 +439,8 @@
       "ema_slow": 21,
       "adx_period": 14,
       "adx_threshold": 18,
-      "pullback_pct": 0.1
+      "pullback_pct": 0.1,
+      "macd_signal": 9
     },
     "WSP_H1": {
       "sl_atr_mult": 0.8,
@@ -441,7 +450,7 @@
     },
     "WDO_M5": {
       "sl_atr_mult": 1.2,
-      "rsi_period": 7,
+      "rsi_period": 10,
       "rsi_overbought": 75,
       "rsi_oversold": 25,
       "cooldown_seconds": 600
@@ -452,13 +461,15 @@
       "ema_slow": 21,
       "adx_period": 14,
       "adx_threshold": 18,
-      "pullback_pct": 0.1
+      "pullback_pct": 0.1,
+      "macd_fast": 8
     },
     "WDO_M30": {
       "sl_atr_mult": 0.8,
       "rsi_period": 7,
       "rsi_overbought": 80,
-      "rsi_oversold": 20
+      "rsi_oversold": 20,
+      "ema_fast": 8
     },
     "WDO_H1": {
       "sl_atr_mult": 0.8,

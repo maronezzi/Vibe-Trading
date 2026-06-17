@@ -76,18 +76,32 @@ def test_only_insufficient_samples_stay_disabled():
 
 
 def test_strategy_swaps_applied():
-    """Estratégias devem ter sido trocadas pelo experimento."""
+    """Estratégias devem ter sido trocadas pelo experimento + otimização."""
     cfg = load_config()
     strategy_by_tf = cfg.get("strategy_by_tf", {})
-    # Winners do experimento
+    # Winners do experimento + otimização (v443+)
     expected = {
-        "WDO_M5": "MACD_MOMENTUM",
+        "WDO_M5": "RSI_REVERSION",
         "WDO_M30": "EMA_PULLBACK",
-        "BIT_M30": "BOLLINGER",
-        "BIT_M5": "EMA_PULLBACK",
+        "WDO_M15": "MACD_MOMENTUM",
+        "WDO_H1": "MACD_MOMENTUM",
+        "BIT_M30": "RSI_REVERSION",
+        "BIT_M5": "MACD_MOMENTUM",
+        "BIT_H1": "RSI_REVERSION",
         "WIN_M5": "EMA_PULLBACK",
-        "WIN_M30": "EMA_PULLBACK",
+        "WIN_M15": "RSI_REVERSION",
+        "WIN_M30": "RSI_REVERSION",
+        "WIN_H1": "RSI_REVERSION",
+        "DOL_M5": "BOLLINGER",
+        "DOL_M15": "MACD_MOMENTUM",
+        "DOL_M30": "EMA_PULLBACK",
+        "DOL_H1": "RSI_REVERSION",
         "IND_M5": "RSI_REVERSION",
+        "IND_H1": "RSI_REVERSION",
+        "WSP_M5": "EMA_PULLBACK",
+        "WSP_M15": "MACD_MOMENTUM",
+        "WSP_M30": "MACD_MOMENTUM",
+        "WSP_H1": "RSI_REVERSION",
     }
     for pair, strat in expected.items():
         assert strategy_by_tf.get(pair) == strat, \
