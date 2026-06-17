@@ -1737,6 +1737,29 @@ def merge_backtest_with_convergence(perf: dict, baseline: dict,
     return (converged, failing, evals)
 
 
+def snapshot_live_config(config_path: Path) -> Path:
+    """Copy vt_config.json to a timestamped snapshot in /tmp/."""
+    raise NotImplementedError
+
+
+def run_shadow_optimization(
+    snapshot_path: Path, perf: dict, issues: list,
+    days: int, use_forward: bool = True,
+) -> dict:
+    """Run AGI loop on sandboxed config. Returns audit dict (no apply)."""
+    raise NotImplementedError
+
+
+def compare_live_vs_shadow(live_audit: dict, shadow_audit: dict) -> dict:
+    """Return diff dict between live and shadow audit."""
+    raise NotImplementedError
+
+
+def write_comparison_report(comparison: dict, audit_path: Path) -> Path:
+    """Save comparison JSON to disk. Return path."""
+    raise NotImplementedError
+
+
 def main():
     parser = argparse.ArgumentParser(description="AGI 17h Tuning — otimização dinâmica de parâmetros")
     parser.add_argument("--days", type=int, default=7, help="Janela de análise em dias (default: 7)")
