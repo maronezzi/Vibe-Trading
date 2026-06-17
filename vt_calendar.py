@@ -227,58 +227,88 @@ def _get_next_expiry_month(symbol_root: str, after_date: date = None) -> tuple[i
         return month, year
 
 
+def _check_contract_spread(symbol: str) -> float:
+    """Retorna o spread atual do contrato. Quanto menor, melhor. Retorna 999 se falhar.
+    Spread=0 indica contrato sem cotação (sem liquidez) — descartado.
+    """
+    try:
+        from mt5_orchestrator import _run_wine, EXECUTOR_WIN
+        result = _run_wine(EXECUTOR_WIN, "info", symbol, timeout=10)
+        if isinstance(result, dict):
+            spread = float(result.get("spread", 999))
+            bid = float(result.get("bid", 0))
+            ask = float(result.get("ask", 0))
+            # Sem cotação real (bid/ask = 0) ou spread = 0 = sem liquidez
+            if spread <= 0 or bid <= 0 or ask <= 0:
+                return 999.0
+            return spread
+    except Exception:
+        pass
+    return 999.0
+
+
 def resolve_symbol(symbol_root: str, force_check: bool = False) -> str:
     """
     Resolve automaticamente o contrato vigente para o symbol_root.
-    
+
     Lógica:
     1. Verifica se o contrato atual (do config) ainda está vigente
-    2. Se expirou, busca o próximo vencimento
-    3. Confirma no MT5 que o contrato existe e tem liquidez
-    
+    2. Se sim, compara spread com o próximo contrato — escolhe o de menor spread
+    3. Se contrato atual está perto de vencer (< 3 dias úteis), migra para o próximo
+    4. Confirma no MT5 que o contrato existe e tem liquidez
+
+    Critério: menor spread > vencimento próximo (liquidez > calendário)
+    Ex: WDON26 (spread 0.5) é melhor que WDOU26 (spread 6.0), mesmo WDOU26 sendo
+    o próximo vencimento. Só migra para WDOU26 quando WDON26 tiver < 3 dias úteis.
+
     Retorna o código do contrato (ex: WINM26).
     """
     from vt_config_loader import load_config
-    
+
     config = load_config()
     resolved = config.get("resolved_symbols", {})
     current = resolved.get(symbol_root, "")
-    
+
     if not current:
         # Sem contrato no config, descobrir automaticamente
         month, year = _get_next_expiry_month(symbol_root)
         return _make_contract_code(symbol_root, month, year)
-    
+
     # Parse contrato atual
     root, cur_month, cur_year = _parse_contract_code(current)
-    
+
     if cur_month == 0:
         return current  # não conseguiu parsear
-    
+
     # Data de vencimento do contrato atual
     expiry = get_contract_expiry(symbol_root, cur_month, cur_year)
     today = date.today()
-    
-    # Se ainda falta mais de 3 dias úteis, manter contrato atual
+
+    # Calcular dias úteis até vencimento
     days_to_expiry = 0
     check_date = today
     while check_date < expiry:
         if is_trading_day(check_date)[0]:
             days_to_expiry += 1
         check_date += timedelta(days=1)
-    
-    if days_to_expiry > 3:
-        return current
-    
-    # Contrato está perto do vencimento (< 3 dias úteis) ou já expirou
-    # Buscar próximo
+
+    # Calcular spread do contrato atual
+    current_spread = _check_contract_spread(current)
+
+    # Próximo contrato
     next_month, next_year = _get_next_expiry_month(symbol_root, after_date=expiry)
     next_contract = _make_contract_code(symbol_root, next_month, next_year)
-    
-    # Verificar no MT5 se o próximo contrato existe e tem liquidez
-    if _check_contract_liquidity(next_contract):
+    next_spread = _check_contract_spread(next_contract) if _check_contract_liquidity(next_contract) else 999.0
+
+    # Se contrato atual ainda tem > 3 dias úteis E tem spread melhor, manter
+    if days_to_expiry > 3 and current_spread <= next_spread:
+        return current
+
+    # Se contrato atual está perto do vencimento (< 3 dias úteis) OU próximo tem spread melhor
+    # Migrar para o próximo
+    if next_spread < 999:
         return next_contract
-    
+
     # Fallback: manter atual
     return current
 

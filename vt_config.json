@@ -2,7 +2,7 @@
   "_version": 335,
   "_updated_at": "2026-06-17T11:02:12.364340",
   "_updated_by": "inteligencia_11h",
-  "_notes": "auto-resolve vencimento: IND: INDM26 → INDU26",
+  "_notes": "auto-resolve vencimento: IND: INDM26 \u2192 INDU26",
   "start_hour": 9,
   "start_minute": 5,
   "close_hour": 16,
@@ -124,7 +124,7 @@
     "DOL": "DOLN26",
     "IND": "INDU26",
     "WSP": "WSPM26",
-    "WDO": "WDOU26"
+    "WDO": "WDON26"
   },
   "warmup_minutes": 15,
   "winddown_minutes": 15,
