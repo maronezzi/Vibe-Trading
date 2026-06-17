@@ -2231,14 +2231,69 @@ def main():
             break
 
     # 8. FALLBACK — Auto-pausar pares não-convergentes
+    # Regra Bruno 17/06: ANTES de desativar, testar outras estratégias + web intel
     if not converged and args.pause_failing and not args.dry_run:
         # Pegar pares que falharam na última iteração
         last_iter = iteration_history[-1] if iteration_history else {}
         failing = last_iter.get("failing_pairs", [])
         if failing:
-            log.warning(f"⚠️ FALLBACK ATIVADO: pausando {len(failing)} pares não-convergentes")
-            final_paused = _pause_failing_pairs(failing, config, dry_run=False)
+            log.warning(f"⚠️ FALLBACK ATIVADO: {len(failing)} pares não-convergentes")
+
+            # ── EXPERIMENT: testar estratégias alternativas antes de desativar ──
+            from experiment_runner import run_strategy_swap_experiment, should_pause_pair, apply_swap_to_config
+
+            still_failing = []
+            swapped = []
+            experiment_results = []
+
+            for pair in failing:
+                parts = pair.split("_", 1)
+                if len(parts) != 2:
+                    still_failing.append(pair)
+                    continue
+                sym, tf = parts
+                exp_result = run_strategy_swap_experiment(sym, tf, config, days=args.days)
+                experiment_results.append(exp_result)
+
+                if should_pause_pair(exp_result):
+                    still_failing.append(pair)
+                    log.info(f"  🛑 {pair}: experimento não encontrou alternativa viável → pausando")
+                else:
+                    # Winner encontrado — aplica swap (não desativa)
+                    config = apply_swap_to_config(config, exp_result)
+                    winner = exp_result["winner"]
+                    swapped.append({
+                        "pair": pair,
+                        "old": exp_result["original_strategy"],
+                        "new": winner["strategy"],
+                        "pnl": winner["pnl"],
+                        "n_trades": winner["n_trades"],
+                        "wr": winner["wr"],
+                    })
+                    log.info(f"  🔄 {pair}: {exp_result['original_strategy']} → {winner['strategy']} "
+                             f"(pnl=R$ {winner['pnl']:+.2f}, n={winner['n_trades']}, wr={winner['wr']:.0f}%)")
+
+            if swapped:
+                save_full_config(config, updated_by="agi_17h_experiment_swap")
+                config = load_config(force=True)
+                log.info(f"🔄 SWAP: {len(swapped)} pares tiveram estratégia trocada (não desativados)")
+
+            # Apenas os que realmente falharam no experimento são pausados
+            final_paused = _pause_failing_pairs(still_failing, config, dry_run=False)
             config = load_config(force=True)
+
+            # Salvar resultados do experimento no audit
+            if experiment_results:
+                audit_path = Path(f"/tmp/vt_agi_experiment_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+                import json as _json
+                with open(audit_path, "w") as f:
+                    _json.dump({
+                        "timestamp": datetime.now().isoformat(),
+                        "swapped": swapped,
+                        "still_failing": still_failing,
+                        "experiment_results": experiment_results,
+                    }, f, indent=2, default=str)
+                log.info(f"📋 Experiment audit: {audit_path}")
         else:
             log.info("✅ Nenhum par falhando — fallback não necessário")
 
