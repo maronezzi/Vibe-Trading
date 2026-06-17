@@ -1253,6 +1253,80 @@ def apply_changes(llm_result: dict, config: dict, dry_run: bool = False) -> list
 # 5. NOTIFICAÇÃO TELEGRAM
 # ═══════════════════════════════════════════════════════════════════
 
+
+def build_evolution_summary(
+    applied: list[dict],
+    baseline_perf: dict,
+    current_perf: dict,
+) -> list[str]:
+    """Gera linhas de evolução (delta PnL + %) por symbol aplicado.
+
+    Regra Bruno 17/06: usuário precisa ver quanto cada mudança impactou.
+    Formato por linha: "BIT: sl_atr_mult 0.6→0.78 (✅ R$ -500→-200, +R$ 300, +60%)"
+
+    Args:
+        applied: lista de mudanças aplicadas (saída de apply_changes)
+        baseline_perf: perf["by_symbol"] ANTES do loop (PnL inicial)
+        current_perf: perf["by_symbol"] DEPOIS do loop (PnL atual)
+
+    Returns:
+        list[str] — linhas formatadas (inclui cabeçalho se houver mudanças)
+    """
+    if not applied:
+        return []
+
+    base_syms = (baseline_perf or {}).get("by_symbol", {}) or {}
+    curr_syms = (current_perf or {}).get("by_symbol", {}) or {}
+
+    lines = ["📈 *Evolução por symbol*"]
+
+    for a in applied:
+        sym = a.get("symbol", "?").upper()
+        params = a.get("params", {})
+        applied_ok = a.get("applied", False)
+        marker = "✅" if applied_ok else "🔍"
+
+        # Pegar PnL baseline + current
+        base_pnl = base_syms.get(sym, {}).get("total_pnl")
+        curr_pnl = curr_syms.get(sym, {}).get("total_pnl")
+
+        # Params diff (curto)
+        params_str = ", ".join(f"{k}={v}" for k, v in params.items())
+
+        # Construir linha base
+        line = f"  {marker} *{sym}*: {params_str}"
+
+        # Se temos PnL, anexar evolução
+        if base_pnl is not None and curr_pnl is not None:
+            delta = curr_pnl - base_pnl
+            # % evolução (evitar divisão por zero)
+            if abs(base_pnl) > 0.01:
+                pct = (delta / abs(base_pnl)) * 100
+                pct_str = f"{pct:+.0f}%"
+            elif curr_pnl > 0:
+                # Baseline = 0, agora positivo = "novo lucro"
+                pct_str = "novo"
+            elif curr_pnl < 0:
+                pct_str = "novo"
+            else:
+                pct_str = "0%"
+
+            # Indicador visual de direção
+            if delta > 0.01:
+                trend = "↑"
+            elif delta < -0.01:
+                trend = "↓"
+            else:
+                trend = "→"
+
+            line += f" | {trend} PnL R${base_pnl:+,.0f}→R${curr_pnl:+,.0f}"
+            line += f" (Δ R${delta:+,.0f}, {pct_str})"
+
+        lines.append(line)
+
+    return lines
+
+
 def notify_telegram(msg: str):
     """Envia notificação para o Telegram via hermes CLI (direto, sem depender do autotrader)."""
     hermes_bin = _find_hermes()
@@ -2076,6 +2150,10 @@ def main():
     baseline_snapshot = snapshot_performance(perf) if args.convergence_mode == "delta" else {}
     log.info(f"📸 Baseline snapshot: {len(baseline_snapshot)} pares (modo={args.convergence_mode})")
 
+    # Guardar perf ORIGINAL (antes de qualquer iteração) para o summary Telegram
+    # Bruno 17/06: precisa ver evolução (PnL antes/depois + delta + %)
+    perf_original = perf
+
     for it_num in range(1, args.max_iterations + 1):
         log.info(f"{'='*60}\n🔄 ITERAÇÃO {it_num}/{args.max_iterations}\n{'='*60}")
 
@@ -2182,9 +2260,18 @@ def main():
             summary_lines.append(f"🌐 Web intel: {len(web_intel)} símbolos")
         if applied:
             summary_lines.append(f"✏️ {len(applied)} mudanças aplicadas no total")
-            for a in applied[:5]:  # top 5 pra não estourar limite Telegram
-                params_str = ", ".join(f"{k}={v}" for k, v in a["params"].items())
-                summary_lines.append(f"  {'✅' if a['applied'] else '🔍'} {a['symbol']}: {params_str}")
+            # NOVO: evolução por symbol (PnL antes/depois + delta + %)
+            # baseline_perf é o perf["by_symbol"] ANTES do loop
+            # perf é o perf ATUAL (após iterações)
+            # baseline_snapshot tem por SYM_TF; precisamos do by_symbol
+            # Recriar baseline_by_symbol do perf ORIGINAL (perf_before)
+            # → Guardamos isso na variável `perf_original` no início
+            evolution_lines = build_evolution_summary(
+                applied,
+                {"by_symbol": perf_original.get("by_symbol", {})},
+                perf,
+            )
+            summary_lines.extend(evolution_lines)
         if final_paused["paused"]:
             summary_lines.append(f"🛑 FALLBACK: pausados {final_paused['paused']}")
         if llm_result and llm_result.get("analysis"):
