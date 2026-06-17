@@ -1738,26 +1738,143 @@ def merge_backtest_with_convergence(perf: dict, baseline: dict,
 
 
 def snapshot_live_config(config_path: Path) -> Path:
-    """Copy vt_config.json to a timestamped snapshot in /tmp/."""
-    raise NotImplementedError
+    """Copy vt_config.json to a timestamped snapshot in /tmp/.
+
+    Uses atomic write (tmp + rename) to avoid partial reads.
+    Returns the snapshot path.
+    """
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    snap = Path(f"/tmp/vt_config_live_{ts}.json")
+    tmp = snap.with_suffix(".json.tmp")
+    try:
+        with open(tmp, "w") as f:
+            json.dump(json.load(open(config_path)), f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(str(tmp), str(snap))
+        return snap
+    except Exception:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        raise
 
 
 def run_shadow_optimization(
     snapshot_path: Path, perf: dict, issues: list,
     days: int, use_forward: bool = True,
 ) -> dict:
-    """Run AGI loop on sandboxed config. Returns audit dict (no apply)."""
-    raise NotImplementedError
+    """Run the AGI optimization loop on a sandboxed config.
+
+    Monkey-patches load_config to read from the snapshot, then calls main()
+    in dry-run mode. Returns the audit dict WITHOUT touching the live config.
+    Shadow always uses --no-llm --no-web for speed.
+    """
+    import sys as _sys
+
+    def shadow_load_config(force: bool = False):
+        return json.load(open(snapshot_path))
+
+    saved_argv = _sys.argv
+    _sys.argv = [
+        "agi_tuning_17h.py",
+        "--dry-run",
+        f"--days={days}",
+        "--no-llm",
+        "--no-web",
+    ]
+    if use_forward:
+        _sys.argv.append("--use-backtest-convergence")
+
+    try:
+        # Monkey-patch load_config to read from snapshot
+        import agi_tuning_17h as _self
+        original_load = _self.load_config
+        _self.load_config = shadow_load_config
+        try:
+            main()
+        finally:
+            _self.load_config = original_load
+        # main() writes audit to /tmp/vt_agi_audit.json — copy to shadow path
+        live_audit = Path("/tmp/vt_agi_audit.json")
+        shadow_audit = Path("/tmp/vt_agi_shadow_audit.json")
+        if live_audit.exists():
+            import shutil
+            shutil.copy(str(live_audit), str(shadow_audit))
+            return json.load(open(shadow_audit))
+        return {}
+    finally:
+        _sys.argv = saved_argv
 
 
 def compare_live_vs_shadow(live_audit: dict, shadow_audit: dict) -> dict:
-    """Return diff dict between live and shadow audit."""
-    raise NotImplementedError
+    """Compare live and shadow audit dicts. Return diff structure.
+
+    Aggregates changes across iterations per symbol, then diffs:
+    - agreements: same param changes in both
+    - disagreements: different param values for same symbol
+    - live_only: changes only in live
+    - shadow_only: changes only in shadow
+    - convergence_diff: live vs shadow convergence status
+    - failing_diff: failing pairs comparison
+    """
+    def index_by_symbol(iterations):
+        idx = {}
+        for it in iterations or []:
+            for ch in it.get("changes", []):
+                sym = ch.get("symbol")
+                if sym:
+                    idx.setdefault(sym, []).append(ch.get("params", {}))
+        return idx
+
+    live_changes = index_by_symbol(live_audit.get("iterations", []))
+    shadow_changes = index_by_symbol(shadow_audit.get("iterations", []))
+
+    all_syms = set(live_changes) | set(shadow_changes)
+    agreements, disagreements = [], []
+    live_only, shadow_only = [], []
+
+    for sym in sorted(all_syms):
+        l = live_changes.get(sym, [{}])[-1] if live_changes.get(sym) else {}
+        s = shadow_changes.get(sym, [{}])[-1] if shadow_changes.get(sym) else {}
+        if not l and s:
+            shadow_only.append({"symbol": sym, "shadow": s})
+        elif l and not s:
+            live_only.append({"symbol": sym, "live": l})
+        elif l == s:
+            agreements.append({"symbol": sym, "params": l})
+        else:
+            disagreements.append({"symbol": sym, "live": l, "shadow": s})
+
+    live_iters = live_audit.get("iterations", [])
+    shadow_iters = shadow_audit.get("iterations", [])
+
+    return {
+        "agreements": agreements,
+        "disagreements": disagreements,
+        "live_only": live_only,
+        "shadow_only": shadow_only,
+        "convergence_diff": {
+            "live": live_audit.get("converged"),
+            "shadow": shadow_audit.get("converged"),
+        },
+        "failing_diff": {
+            "live": (live_iters[-1].get("failing_pairs", []) if live_iters else []),
+            "shadow": (shadow_iters[-1].get("failing_pairs", []) if shadow_iters else []),
+        },
+    }
 
 
 def write_comparison_report(comparison: dict, audit_path: Path) -> Path:
-    """Save comparison JSON to disk. Return path."""
-    raise NotImplementedError
+    """Write comparison dict to /tmp/vt_agi_comparison_YYYYMMDD_HHMMSS.json."""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = Path(f"/tmp/vt_agi_comparison_{ts}.json")
+    try:
+        with open(out, "w") as f:
+            json.dump(comparison, f, indent=2, ensure_ascii=False, default=str)
+        return out
+    except Exception as e:
+        log.warning(f"Falha ao salvar comparison: {e}")
+        return out
 
 
 def main():
