@@ -177,7 +177,8 @@ def _parse_contract_code(symbol: str) -> tuple[str, int, int]:
     The old loop-based parser was broken: it consumed the month letter
     (M, N, U, Z...) as part of the root because they're uppercase too.
     """
-    m = re.match(r'^([A-Z]+?)([FGHJKMNUVXZ])(\d{2})$', symbol)
+    # Letter set must include ALL month codes: F,G,H,J,K,M,N,Q,U,V,X,Z
+    m = re.match(r'^([A-Z]+?)([FGHJKMNQUVXZ])(\d{2})$', symbol)
     if not m:
         return symbol, 0, 0
     root, month_char, yy = m.groups()
@@ -257,11 +258,11 @@ def resolve_symbol(symbol_root: str, force_check: bool = False) -> str:
     3. Se contrato atual está perto de vencer (< 3 dias úteis), migra para o próximo
     4. Confirma no MT5 que o contrato existe e tem liquidez
 
-    Critério: menor spread > vencimento próximo (liquidez > calendário)
-    Ex: WDON26 (spread 0.5) é melhor que WDOU26 (spread 6.0), mesmo WDOU26 sendo
-    o próximo vencimento. Só migra para WDOU26 quando WDON26 tiver < 3 dias úteis.
+    Critério: escaneia TODOS os próximos 6 contratos a partir do mês atual
+    e escolhe o de menor spread real (MT5). Mantém o atual se ele ainda tiver
+    cotação, > 3 dias úteis, e spread <= melhor alternativa.
 
-    Retorna o código do contrato (ex: WINM26).
+    Retorna o código do contrato (ex: WINQ26, WDON26, INDM26).
     """
     from vt_config_loader import load_config
 
@@ -269,48 +270,70 @@ def resolve_symbol(symbol_root: str, force_check: bool = False) -> str:
     resolved = config.get("resolved_symbols", {})
     current = resolved.get(symbol_root, "")
 
-    if not current:
-        # Sem contrato no config, descobrir automaticamente
-        month, year = _get_next_expiry_month(symbol_root)
+    # Lista de candidatos: 6 meses consecutivos a partir do mês atual
+    # (cobre tanto trimestrais H/M/U/Z quanto mensais N/Q)
+    today = date.today()
+    candidates = []
+    for i in range(6):
+        m = ((today.month - 1 + i) % 12) + 1
+        y = today.year + ((today.month - 1 + i) // 12)
+        candidates.append((m, y))
+
+    # Para cada candidato, busca contrato + spread + dias úteis
+    candidate_info = []
+    for m, y in candidates:
+        contract = _make_contract_code(symbol_root, m, y)
+        try:
+            expiry = get_contract_expiry(symbol_root, m, y)
+        except Exception:
+            continue
+        days_util = 0
+        check = today
+        while check < expiry:
+            check += timedelta(days=1)
+            if is_trading_day(check)[0]:
+                days_util += 1
+        spread = _check_contract_spread(contract)
+        candidate_info.append({
+            "contract": contract,
+            "month": m,
+            "year": y,
+            "expiry": expiry,
+            "days_util": days_util,
+            "spread": spread,
+        })
+
+    # Filtra apenas contratos com cotação real (spread < 999) e > 0 dias úteis
+    # (não opera no último dia útil, mas permite se < 3 dias se não há alternativa)
+    liquidos_3d = [c for c in candidate_info if c["spread"] < 999 and c["days_util"] > 3]
+    liquidos_1d = [c for c in candidate_info if c["spread"] < 999 and c["days_util"] > 0]
+
+    # Caso ideal: liquidez + 3+ dias úteis (evita surpresa de rollover)
+    if liquidos_3d:
+        liquidos = liquidos_3d
+    else:
+        # Fallback: aceita mesmo < 3 dias (mas não no último dia)
+        liquidos = liquidos_1d
+
+    if not liquidos:
+        # Nenhum contrato líquido — fallback para o config atual
+        if current:
+            return current
+        month, year = candidates[0]
         return _make_contract_code(symbol_root, month, year)
 
-    # Parse contrato atual
-    root, cur_month, cur_year = _parse_contract_code(current)
+    # Ordena por spread (menor é melhor)
+    liquidos.sort(key=lambda c: c["spread"])
+    best = liquidos[0]
 
-    if cur_month == 0:
-        return current  # não conseguiu parsear
+    # Se o atual está nos líquidos e tem spread <= best, manter (estabilidade)
+    if current:
+        current_match = next((c for c in liquidos if c["contract"] == current), None)
+        if current_match and current_match["spread"] <= best["spread"] * 1.5:
+            # Atual é aceitável (não é 50% pior que o melhor)
+            return current
 
-    # Data de vencimento do contrato atual
-    expiry = get_contract_expiry(symbol_root, cur_month, cur_year)
-    today = date.today()
-
-    # Calcular dias úteis até vencimento
-    days_to_expiry = 0
-    check_date = today
-    while check_date < expiry:
-        if is_trading_day(check_date)[0]:
-            days_to_expiry += 1
-        check_date += timedelta(days=1)
-
-    # Calcular spread do contrato atual
-    current_spread = _check_contract_spread(current)
-
-    # Próximo contrato
-    next_month, next_year = _get_next_expiry_month(symbol_root, after_date=expiry)
-    next_contract = _make_contract_code(symbol_root, next_month, next_year)
-    next_spread = _check_contract_spread(next_contract) if _check_contract_liquidity(next_contract) else 999.0
-
-    # Se contrato atual ainda tem > 3 dias úteis E tem spread melhor, manter
-    if days_to_expiry > 3 and current_spread <= next_spread:
-        return current
-
-    # Se contrato atual está perto do vencimento (< 3 dias úteis) OU próximo tem spread melhor
-    # Migrar para o próximo
-    if next_spread < 999:
-        return next_contract
-
-    # Fallback: manter atual
-    return current
+    return best["contract"]
 
 
 def _check_contract_liquidity(symbol: str) -> bool:

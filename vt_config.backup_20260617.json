@@ -1,8 +1,8 @@
 {
-  "_version": 336,
-  "_updated_at": "2026-06-17T11:29:05.621964",
-  "_updated_by": "calendar_resolve",
-  "_notes": "auto-resolve vencimento: IND: INDU26 → INDM26",
+  "_version": 296,
+  "_updated_at": "2026-06-17T06:12:14.616498",
+  "_updated_by": "agi_17h_llm",
+  "_notes": "auto-resolve vencimento: WIN: WINM26 → WINU26, IND: INDM26 → INDU26, WDO: WDOM26 → WDOU26",
   "start_hour": 9,
   "start_minute": 5,
   "close_hour": 16,
@@ -75,7 +75,7 @@
     "trail_activate": 0.8,
     "trail_distance": 0.3,
     "cooldown_seconds": 180,
-    "max_daily_trades": 16,
+    "max_daily_trades": 62,
     "ema_fast": 5,
     "ema_slow": 13,
     "rsi_period": 7,
@@ -92,7 +92,7 @@
   },
   "win": {
     "bb_period": 10,
-    "bb_std": 2.0,
+    "bb_std": 2.3,
     "rsi_period": 7,
     "rsi_overbought": 80,
     "rsi_oversold": 20,
@@ -100,7 +100,7 @@
     "trail_activate": 0.8,
     "trail_distance": 0.3,
     "cooldown_seconds": 180,
-    "max_daily_trades": 16,
+    "max_daily_trades": 62,
     "breakeven_minutes": 7,
     "time_trail_minutes": 15,
     "max_position_minutes": 30,
@@ -119,12 +119,12 @@
   "check_interval": 30,
   "bars_count": 45,
   "resolved_symbols": {
-    "WIN": "WINQ26",
+    "WIN": "WINU26",
     "BIT": "BITM26",
     "DOL": "DOLN26",
-    "IND": "INDM26",
+    "IND": "INDU26",
     "WSP": "WSPM26",
-    "WDO": "WDON26"
+    "WDO": "WDOU26"
   },
   "warmup_minutes": 15,
   "winddown_minutes": 15,
@@ -201,8 +201,8 @@
     "trail_activate": 0.8,
     "trail_distance": 0.3,
     "cooldown_seconds": 180,
-    "max_daily_trades": 12,
-    "breakeven_minutes": 6,
+    "max_daily_trades": 31,
+    "breakeven_minutes": 5,
     "time_trail_minutes": 15,
     "max_position_minutes": 45,
     "rsi_period": 7,
@@ -227,8 +227,8 @@
     "sl_atr_mult": 0.6,
     "trail_activate": 0.8,
     "trail_distance": 0.3,
-    "cooldown_seconds": 1800,
-    "max_daily_trades": 4,
+    "cooldown_seconds": 1350,
+    "max_daily_trades": 8,
     "breakeven_minutes": 10,
     "time_trail_minutes": 15,
     "max_position_minutes": 75,
@@ -272,8 +272,8 @@
     "sl_atr_mult": 0.6,
     "trail_activate": 0.8,
     "trail_distance": 0.3,
-    "cooldown_seconds": 1800,
-    "max_daily_trades": 3,
+    "cooldown_seconds": 1350,
+    "max_daily_trades": 12,
     "breakeven_minutes": 7,
     "time_trail_minutes": 20,
     "max_position_minutes": 50,
@@ -285,14 +285,11 @@
   },
   "disabled_symbols": [],
   "disabled_timeframes": [
-    "BIT_H1",
-    "BIT_M30",
     "IND_M5",
-    "WIN_M30",
-    "WSP_H1",
-    "WSP_M15"
+    "BIT_M15",
+    "BIT_H1"
   ],
-  "max_daily_loss": -999999,
+  "max_daily_loss": -300,
   "params_by_tf": {
     "WIN_M5": {
       "sl_atr_mult": 2.5,
@@ -497,9 +494,7 @@
   },
   "wdo_m5": {
     "sl_atr_mult": 0.84,
-    "cooldown_seconds": 900,
-    "rsi_oversold": 18,
-    "rsi_overbought": 82
+    "cooldown_seconds": 300
   },
   "win_m5": {
     "sl_atr_mult": 1.5,
@@ -515,10 +510,8 @@
     "cooldown_seconds": 900
   },
   "bit_m5": {
-    "sl_atr_mult": 1.2,
-    "cooldown_seconds": 1200,
-    "rsi_oversold": 18,
-    "rsi_overbought": 82
+    "sl_atr_mult": 0.6,
+    "cooldown_seconds": 180
   },
   "dol_m15": {
     "sl_atr_mult": 1.0,
@@ -534,11 +527,5 @@
   },
   "ind_m15": {
     "sl_atr_mult": 0.8
-  },
-  "bit_m15": {
-    "sl_atr_mult": 1.2,
-    "cooldown_seconds": 900,
-    "pullback_pct": 0.15,
-    "adx_threshold": 22
   }
 }
