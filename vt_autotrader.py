@@ -1126,6 +1126,16 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                             suggested_pts = int(match.group(1))
                             if suggested_pts != sl_pts:
                                 log(f"[VALIDATOR] LLM falhou, aplicando correção local: {sl_pts}pts → {suggested_pts}pts")
+                                # Notificar Bruno ANTES de aplicar (audit trail)
+                                _alert_msg = alert.get("detail", alert.get("message", "alerta sem descrição"))
+                                _alert_sev = alert.get("severity", "?")
+                                _alert_type = alert.get("type", "?")
+                                notify_telegram(
+                                    f"🤖 [VALIDATOR] ⚠️ LLM falhou, aplicando alerta local\n"
+                                    f"{symbol} {direction} {tf} | "
+                                    f"SL: {sl_pts}pts → {suggested_pts}pts\n"
+                                    f"📋 Alerta [{_alert_sev}/{_alert_type}]: {_alert_msg}"
+                                )
                                 fix_result = safe_modify_sl(symbol, ticket, suggested_pts, exec_price, direction)
                                 if fix_result.get("status") == "ok":
                                     sl_pts = suggested_pts
