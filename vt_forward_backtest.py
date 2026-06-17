@@ -18,6 +18,9 @@ Architecture:
   - CPU load detection auto-reduces workers on busy systems (8 CPUs, 2.21 load)
 """
 import os
+import csv
+import io
+import subprocess
 
 
 # ─── Module-level constants ────────────────────────────────────────────────
@@ -37,6 +40,12 @@ _CONTRACT_SPECS = {
     "IND$":  {"mult": 0.20, "margin": 5000, "slip": 1.0},
     "WSP$":  {"mult": 0.50, "margin": 3000, "slip": 0.5},
 }
+
+# Bar fetch / Wine timeouts
+FETCH_TIMEOUT_SEC = 60   # max time to wait for Wine/MT5 to return bars
+PAIR_TIMEOUT_SEC = 60    # max time to wait for a single pair in the pool
+LOAD_THRESHOLD_HIGH = 4.0  # load avg > this = saturated (1 worker)
+LOAD_THRESHOLD_BUSY = 2.0  # load avg > this = busy (25% workers)
 
 
 # ─── Stubs (Task 1) — to be replaced in Tasks 2-5 ────────────────────────
@@ -86,17 +95,86 @@ def run_all_pairs_parallel(
 def _get_safe_max_workers(configured_max: int, cpu_count: int, load_avg: float) -> int:
     """Auto-adjust worker count to avoid CPU saturation.
 
-    Returns: safe number of workers (always >= 1).
+    Strategy:
+      1. Start with min(configured_max, cpu_count)
+      2. If load > 4.0: return 1 (saturated)
+      3. If load > 2.0: use 25% of CPUs (busy)
+      4. Otherwise: use 50% of CPUs (capped by configured_max)
+      5. Floor: 1 worker (so we always make progress)
+
+    Args:
+        configured_max: max workers requested by caller
+        cpu_count: total CPU count (typically from os.cpu_count())
+        load_avg: 1-minute system load average (from os.getloadavg())
+
+    Returns:
+        Safe number of workers (always >= 1)
     """
-    raise NotImplementedError("_get_safe_max_workers will be implemented in Task 3")
+    base = max(1, min(configured_max, cpu_count))
+
+    if load_avg > LOAD_THRESHOLD_HIGH:
+        # Saturated — single worker to avoid making it worse
+        return 1
+    elif load_avg > LOAD_THRESHOLD_BUSY:
+        # Busy — 25% of CPUs
+        return max(1, cpu_count // 4)
+    else:
+        # Headroom available — 50% of CPUs (capped)
+        return max(1, min(base, cpu_count // 2))
 
 
 # ─── Placeholder for future functions (Tasks 2-5) ──────────────────────────
 
 
 def fetch_bars_for_backtest(symbol: str, tf: str, count: int = 500) -> list:
-    """Fetch bars via Wine + MT5. Task 3."""
-    raise NotImplementedError("fetch_bars_for_backtest will be implemented in Task 3")
+    """Fetch bars via Wine + MT5. Returns list of bar dicts newest-first.
+
+    Offline-resilient: returns [] if Wine is unavailable, MT5 is down,
+    symbol is invalid, or timeout occurs. Never raises.
+
+    Each bar dict has: time (int), open, high, low, close, tick_volume (all float).
+
+    Output order: NEWEST-FIRST (matches autotrader's fetch_bars() format).
+    """
+    if not symbol or not tf:
+        return []
+
+    try:
+        cmd = ["wine", WINE_PYTHON, FETCH_SCRIPT, "rates", symbol, tf, str(count)]
+        env = {**os.environ, "WINEDEBUG": "-all"}
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=FETCH_TIMEOUT_SEC, env=env
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+
+        reader = csv.reader(io.StringIO(result.stdout.strip()))
+        try:
+            next(reader)  # skip header row
+        except StopIteration:
+            return []
+        rows = [row for row in reader if row]
+        if not rows:
+            return []
+
+        # mt5_fetch outputs bars oldest-first; convert to newest-first
+        bars = []
+        for row in rows:
+            try:
+                bars.append({
+                    "time": int(row[0]),
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                    "tick_volume": float(row[5]) if len(row) > 5 else 0.0,
+                })
+            except (ValueError, IndexError):
+                continue  # skip malformed rows
+        bars.reverse()  # newest-first
+        return bars
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return []
 
 
 def simulate_forward(

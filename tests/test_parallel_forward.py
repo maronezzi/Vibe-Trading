@@ -199,5 +199,140 @@ class TestDiscoverPairs(unittest.TestCase):
             self.assertIsInstance(params, dict)
 
 
+class TestGetSafeMaxWorkers(unittest.TestCase):
+    """Test #3a — _get_safe_max_workers auto-adjusts based on CPU and load.
+
+    The 8-CPU machine already has load 2.21 (autotrader + Wine + MT5).
+    We must NEVER saturate the system. The function:
+    - Defaults to 50% of CPUs (4 on 8-core)
+    - Reduces to 25% if load > 2.0
+    - Reduces to 1 worker if load > 4.0
+    - Never exceeds configured_max
+    - Always returns at least 1
+    """
+
+    def test_default_is_50_percent_of_cpus(self):
+        """8 CPUs, low load → 4 workers (50%)."""
+        from vt_forward_backtest import _get_safe_max_workers
+        self.assertEqual(_get_safe_max_workers(99, 8, 0.5), 4)
+
+    def test_never_exceeds_cpu_count(self):
+        """configured=99, cpu=4, load=0.1 → ≤ 4."""
+        from vt_forward_backtest import _get_safe_max_workers
+        result = _get_safe_max_workers(99, 4, 0.1)
+        self.assertLessEqual(result, 4)
+
+    def test_reduces_when_load_high(self):
+        """8 CPUs, load=5.0 → ≤ 2 workers."""
+        from vt_forward_backtest import _get_safe_max_workers
+        result = _get_safe_max_workers(99, 8, 5.0)
+        self.assertLessEqual(result, 2)
+
+    def test_respects_configured_max(self):
+        """configured=2, cpu=8, load=0.1 → 2 (not 4)."""
+        from vt_forward_backtest import _get_safe_max_workers
+        self.assertEqual(_get_safe_max_workers(2, 8, 0.1), 2)
+
+    def test_minimum_one_worker(self):
+        """Even with load=10, must return at least 1."""
+        from vt_forward_backtest import _get_safe_max_workers
+        result = _get_safe_max_workers(0, 1, 10.0)
+        self.assertGreaterEqual(result, 1)
+
+    def test_load_above_2_reduces_to_25_percent(self):
+        """8 CPUs, load=3.0 → 2 workers (25%)."""
+        from vt_forward_backtest import _get_safe_max_workers
+        result = _get_safe_max_workers(99, 8, 3.0)
+        self.assertEqual(result, 2)
+
+    def test_load_above_4_returns_one(self):
+        """8 CPUs, load=5.0 → 1 worker (saturated)."""
+        from vt_forward_backtest import _get_safe_max_workers
+        result = _get_safe_max_workers(99, 8, 5.0)
+        self.assertEqual(result, 1)
+
+    def test_detect_load_avg_returns_float(self):
+        """_detect_load_avg returns a float (0 if unavailable)."""
+        from vt_forward_backtest import _detect_load_avg
+        result = _detect_load_avg()
+        self.assertIsInstance(result, float)
+        self.assertGreaterEqual(result, 0.0)
+
+    def test_detect_cpu_count_returns_positive_int(self):
+        """_detect_cpu_count returns ≥ 1 (never 0)."""
+        from vt_forward_backtest import _detect_cpu_count
+        result = _detect_cpu_count()
+        self.assertIsInstance(result, int)
+        self.assertGreaterEqual(result, 1)
+
+
+class TestFetchBarsForBacktest(unittest.TestCase):
+    """Test #3b — fetch_bars_for_backtest calls mt5_fetch.py via Wine.
+
+    The function must:
+    - Return [] if Wine is unavailable (offline-resilient)
+    - Return [] if symbol is invalid
+    - Use Wine subprocess (not direct MetaTrader5 import)
+    - Return list of bar dicts with time/open/high/low/close
+    - Bars in NEWEST-FIRST order (matches autotrader format)
+    """
+
+    def test_returns_list(self):
+        """fetch_bars_for_backtest should always return a list (never raise)."""
+        from vt_forward_backtest import fetch_bars_for_backtest
+        bars = fetch_bars_for_backtest("WIN$", "M5", count=100)
+        self.assertIsInstance(bars, list)
+        # Either we have bars (passing) or we get an empty list (Wine offline)
+        # What we DON'T want is an exception.
+
+    def test_returns_list_for_invalid_symbol(self):
+        """Invalid symbol should return [] (not raise)."""
+        from vt_forward_backtest import fetch_bars_for_backtest
+        bars = fetch_bars_for_backtest("XYZ_NOT_REAL$", "M5", count=10)
+        self.assertIsInstance(bars, list)
+        self.assertEqual(bars, [])
+
+    def test_uses_wine_mt5_path(self):
+        """Should call mt5_fetch.py via wine, not direct MetaTrader5 import.
+
+        Verifies that the function:
+        - Uses 'wine' subprocess (not direct MetaTrader5 import)
+        - References FETCH_SCRIPT constant (which points to mt5_fetch.py)
+        """
+        import inspect
+        from vt_forward_backtest import fetch_bars_for_backtest, FETCH_SCRIPT
+        src = inspect.getsource(fetch_bars_for_backtest)
+        self.assertIn("wine", src)
+        # FETCH_SCRIPT constant should point to mt5_fetch.py
+        self.assertTrue(FETCH_SCRIPT.endswith("mt5_fetch.py"))
+
+    def test_bar_dict_shape(self):
+        """If bars returned, each must have time/open/high/low/close/tick_volume."""
+        from vt_forward_backtest import fetch_bars_for_backtest
+        bars = fetch_bars_for_backtest("WIN$", "M5", count=50)
+        if bars:  # Only assert shape if we got data
+            for bar in bars[:3]:  # Check first few
+                self.assertIn("time", bar)
+                self.assertIn("open", bar)
+                self.assertIn("high", bar)
+                self.assertIn("low", bar)
+                self.assertIn("close", bar)
+                self.assertIn("tick_volume", bar)
+                # Values should be numeric
+                self.assertIsInstance(bar["close"], (int, float))
+                self.assertIsInstance(bar["time"], int)
+
+    def test_bars_are_newest_first(self):
+        """Bars should be ordered newest-first (index 0 = most recent).
+
+        This matches the autotrader's fetch_bars() format.
+        """
+        from vt_forward_backtest import fetch_bars_for_backtest
+        bars = fetch_bars_for_backtest("WIN$", "M5", count=50)
+        if len(bars) >= 2:
+            # First bar should have timestamp >= second bar
+            self.assertGreaterEqual(bars[0]["time"], bars[1]["time"])
+
+
 if __name__ == "__main__":
     unittest.main()
