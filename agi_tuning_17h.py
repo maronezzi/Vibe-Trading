@@ -1670,7 +1670,7 @@ def evaluate_forward_backtest(config: dict, days: int, max_workers: int) -> dict
 
 
 def merge_backtest_with_convergence(perf: dict, baseline: dict,
-                                     bt_results: dict, mode: str) -> tuple[bool, list[str]]:
+                                     bt_results: dict, mode: str) -> tuple[bool, list[str], dict]:
     """Estende check_convergence() com o forward backtest como sombra-de-verdade.
 
     Regra: se um par está falhando em PnL (DB) MAS está 'ok' no forward backtest
@@ -1678,34 +1678,63 @@ def merge_backtest_with_convergence(perf: dict, baseline: dict,
     CONVERGIDO para esse par. Isso evita loops infinitos onde a LLM propõe
     params bons mas o DB ainda não capturou o efeito.
 
-    Casos:
-      - check_convergence passa → (True, []) sempre
-      - Par falhando PnL + BT 'ok' → remove da failing list
-      - Par falhando PnL + BT 'negative'/'no_trades'/ausente → mantém na failing
-      - Par passando PnL + qualquer BT → não está em failing (caso base)
+    Guard: forward com n_trades < MIN_TRADES_FOR_DELTA é ignorado (amostra
+    insuficiente pra confiar na projeção).
+
+    Returns:
+        (converged, failing_pairs, backtest_evaluations)
+        backtest_evaluations é dict de auditoria por SYM_TF com decision
+        granular: 'forward_says_ok', 'forward_says_no', 'low_sample_ignore',
+        'no_forward_eval'.
     """
     # 1) Defer ao check_convergence original primeiro
     converged, failing = check_convergence(perf, baseline, mode=mode)
     if converged:
-        return (True, [])
+        return (True, [], {})
 
     # 2) Tentar resgatar pares que falharam PnL mas passaram no backtest
-    if not failing or not bt_results:
-        return (converged, failing)
+    if not failing:
+        return (converged, failing, {})
+
+    evals = {}
+    if not bt_results:
+        for pair in failing:
+            evals[pair] = {"decision": "no_forward_eval"}
+        return (converged, failing, evals)
 
     rescued = []
     for pair in list(failing):
         bt = bt_results.get(pair)
-        if bt and bt.get("decision") == "ok":
+        if not bt:
+            evals[pair] = {"decision": "no_forward_eval"}
+            continue
+
+        n_trades = bt.get("n_trades", 0)
+        pnl = bt.get("pnl", 0.0)
+
+        # Guard: amostra insuficiente
+        if n_trades < MIN_TRADES_FOR_DELTA:
+            evals[pair] = {"decision": "low_sample_ignore",
+                           "n_trades": n_trades, "pnl": pnl}
+            continue
+
+        if bt.get("decision") == "ok":
             log.info(f"✅ {pair}: PnL DB negativo MAS backtest 'ok' — "
                      f"shadow-of-truth convergiu (resgatado)")
             rescued.append(pair)
             failing.remove(pair)
+            evals[pair] = {"decision": "forward_says_ok",
+                           "n_trades": n_trades, "pnl": pnl,
+                           "wr": bt.get("wr", 0.0)}
+        else:
+            evals[pair] = {"decision": "forward_says_no",
+                           "n_trades": n_trades, "pnl": pnl,
+                           "wr": bt.get("wr", 0.0)}
 
     if rescued:
         log.info(f"🔬 {len(rescued)} par(es) resgatado(s) pelo backtest: {rescued}")
         converged = len(failing) == 0
-    return (converged, failing)
+    return (converged, failing, evals)
 
 
 def main():
@@ -1837,6 +1866,7 @@ def main():
 
     # 6-7. LOOP DE ITERAÇÕES (convergência: todos SYM_TF com PnL > 0)
     iteration_history = []  # histórico de cada iteração
+    all_backtest_evals = []  # forward backtest evaluations por iteração
     converged = False
     final_paused = {"paused": [], "skipped": []}
     applied = []
@@ -1891,9 +1921,10 @@ def main():
                 log.info("🔬 --use-backtest-convergence: rodando forward backtest shadow-of-truth...")
                 bt_results = evaluate_forward_backtest(config, days=args.days,
                                                        max_workers=args.max_workers)
-                converged, failing_pairs = merge_backtest_with_convergence(
+                converged, failing_pairs, bt_evals = merge_backtest_with_convergence(
                     perf_after, baseline_snapshot, bt_results, mode=args.convergence_mode
                 )
+                all_backtest_evals.append({"iteration": it_num, "evaluations": bt_evals})
             else:
                 converged, failing_pairs = check_convergence(
                     perf_after, baseline_snapshot, mode=args.convergence_mode
@@ -1976,6 +2007,7 @@ def main():
         "llm_analysis": llm_result.get("analysis") if llm_result else None,
         "changes_applied": applied,
         "config_version": config.get("_version"),
+        "backtest_evaluations": all_backtest_evals,
     }
     audit_file = Path("/tmp/vt_agi_audit.json")
     try:
