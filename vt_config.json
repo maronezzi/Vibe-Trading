@@ -1,8 +1,8 @@
 {
-  "_version": 329,
-  "_updated_at": "2026-06-17T06:25:40.631239",
-  "_updated_by": "agi_17h_fallback",
-  "_notes": "auto-resolve vencimento: WIN: WINM26 \u2192 WINU26, IND: INDM26 \u2192 INDU26, WDO: WDOM26 \u2192 WDOU26",
+  "_version": 335,
+  "_updated_at": "2026-06-17T11:02:12.364340",
+  "_updated_by": "inteligencia_11h",
+  "_notes": "auto-resolve vencimento: IND: INDM26 → INDU26",
   "start_hour": 9,
   "start_minute": 5,
   "close_hour": 16,
@@ -119,7 +119,7 @@
   "check_interval": 30,
   "bars_count": 45,
   "resolved_symbols": {
-    "WIN": "WINU26",
+    "WIN": "WINQ26",
     "BIT": "BITM26",
     "DOL": "DOLN26",
     "IND": "INDU26",
@@ -497,7 +497,9 @@
   },
   "wdo_m5": {
     "sl_atr_mult": 0.84,
-    "cooldown_seconds": 300
+    "cooldown_seconds": 900,
+    "rsi_oversold": 18,
+    "rsi_overbought": 82
   },
   "win_m5": {
     "sl_atr_mult": 1.5,
@@ -513,8 +515,10 @@
     "cooldown_seconds": 900
   },
   "bit_m5": {
-    "sl_atr_mult": 0.6,
-    "cooldown_seconds": 180
+    "sl_atr_mult": 1.2,
+    "cooldown_seconds": 1200,
+    "rsi_oversold": 18,
+    "rsi_overbought": 82
   },
   "dol_m15": {
     "sl_atr_mult": 1.0,
@@ -530,5 +534,11 @@
   },
   "ind_m15": {
     "sl_atr_mult": 0.8
+  },
+  "bit_m15": {
+    "sl_atr_mult": 1.2,
+    "cooldown_seconds": 900,
+    "pullback_pct": 0.15,
+    "adx_threshold": 22
   }
 }
