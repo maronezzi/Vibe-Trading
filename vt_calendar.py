@@ -10,8 +10,9 @@ Feriados B3 2025-2027: feriados nacionais + feriados da bolsa.
 Contratos B3: código mês + ano (H=março, J=junho, M=setembro, Z=dezembro)
 """
 import json
-import subprocess
 import os
+import re
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -171,30 +172,21 @@ def _parse_contract_code(symbol: str) -> tuple[str, int, int]:
     """
     Parse contrato: WINM26 → (WIN, M→6, 26→2026)
     Retorna (root, month, year)
+
+    Uses regex to properly separate root from month_code+year.
+    The old loop-based parser was broken: it consumed the month letter
+    (M, N, U, Z...) as part of the root because they're uppercase too.
     """
-    # Encontrar onde começa o código do mês
-    root = ""
-    for i, c in enumerate(symbol):
-        if c.isalpha() and c.isupper():
-            root += c
-        else:
-            break
-
-    code = symbol[len(root):]  # ex: M26, Q26, N26
-    if len(code) < 2:
-        return root, 0, 0
-
-    month_char = code[0]
-    year_short = int(code[1:3]) if len(code) >= 3 else int(code[1:2])
-    year = 2000 + year_short
-
-    # Decodificar mês
+    m = re.match(r'^([A-Z]+?)([FGHJKMNUVXZ])(\d{2})$', symbol)
+    if not m:
+        return symbol, 0, 0
+    root, month_char, yy = m.groups()
+    year = 2000 + int(yy)
     month = 0
-    for m, c in MONTH_CODES.items():
+    for m_num, c in MONTH_CODES.items():
         if c == month_char:
-            month = m
+            month = m_num
             break
-
     return root, month, year
 
 
