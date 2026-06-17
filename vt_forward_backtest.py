@@ -50,7 +50,27 @@ def discover_pairs(config: dict) -> list:
 
     Returns: list of (sym_root, tf, strategy_name, params_dict) tuples.
     """
-    raise NotImplementedError("discover_pairs will be implemented in Task 2")
+    pairs = []
+    symbols = config.get("symbols", [])
+    default_tfs = config.get("timeframes", [])
+    per_sym_tfs = config.get("per_symbol_timeframes", {})
+    strategy_map = config.get("strategy", {})
+
+    for sym in symbols:
+        # Skip symbols without strategy assignment
+        if sym not in strategy_map:
+            continue
+        strategy = strategy_map[sym]
+        # Resolve TFs: per-symbol override OR global default
+        tfs = per_sym_tfs.get(sym, default_tfs)
+        # Resolve params: merge base + per-TF override ({}, base) == (base, {})
+        sym_params_base = config.get(sym.lower(), {})
+        for tf in tfs:
+            tf_override = sym_params_base.get(tf, {})
+            merged = {**sym_params_base, **tf_override}
+            pairs.append((sym, tf, strategy, merged))
+
+    return pairs
 
 
 def run_all_pairs_parallel(
