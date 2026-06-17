@@ -442,6 +442,34 @@ def tinyfish_agent(url: str, goal: str, timeout: int = 60) -> str:
 
 # Mapeamento de estratégias do Vibe-Trading → queries técnicas ESPECÍFICAS
 # Foco: trading automatizado, MT5, alta taxa de acerto, B3 mini contratos
+
+# Whitelist de estratégias válidas que o AGI pode atribuir
+# Regra Bruno 17/06: se um par SYM_TF não é lucrativo, testar outras estratégias.
+VALID_STRATEGIES = {
+    # Estratégias clássicas
+    "BOLLINGER",
+    "RSI_REVERSION",
+    "EMA_PULLBACK",
+    "VWAP",
+    "MACD_MOMENTUM",
+    "BREAKOUT",
+    # Estratégias adicionais (testar se clássicos não funcionam)
+    "MEAN_REVERSION",
+    "MOMENTUM",
+    "TREND_FOLLOWING",
+    "DONCHIAN_BREAKOUT",
+    "ICHIMOKU",
+    "SUPERTREND",
+    "KELTNER_CHANNEL",
+    "STOCHASTIC",
+    "PARABOLIC_SAR",
+    "ATR_BREAKOUT",
+    # Genérico
+    "ADX",
+    "RSI",
+    "ATR",
+}
+
 TECHNICAL_QUERIES = {
     "BOLLINGER": [
         "Bollinger Bands expert advisor MT5 profit factor backtest",
@@ -972,6 +1000,12 @@ NÃO duvide dos resultados do Explorer — eles são baseados em dados reais.
 11. Se a web indica RSI ideal = 7 ao invés de 14, considerar usar rsi_period=7
 12. LEMBRE-SE: o Explorer testou 100+ combinações — se ele disse "esta config dá lucro", CONFIE NELE
 13. O objetivo é LUCRAR, não sobreviver. Se o Explorer achou config lucrativa, USE-A agressivamente.
+14. **TROCA DE ESTRATÉGIA** (CRÍTICO): se um par SYM_TF continua não-lucrativo APÓS 2+ iterações de ajuste de parâmetros (PnL ≤ 0 com 8+ trades), TROQUE A ESTRATÉGIA via `params: {"strategy": "NOVA_ESTRATÉGIA"}`. Estratégias válidas: BOLLINGER, RSI_REVERSION, EMA_PULLBACK, VWAP, MACD_MOMENTUM, BREAKOUT, MEAN_REVERSION, MOMENTUM, TREND_FOLLOWING, DONCHIAN_BREAKOUT, ICHIMOKU, SUPERTREND, KELTNER_CHANNEL, STOCHASTIC, PARABOLIC_SAR, ATR_BREAKOUT. Teste no Explorer ANTES de aplicar. NÃO troque se o par está lucrativo.
+15. **MAXIMIZAÇÃO DE LUCRO** (CRÍTICO): objetivo é MAXIMIZAR LUCRO, não sobreviver. Trade-offs a considerar:
+    a) **ENTRAR CEDO**: sinais mais sensíveis = `bb_std` mais baixo (1.5-2.0), `rsi_overbought/oversold` mais largo (75/25), `pullback_pct` menor (0.05-0.10), `adx_threshold` menor (15-20). Pegar o início do movimento.
+    b) **SAIR TARDE**: `breakeven_minutes` MAIOR (10-20), `time_trail_minutes` MAIOR (20-30), `max_position_minutes` MAIOR (60-120), `hard_exit_minutes` MAIOR (60-90). Deixar o lucro correr.
+    c) Se símbolo está lucrativo: SOLTE OS FREIOS (afrouxe SL, aumente hold time, deixe trade respirar). Só aperte se está perdendo.
+    d) NÃO minimize risco a ponto de matar o upside. Conta é DEMO — pode ser agressivo pra descobrir o que funciona.
 
 Retorne APENAS um JSON válido (sem markdown, sem comentários):
 {{
@@ -1039,7 +1073,24 @@ def validate_and_clamp_change(symbol: str, params: dict, config: dict) -> tuple[
     warnings = []
 
     for key, value in params.items():
-        # Tipo deve ser número
+        # Chave especial: strategy (string) — validar contra whitelist
+        if key == "strategy":
+            if not isinstance(value, str):
+                warnings.append(f"{symbol}.strategy: valor {value!r} não é string, ignorado")
+                continue
+            value_upper = value.strip().upper()
+            if value_upper not in VALID_STRATEGIES:
+                warnings.append(
+                    f"{symbol}.strategy: '{value}' não está na whitelist "
+                    f"({len(VALID_STRATEGIES)} estratégias válidas), ignorado"
+                )
+                continue
+            if value_upper != value:
+                warnings.append(f"{symbol}.strategy: '{value}' normalizado para '{value_upper}'")
+            clamped[key] = value_upper
+            continue
+
+        # Demais chaves: devem ser numéricas
         if not isinstance(value, (int, float)):
             warnings.append(f"{symbol}.{key}: valor {value!r} não é número, ignorado")
             continue
