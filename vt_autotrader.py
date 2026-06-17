@@ -1107,9 +1107,13 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                 _pm = _pm_map.get(_vm_root, 1)
                 _sl_real = sl_pts / _pm if _pm else sl_pts
                 log(f"[VALIDATOR] LLM OK (SL mantido {sl_pts}pts = {_sl_real:.0f}pts reais, sugerido {_sl_sug_str}): {_resumo_short[:300]}")
+                # Removido [:200] — _resumo_short agora vai completo.
+                # O limite de 4096 chars do Telegram é tratado em vt_hermes_helper
+                # via _split_long_message, que divide em múltiplos chunks com
+                # prefixo [N/M] quando necessário (commit 0a20ab25).
                 notify_telegram(
                     f"✅ [VALIDATOR] {symbol} {direction} {tf} | "
-                    f"SL mantido em {_sl_real:.0f}pts\n📝 {_resumo_short[:200]}"
+                    f"SL mantido em {_sl_real:.0f}pts\n📝 {_resumo_short}"
                 )
             elif not validation.get("llm_analysis") and validation.get("alerts"):
                 # LLM falhou mas há alertas locais — aplicar correção local
