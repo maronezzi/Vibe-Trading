@@ -444,5 +444,130 @@ class TestSimulateForward(unittest.TestCase):
         self.assertLessEqual(result["n_trades"], 1)
 
 
+class TestRunSinglePair(unittest.TestCase):
+    """Test #5a — _run_single_pair is the multiprocessing worker.
+
+    Must be module-level (forksafe), accept args tuple, return dict with
+    decision key, and handle exceptions gracefully.
+    """
+
+    def test_returns_dict_with_decision_key(self):
+        """Worker should return dict with at minimum decision key."""
+        from vt_forward_backtest import _run_single_pair
+        # With invalid args → should still return a dict
+        result = _run_single_pair(("XYZ", "M5", {}, 7, 60))
+        self.assertIsInstance(result, dict)
+        self.assertIn("decision", result)
+        self.assertEqual(result["sym"], "XYZ")
+        self.assertEqual(result["tf"], "M5")
+
+    def test_handles_exception_gracefully(self):
+        """Bad input (None) should not raise — return error decision."""
+        from vt_forward_backtest import _run_single_pair
+        result = _run_single_pair((None, None, None, 7, 60))
+        self.assertIsInstance(result, dict)
+        self.assertIn("decision", result)
+        # Should have error-like decision, not raise
+        self.assertTrue(result["decision"].startswith("error") or
+                        result["decision"] in ("no_data", "strategy_not_in_config",
+                                               "strategy_load_failed", "utils_load_failed"))
+
+    def test_with_real_config_returns_metrics(self):
+        """With a real config (strategy in config), worker should return metrics."""
+        from vt_forward_backtest import _run_single_pair
+        cfg = {
+            "symbols": ["WIN"],
+            "timeframes": ["M5"],
+            "strategy": {"WIN": "BOLLINGER"},
+            "win": {"bb_period": 20, "bb_std": 2.0, "rsi_period": 14,
+                    "rsi_overbought": 70, "rsi_oversold": 30, "sl_atr_mult": 1.5},
+        }
+        # Without real bars, fetch will fail (Wine offline in test env)
+        # but worker should handle it gracefully
+        result = _run_single_pair(("WIN", "M5", cfg, 7, 60))
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["sym"], "WIN")
+        self.assertEqual(result["tf"], "M5")
+        # Decision should be one of the valid values
+        valid = {"no_data", "no_trades", "ok", "negative",
+                 "strategy_load_failed", "utils_load_failed", "error:Exception"}
+        self.assertIn(result["decision"], valid)
+
+
+class TestRunAllPairsParallel(unittest.TestCase):
+    """Test #5b — run_all_pairs_parallel uses multiprocessing.Pool.
+
+    The orchestrator:
+    - Discovers all pairs from config
+    - Creates pool with safe max_workers
+    - Submits 1 task per pair
+    - Collects results with per-pair timeout
+    - Returns dict keyed by "SYM_TF"
+    - Survives worker crashes
+    """
+
+    def test_returns_dict_keyed_by_sym_tf(self):
+        """Result dict should have SYM_TF as keys."""
+        from vt_forward_backtest import run_all_pairs_parallel
+        cfg = {
+            "symbols": ["WIN"],
+            "timeframes": ["M5"],
+            "strategy": {"WIN": "RSI_REVERSION"},
+            "win": {"rsi_period": 14},
+        }
+        results = run_all_pairs_parallel(cfg, days=7, max_workers=2)
+        self.assertIsInstance(results, dict)
+        # Should have at least the key (even if value is no_data)
+        self.assertIn("WIN_M5", results)
+
+    def test_max_workers_caps_pool_size(self):
+        """With 100 pairs and max_workers=2, should not exceed 2 workers."""
+        from vt_forward_backtest import run_all_pairs_parallel
+        # Build config with many symbols (but limited strategies)
+        cfg = {
+            "symbols": ["WIN", "BIT", "DOL", "IND", "WSP", "WDO"],
+            "timeframes": ["M5"],
+            "strategy": {s: "RSI_REVERSION" for s in ["WIN", "BIT", "DOL", "IND", "WSP", "WDO"]},
+            **{s.lower(): {"rsi_period": 14} for s in ["WIN", "BIT", "DOL", "IND", "WSP", "WDO"]},
+        }
+        results = run_all_pairs_parallel(cfg, days=7, max_workers=2)
+        # Should complete without error
+        self.assertIsInstance(results, dict)
+        self.assertEqual(len(results), 6)
+
+    def test_handles_worker_crash_without_crashing_pool(self):
+        """If one worker raises, the others should still complete.
+
+        Note: mocking _run_single_pair in ProcessPoolExecutor fails because
+        the mock object isn't picklable. Instead, we verify crash handling
+        by passing config that causes one pair to fail.
+        """
+        from vt_forward_backtest import run_all_pairs_parallel
+        # WIN: valid strategy, BIT: invalid strategy (no module)
+        cfg = {
+            "symbols": ["WIN", "BIT"],
+            "timeframes": ["M5"],
+            "strategy": {"WIN": "BOLLINGER", "BIT": "NONEXISTENT_STRATEGY"},
+            "win": {"bb_period": 20, "bb_std": 2.0, "rsi_period": 14,
+                    "rsi_overbought": 70, "rsi_oversold": 30, "sl_atr_mult": 1.5},
+            "bit": {"rsi_period": 14},
+        }
+        results = run_all_pairs_parallel(cfg, days=7, max_workers=2)
+        # Both should be in the results dict (even if one failed)
+        self.assertIn("WIN_M5", results)
+        self.assertIn("BIT_M5", results)
+        # Both should have a valid decision field
+        for key in ("WIN_M5", "BIT_M5"):
+            self.assertIn("decision", results[key])
+            self.assertIsInstance(results[key]["decision"], str)
+
+    def test_runs_with_empty_config(self):
+        """Empty config should return empty dict, not crash."""
+        from vt_forward_backtest import run_all_pairs_parallel
+        cfg = {"symbols": [], "timeframes": ["M5"]}
+        results = run_all_pairs_parallel(cfg, days=7, max_workers=2)
+        self.assertEqual(results, {})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -60,6 +60,15 @@ SIM_EOD_HOUR = 16            # EOD close hour (BRT)
 SIM_EOD_MINUTE = 45          # EOD close minute (BRT)
 SIM_BRT_OFFSET_HOURS = 3     # UTC → BRT offset
 
+# Bar count per timeframe (7-day forward backtest coverage)
+BAR_COUNT_PER_TF = {
+    "M5":  500,   # ~7 days of 5-min bars
+    "M15": 300,   # ~7 days of 15-min bars
+    "M30": 200,   # ~7 days of 30-min bars
+    "H1":  100,   # ~4-7 days of hourly bars
+}
+DEFAULT_BAR_COUNT = 300      # fallback for unknown TFs
+
 
 # ─── Stubs (Task 1) — to be replaced in Tasks 2-5 ────────────────────────
 
@@ -93,16 +102,6 @@ def discover_pairs(config: dict) -> list:
             pairs.append((sym, tf, strategy, merged))
 
     return pairs
-
-
-def run_all_pairs_parallel(
-    config: dict, days: int = 7, max_workers: int = 4, pair_timeout: int = 60
-) -> dict:
-    """Run forward backtest for all pairs in parallel using multiprocessing.Pool.
-
-    Returns: dict keyed by "SYM_TF" with {pnl, n_trades, wr, max_dd, decision}.
-    """
-    raise NotImplementedError("run_all_pairs_parallel will be implemented in Task 5")
 
 
 def _get_safe_max_workers(configured_max: int, cpu_count: int, load_avg: float) -> int:
@@ -394,13 +393,139 @@ def _load_strategy_module(strategy_name: str):
 
 
 def run_mini_backtest_pair(sym: str, tf: str, config: dict, days: int = 7) -> dict:
-    """Forward backtest for one SYM_TF. Task 5."""
-    raise NotImplementedError("run_mini_backtest_pair will be implemented in Task 5")
+    """Forward backtest for one SYM_TF. Reuses autotrader plugins.
+
+    Pipeline:
+      1. Look up strategy + params for sym/tf
+      2. Fetch bars via Wine/MT5 (offline-resilient)
+      3. Run bar-by-bar simulation
+      4. Return metrics dict
+
+    Returns dict with: pnl, n_trades, wr, max_dd, decision.
+    decision ∈ {ok, negative, no_data, no_trades, strategy_not_in_config,
+                strategy_load_failed, utils_load_failed}
+    """
+    empty = {
+        "pnl": 0.0, "n_trades": 0, "wr": 0.0, "max_dd": 0.0,
+        "decision": "no_data",
+    }
+    if not sym or not tf or not isinstance(config, dict):
+        return empty
+
+    # Find strategy + params
+    strategy_name = config.get("strategy", {}).get(sym)
+    if not strategy_name:
+        empty["decision"] = "strategy_not_in_config"
+        return empty
+
+    params = _resolve_pair_params(config, sym, tf)
+
+    # Fetch bars (offline-resilient)
+    full_symbol = f"{sym}$"
+    bar_count = BAR_COUNT_PER_TF.get(tf, DEFAULT_BAR_COUNT)
+    bars = fetch_bars_for_backtest(full_symbol, tf, count=bar_count)
+    if not bars:
+        return empty
+
+    # Simulate
+    return simulate_forward(sym, tf, bars, strategy_name, params)
+
+
+def _resolve_pair_params(config: dict, sym: str, tf: str) -> dict:
+    """Resolve params for a (sym, tf) pair from config.
+
+    Reads config[symbol.lower()] as base, then merges config[symbol.lower()][tf]
+    if present (per-TF override).
+    """
+    sym_params_base = config.get(sym.lower(), {})
+    tf_override = sym_params_base.get(tf, {})
+    return {**sym_params_base, **tf_override}
 
 
 def _run_single_pair(args: tuple) -> dict:
-    """Worker function for multiprocessing pool. Task 5."""
-    raise NotImplementedError("_run_single_pair will be implemented in Task 5")
+    """Worker function for multiprocessing pool.
+
+    args = (sym, tf, config, days, timeout)
+
+    Must be module-level (forksafe). Returns dict with at minimum
+    {sym, tf, decision, pnl, n_trades, wr, max_dd}.
+    """
+    sym, tf, config, days, timeout = args
+    base = {
+        "sym": sym, "tf": tf,
+        "pnl": 0.0, "n_trades": 0, "wr": 0.0, "max_dd": 0.0,
+        "decision": "no_data",
+    }
+    try:
+        if not sym or not tf or not isinstance(config, dict):
+            base["decision"] = "error_invalid_args"
+            return base
+        result = run_mini_backtest_pair(sym, tf, config, days=days)
+        return {**base, **result, "sym": sym, "tf": tf}
+    except Exception as e:
+        base["decision"] = f"error:{type(e).__name__}"
+        base["error"] = str(e)[:200]
+        return base
+
+
+def run_all_pairs_parallel(
+    config: dict, days: int = 7, max_workers: int = 4, pair_timeout: int = PAIR_TIMEOUT_SEC
+) -> dict:
+    """Run forward backtest for all pairs in parallel using multiprocessing.Pool.
+
+    Pipeline:
+      1. discover_pairs(config) → list of (sym, tf, strategy, params)
+      2. _get_safe_max_workers() — auto-adjust based on CPU + load
+      3. ProcessPoolExecutor — submit 1 task per pair
+      4. Collect with per-pair timeout (default 60s)
+      5. Survive worker crashes (timeout/error → entry with decision)
+
+    Returns: dict keyed by "SYM_TF" with {pnl, n_trades, wr, max_dd, decision}.
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed, TimeoutError as FuturesTimeout
+
+    pairs = discover_pairs(config)
+    if not pairs:
+        return {}
+
+    cpu_count = _detect_cpu_count()
+    load_avg = _detect_load_avg()
+    safe_workers = _get_safe_max_workers(max_workers, cpu_count, load_avg)
+    safe_workers = min(safe_workers, len(pairs))  # no point having more workers than pairs
+    if safe_workers < 1:
+        safe_workers = 1
+
+    # Build args list (only sym, tf, config, days, timeout — strategy/params
+    # are looked up by run_mini_backtest_pair from config)
+    args_list = [(sym, tf, config, days, pair_timeout) for sym, tf, _strat, _params in pairs]
+
+    results = {}
+    with ProcessPoolExecutor(max_workers=safe_workers) as executor:
+        future_to_pair = {
+            executor.submit(_run_single_pair, args): (args[0], args[1])
+            for args in args_list
+        }
+        for future in as_completed(future_to_pair, timeout=pair_timeout * len(pairs) + 30):
+            sym, tf = future_to_pair[future]
+            key = f"{sym}_{tf}"
+            try:
+                result = future.result(timeout=pair_timeout)
+                results[key] = result
+            except FuturesTimeout:
+                results[key] = {
+                    "sym": sym, "tf": tf,
+                    "pnl": 0.0, "n_trades": 0, "wr": 0.0, "max_dd": 0.0,
+                    "decision": "timeout",
+                }
+            except Exception as e:
+                results[key] = {
+                    "sym": sym, "tf": tf,
+                    "pnl": 0.0, "n_trades": 0, "wr": 0.0, "max_dd": 0.0,
+                    "decision": f"error:{type(e).__name__}",
+                    "error": str(e)[:200],
+                }
+
+    return results
 
 
 def _detect_load_avg() -> float:
