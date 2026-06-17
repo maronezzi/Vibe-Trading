@@ -1897,6 +1897,8 @@ def main():
                         help="Max processos paralelos pro forward backtest (0=auto via load avg)")
     parser.add_argument("--use-backtest-convergence", action="store_true",
                         help="Usa forward backtest como shadow-of-truth no critério de convergência")
+    parser.add_argument("--no-shadow", dest="no_shadow", action="store_true", default=False,
+                        help="Desativa shadow mode (default: ativo)")
     args = parser.parse_args()
 
     # Clamp iterations
@@ -2159,6 +2161,51 @@ def main():
 
     log.info(f"🤖 AGI 17H concluído — {len(iteration_history)} iteração(ões) | "
              f"convergiu: {converged}")
+
+    # ─── SHADOW MODE — run optimization on snapshot, compare, log ───
+    if not args.dry_run and not args.no_shadow:
+        try:
+            config_path = PROJECT_DIR / "vt_config.json"
+            if not config_path.exists():
+                log.warning("vt_config.json não encontrado — shadow pulado")
+            else:
+                # Snapshot the LIVE config (post-changes from this run)
+                snap_path = snapshot_live_config(config_path)
+                log.info(f"🪞 Shadow: snapshot salvo em {snap_path}")
+
+                # Run shadow optimization on the snapshot
+                shadow_audit = run_shadow_optimization(
+                    snap_path, perf, issues, days=args.days,
+                    use_forward=True,  # shadow always uses forward
+                )
+                log.info(f"🪞 Shadow: {len(shadow_audit.get('iterations', []))} iteração(ões)")
+
+                # Compare
+                comparison = compare_live_vs_shadow(audit, shadow_audit)
+                comp_path = write_comparison_report(comparison, audit_file)
+                log.info(f"🪞 Shadow comparison: {comp_path}")
+
+                # Notify Telegram
+                n_agree = len(comparison.get("agreements", []))
+                n_disagree = len(comparison.get("disagreements", []))
+                n_live_only = len(comparison.get("live_only", []))
+                n_shadow_only = len(comparison.get("shadow_only", []))
+                conv_live = comparison.get("convergence_diff", {}).get("live")
+                conv_shadow = comparison.get("convergence_diff", {}).get("shadow")
+                shadow_msg = (
+                    f"🪞 *AGI Shadow — Live vs Forward Backtest*\n\n"
+                    f"📊 Convergência: live={conv_live} | shadow={conv_shadow}\n"
+                    f"✅ Acordos: {n_agree} | ⚠️ Divergências: {n_disagree}\n"
+                    f"🔵 Só live: {n_live_only} | 🟣 Só shadow: {n_shadow_only}\n\n"
+                    f"📁 {comp_path}"
+                )
+                log.info(f"🪞 Shadow Telegram: {shadow_msg}")
+                try:
+                    notify_telegram(shadow_msg)
+                except Exception as e:
+                    log.warning(f"Shadow notify falhou: {e}")
+        except Exception as e:
+            log.warning(f"Shadow mode falhou (não crítico): {e}")
 
 
 if __name__ == "__main__":
