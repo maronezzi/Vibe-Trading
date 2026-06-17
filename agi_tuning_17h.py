@@ -2297,41 +2297,25 @@ def main():
         else:
             log.info("✅ Nenhum par falhando — fallback não necessário")
 
-    # 8.5 OTIMIZAÇÃO DE PARÂMETROS — Grid search para todos os pares ativos
+    # 8.5 OTIMIZAÇÃO DE PARÂMETROS — Grid search paralelo para todos os pares ativos
     # Bruno 17/06: além de trocar estratégias, otimizar parâmetros de cada par
+    # Bruno 17/06: paralelizar backtests em múltiplas CPUs (LLM stays sequential)
     if not args.dry_run:
-        log.info("🔧 ETAPA 8.5: Otimização de parâmetros via grid search")
-        from experiment_runner import optimize_pair_params
+        log.info("🔧 ETAPA 8.5: Otimização de parâmetros via grid search PARALELO")
+        from agi_parallel import parallel_optimize_all_pairs
+        from experiment_runner import PARAM_GRID
 
-        all_pairs = []
-        symbols = config.get("symbols", [])
-        timeframes = config.get("timeframes", [])
-        disabled = set(config.get("disabled_timeframes", []))
-
-        for sym in symbols:
-            for tf in timeframes:
-                pair = f"{sym}_{tf}"
-                if pair not in disabled:
-                    all_pairs.append(pair)
+        param_results = parallel_optimize_all_pairs(
+            config, PARAM_GRID, days=args.days
+        )
 
         optimized_count = 0
         total_delta = 0
         param_changes = []
 
-        for pair in all_pairs:
-            parts = pair.split("_", 1)
-            if len(parts) != 2:
-                continue
-            sym, tf = parts
-            current_strat = config.get("strategy_by_tf", {}).get(
-                pair, config.get("strategy", {}).get(sym)
-            )
-            if not current_strat:
-                continue
-
-            result = optimize_pair_params(sym, tf, current_strat, config, days=args.days)
+        for result in param_results:
             if result["delta"] > 50:  # Só aplica se delta > R$ 50
-                # Apply optimized params
+                pair = result["pair"]
                 config.setdefault("params_by_tf", {}).setdefault(pair, {}).update(
                     result["best_params"]
                 )
@@ -2339,12 +2323,12 @@ def main():
                 total_delta += result["delta"]
                 param_changes.append({
                     "pair": pair,
-                    "strategy": current_strat,
+                    "strategy": result["strategy"],
                     "params": result["best_params"],
                     "delta": result["delta"],
                 })
                 log.info(
-                    f"  ✅ {pair} ({current_strat}): +R$ {result['delta']:.2f} "
+                    f"  ✅ {pair} ({result['strategy']}): +R$ {result['delta']:.2f} "
                     f"com {result['best_params']}"
                 )
 
