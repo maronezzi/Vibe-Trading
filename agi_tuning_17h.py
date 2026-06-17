@@ -19,6 +19,7 @@ Uso:
 """
 
 import argparse
+from collections import Counter
 import json
 import logging
 import os
@@ -1636,6 +1637,77 @@ def should_change_strategy(
     }
 
 
+def evaluate_forward_backtest(config: dict, days: int, max_workers: int) -> dict:
+    """Roda o forward backtest paralelo sobre todos os pares ativos da config.
+
+    Wrapper testável em volta de vt_forward_backtest.run_all_pairs_parallel.
+    Retorna dict {SYM_TF: result}. Loga progresso no logger do AGI.
+
+    Args:
+        config: vt_config carregado (precisa ter symbols/timeframes/strategy/params)
+        days: janela em dias pra fetch de barras
+        max_workers: limite de processos paralelos (0 = auto via load avg)
+
+    Returns:
+        Dict com chaves "SYM_TF" e valores do run_all_pairs_parallel
+        (campos: decision, pnl, n_trades, etc).
+    """
+    # Import local pra evitar circular import e cold-start cost
+    from vt_forward_backtest import run_all_pairs_parallel
+
+    log.info(f"🔬 Forward backtest: {len(config.get('symbols', []))} símbolos × "
+             f"{len(config.get('timeframes', []))} TFs, days={days}, workers={max_workers}")
+    try:
+        results = run_all_pairs_parallel(config, days=days, max_workers=max_workers)
+    except Exception as e:
+        log.error(f"Forward backtest falhou: {e}")
+        return {}
+    counts = Counter(r.get("decision") for r in results.values())
+    log.info(f"🔬 Backtest: {len(results)} pares | "
+             f"ok={counts.get('ok', 0)} neg={counts.get('negative', 0)} "
+             f"zero={counts.get('no_trades', 0)}")
+    return results
+
+
+def merge_backtest_with_convergence(perf: dict, baseline: dict,
+                                     bt_results: dict, mode: str) -> tuple[bool, list[str]]:
+    """Estende check_convergence() com o forward backtest como sombra-de-verdade.
+
+    Regra: se um par está falhando em PnL (DB) MAS está 'ok' no forward backtest
+    (simulação sugere que os params propostos são lucrativos), contamos como
+    CONVERGIDO para esse par. Isso evita loops infinitos onde a LLM propõe
+    params bons mas o DB ainda não capturou o efeito.
+
+    Casos:
+      - check_convergence passa → (True, []) sempre
+      - Par falhando PnL + BT 'ok' → remove da failing list
+      - Par falhando PnL + BT 'negative'/'no_trades'/ausente → mantém na failing
+      - Par passando PnL + qualquer BT → não está em failing (caso base)
+    """
+    # 1) Defer ao check_convergence original primeiro
+    converged, failing = check_convergence(perf, baseline, mode=mode)
+    if converged:
+        return (True, [])
+
+    # 2) Tentar resgatar pares que falharam PnL mas passaram no backtest
+    if not failing or not bt_results:
+        return (converged, failing)
+
+    rescued = []
+    for pair in list(failing):
+        bt = bt_results.get(pair)
+        if bt and bt.get("decision") == "ok":
+            log.info(f"✅ {pair}: PnL DB negativo MAS backtest 'ok' — "
+                     f"shadow-of-truth convergiu (resgatado)")
+            rescued.append(pair)
+            failing.remove(pair)
+
+    if rescued:
+        log.info(f"🔬 {len(rescued)} par(es) resgatado(s) pelo backtest: {rescued}")
+        converged = len(failing) == 0
+    return (converged, failing)
+
+
 def main():
     parser = argparse.ArgumentParser(description="AGI 17h Tuning — otimização dinâmica de parâmetros")
     parser.add_argument("--days", type=int, default=7, help="Janela de análise em dias (default: 7)")
@@ -1652,6 +1724,10 @@ def main():
                         help="Critério de convergência: 'delta' (compara PnL vs baseline inicial, "
                              "permite melhoria parcial) ou 'absolute' (legado: PnL>0 em todos). "
                              "Default: 'delta' — recomendado pra loops iterativos.")
+    parser.add_argument("--max-workers", type=int, default=0,
+                        help="Max processos paralelos pro forward backtest (0=auto via load avg)")
+    parser.add_argument("--use-backtest-convergence", action="store_true",
+                        help="Usa forward backtest como shadow-of-truth no critério de convergência")
     args = parser.parse_args()
 
     # Clamp iterations
@@ -1810,9 +1886,18 @@ def main():
         if not args.dry_run:
             # Re-ler perf atualizada (após mudanças)
             perf_after = collect_performance(days=args.days)
-            converged, failing_pairs = check_convergence(
-                perf_after, baseline_snapshot, mode=args.convergence_mode
-            )
+            if args.use_backtest_convergence:
+                # Roda forward backtest em paralelo como sombra-de-verdade
+                log.info("🔬 --use-backtest-convergence: rodando forward backtest shadow-of-truth...")
+                bt_results = evaluate_forward_backtest(config, days=args.days,
+                                                       max_workers=args.max_workers)
+                converged, failing_pairs = merge_backtest_with_convergence(
+                    perf_after, baseline_snapshot, bt_results, mode=args.convergence_mode
+                )
+            else:
+                converged, failing_pairs = check_convergence(
+                    perf_after, baseline_snapshot, mode=args.convergence_mode
+                )
             log.info(f"📈 Convergência it {it_num}: {'SIM ✅' if converged else 'NÃO ❌'} "
                      f"({len(failing_pairs)} pares falhando: {failing_pairs})")
             perf = perf_after  # usa essa pra relatório
@@ -1880,6 +1965,7 @@ def main():
         "period_days": args.days,
         "dry_run": args.dry_run,
         "max_iterations": args.max_iterations,
+        "use_backtest_convergence": getattr(args, "use_backtest_convergence", False),
         "iterations": iteration_history,
         "converged": converged,
         "paused_by_fallback": final_paused,
