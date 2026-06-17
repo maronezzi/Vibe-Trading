@@ -334,5 +334,115 @@ class TestFetchBarsForBacktest(unittest.TestCase):
             self.assertGreaterEqual(bars[0]["time"], bars[1]["time"])
 
 
+class TestSimulateForward(unittest.TestCase):
+    """Test #4 — simulate_forward runs bar-by-bar forward simulation.
+
+    The engine reuses the autotrader's strategy plugins via dynamic import,
+    so it must handle plugin loading failures gracefully (return no_data).
+    """
+
+    def _make_synthetic_bars(self, n: int = 200) -> list:
+        """Create N synthetic bars with simple uptrend (newest-first)."""
+        import random
+        random.seed(42)
+        bars = []
+        price = 100.0
+        for i in range(n):
+            change = random.gauss(0.05, 1.0)
+            price += change
+            bars.append({
+                "time": 1700000000 + i * 300,
+                "open": price,
+                "high": price + abs(change),
+                "low": price - abs(change),
+                "close": price,
+                "tick_volume": 1000,
+            })
+        bars.reverse()  # newest-first
+        return bars
+
+    def test_simulate_returns_metrics(self):
+        """simulate_forward should return dict with pnl/n_trades/wr/max_dd/decision."""
+        from vt_forward_backtest import simulate_forward
+        bars = self._make_synthetic_bars()
+        params = {"bb_period": 20, "bb_std": 2.0, "rsi_period": 14,
+                  "rsi_overbought": 70, "rsi_oversold": 30, "sl_atr_mult": 1.5}
+        result = simulate_forward(
+            symbol="WIN", tf="M5", bars=bars,
+            strategy_name="BOLLINGER", params=params
+        )
+        self.assertIsInstance(result, dict)
+        self.assertIn("pnl", result)
+        self.assertIn("n_trades", result)
+        self.assertIn("wr", result)
+        self.assertIn("max_dd", result)
+        self.assertIn("decision", result)
+
+    def test_simulate_with_no_bars_returns_empty(self):
+        """Empty bars list should return no_data, not crash."""
+        from vt_forward_backtest import simulate_forward
+        result = simulate_forward("WIN", "M5", [], "BOLLINGER", {})
+        self.assertEqual(result["n_trades"], 0)
+        self.assertEqual(result["decision"], "no_data")
+        self.assertEqual(result["pnl"], 0.0)
+
+    def test_simulate_with_unknown_strategy_returns_graceful(self):
+        """Unknown strategy should return strategy_load_failed, not crash."""
+        from vt_forward_backtest import simulate_forward
+        bars = self._make_synthetic_bars()
+        result = simulate_forward(
+            symbol="WIN", tf="M5", bars=bars,
+            strategy_name="NONEXISTENT_STRATEGY", params={}
+        )
+        # Should not raise; should return error decision
+        self.assertIn(result["decision"], ("strategy_load_failed", "no_data", "no_trades"))
+
+    def test_simulate_decision_in_valid_set(self):
+        """Decision field must be one of the valid values."""
+        from vt_forward_backtest import simulate_forward
+        bars = self._make_synthetic_bars()
+        valid_decisions = {
+            "ok", "negative", "no_data", "no_trades",
+            "utils_load_failed", "strategy_load_failed", "error"
+        }
+        result = simulate_forward(
+            symbol="WIN", tf="M5", bars=bars,
+            strategy_name="BOLLINGER",
+            params={"bb_period": 20, "bb_std": 2.0, "rsi_period": 14,
+                    "rsi_overbought": 70, "rsi_oversold": 30, "sl_atr_mult": 1.5}
+        )
+        self.assertIn(result["decision"], valid_decisions)
+
+    def test_simulate_metrics_types(self):
+        """pnl/wr/max_dd must be float, n_trades must be int."""
+        from vt_forward_backtest import simulate_forward
+        bars = self._make_synthetic_bars()
+        result = simulate_forward(
+            symbol="WIN", tf="M5", bars=bars,
+            strategy_name="BOLLINGER",
+            params={"bb_period": 20, "bb_std": 2.0, "rsi_period": 14,
+                    "rsi_overbought": 70, "rsi_oversold": 30, "sl_atr_mult": 1.5}
+        )
+        self.assertIsInstance(result["pnl"], (int, float))
+        self.assertIsInstance(result["n_trades"], int)
+        self.assertIsInstance(result["wr"], (int, float))
+        self.assertIsInstance(result["max_dd"], (int, float))
+
+    def test_simulate_handles_warmup_correctly(self):
+        """Simulation should skip warmup period (first 20 bars for indicators)."""
+        from vt_forward_backtest import simulate_forward
+        # Only 15 bars — not enough for indicator warmup
+        short_bars = self._make_synthetic_bars(n=15)
+        result = simulate_forward(
+            symbol="WIN", tf="M5", bars=short_bars,
+            strategy_name="BOLLINGER",
+            params={"bb_period": 20, "bb_std": 2.0}
+        )
+        # Should return gracefully, not crash
+        self.assertIsInstance(result, dict)
+        # Likely no trades due to insufficient warmup
+        self.assertLessEqual(result["n_trades"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

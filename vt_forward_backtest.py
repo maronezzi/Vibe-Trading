@@ -21,6 +21,7 @@ import os
 import csv
 import io
 import subprocess
+from typing import Optional
 
 
 # ─── Module-level constants ────────────────────────────────────────────────
@@ -46,6 +47,18 @@ FETCH_TIMEOUT_SEC = 60   # max time to wait for Wine/MT5 to return bars
 PAIR_TIMEOUT_SEC = 60    # max time to wait for a single pair in the pool
 LOAD_THRESHOLD_HIGH = 4.0  # load avg > this = saturated (1 worker)
 LOAD_THRESHOLD_BUSY = 2.0  # load avg > this = busy (25% workers)
+
+# Forward simulation constants
+SIM_WARMUP_BARS = 20         # bars skipped for indicator warmup
+SIM_MIN_BARS = 30            # min bars required to run simulation
+SIM_ATR_PERIOD = 14          # ATR period for trade management
+SIM_COOLDOWN_BARS = 5        # bars to wait after each exit
+SIM_TRAIL_ACTIVATE_ATR = 1.0 # trail activates after this × ATR profit
+SIM_TRAIL_DISTANCE_ATR = 0.2 # trail distance = this × ATR
+SIM_COMMISSION = 2.5         # commission per trade (R$)
+SIM_EOD_HOUR = 16            # EOD close hour (BRT)
+SIM_EOD_MINUTE = 45          # EOD close minute (BRT)
+SIM_BRT_OFFSET_HOURS = 3     # UTC → BRT offset
 
 
 # ─── Stubs (Task 1) — to be replaced in Tasks 2-5 ────────────────────────
@@ -180,8 +193,204 @@ def fetch_bars_for_backtest(symbol: str, tf: str, count: int = 500) -> list:
 def simulate_forward(
     symbol: str, tf: str, bars: list, strategy_name: str, params: dict
 ) -> dict:
-    """Bar-by-bar forward simulation. Task 4."""
-    raise NotImplementedError("simulate_forward will be implemented in Task 4")
+    """Bar-by-bar forward simulation. Returns metrics dict.
+
+    Reuses the autotrader's strategy plugins (dynamic import) and indicator
+    functions. Bars are NEWEST-FIRST; we convert to chronological internally.
+
+    Trade lifecycle:
+      - Entry: strategy.check_entry() returns {direction, sl_pts, ...}
+      - Exit: SL hit intra-bar, trailing after 1.0x ATR, or EOD close at 16:45
+      - Cooldown: 5 bars after each exit
+
+    Returns:
+      dict with keys: pnl, n_trades, wr, max_dd, decision
+      decision ∈ {ok, negative, no_data, no_trades, strategy_load_failed, utils_load_failed, error}
+    """
+    empty = {
+        "pnl": 0.0, "n_trades": 0, "wr": 0.0, "max_dd": 0.0,
+        "decision": "no_data",
+    }
+    if not bars or len(bars) < SIM_MIN_BARS:
+        return empty
+
+    # Lazy import autotrader utils (avoids running its main loop)
+    utils = _load_strategy_utils()
+    if utils is None:
+        empty["decision"] = "utils_load_failed"
+        return empty
+
+    # Lazy import strategy plugin
+    strategy = _load_strategy_module(strategy_name)
+    if strategy is None:
+        empty["decision"] = "strategy_load_failed"
+        return empty
+
+    # Resolve contract spec by symbol+'$'
+    spec = _CONTRACT_SPECS.get(symbol + "$", _CONTRACT_SPECS["WIN$"])
+    mult = spec["mult"]
+    slip = spec["slip"]
+    commission = SIM_COMMISSION
+
+    # bars are newest-first; reverse to chronological for simulation
+    chronological = list(reversed(bars))
+
+    pos = 0
+    ep = 0.0
+    e_atr = 0.0
+    sl_price = 0.0
+    trail_on = False
+    cooldown_until = 0
+    trades = []
+
+    import datetime  # used for EOD close check
+
+    for i in range(SIM_WARMUP_BARS, len(chronological)):  # warmup for indicators
+        bar = chronological[i]
+        prev_bars = list(reversed(chronological[:i]))  # newest-first slice
+        price = float(bar["close"])
+        high = float(bar["high"])
+        low = float(bar["low"])
+        bar_ts = int(bar["time"])
+
+        atr = utils["calculate_atr"](prev_bars, SIM_ATR_PERIOD)
+        if atr <= 0:
+            continue
+
+        if pos == 0:
+            # Check cooldown
+            if i < cooldown_until:
+                continue
+            # Try entry
+            try:
+                sig = strategy.check_entry(
+                    symbol=symbol, tf=tf, price=price, atr=atr,
+                    bar_ts=bar_ts, bars=prev_bars, params=params, utils=utils
+                )
+            except Exception:
+                continue
+            if not sig:
+                continue
+            sl_pts = sig.get("sl_pts", int(atr * 1.5))
+            direction = sig.get("direction")
+            if direction not in ("BUY", "SELL"):
+                continue
+            pos = 1 if direction == "BUY" else -1
+            ep = price
+            e_atr = atr
+            sl_price = ep - sl_pts if pos == 1 else ep + sl_pts
+            trail_on = False
+        else:
+            # Check exit: SL hit intra-bar
+            if pos == 1 and low <= sl_price:
+                pnl = (sl_price - ep) * mult - slip - commission
+                trades.append(pnl)
+                pos = 0
+                cooldown_until = i + SIM_COOLDOWN_BARS
+                continue
+            if pos == -1 and high >= sl_price:
+                pnl = (ep - sl_price) * mult - slip - commission
+                trades.append(pnl)
+                pos = 0
+                cooldown_until = i + SIM_COOLDOWN_BARS
+                continue
+            # Trailing stop: activate after SIM_TRAIL_ACTIVATE_ATR × ATR profit
+            profit_pts = (high - ep) if pos == 1 else (ep - low)
+            if not trail_on and profit_pts >= SIM_TRAIL_ACTIVATE_ATR * e_atr:
+                trail_on = True
+            if trail_on:
+                td = SIM_TRAIL_DISTANCE_ATR * e_atr
+                if pos == 1:
+                    nsl = high - td
+                    if nsl > sl_price:
+                        sl_price = nsl
+                else:
+                    nsl = low + td
+                    if nsl < sl_price:
+                        sl_price = nsl
+            # EOD close at SIM_EOD_HOUR:SIM_EOD_MINUTE BRT (UTC-SIM_BRT_OFFSET_HOURS)
+            t = datetime.datetime.utcfromtimestamp(bar_ts) - datetime.timedelta(
+                hours=SIM_BRT_OFFSET_HOURS
+            )
+            if t.hour > SIM_EOD_HOUR or (t.hour == SIM_EOD_HOUR and t.minute >= SIM_EOD_MINUTE):
+                pnl = ((price - ep) if pos == 1 else (ep - price)) * mult - slip - commission
+                trades.append(pnl)
+                pos = 0
+                cooldown_until = i + SIM_COOLDOWN_BARS
+
+    if not trades:
+        empty["decision"] = "no_trades"
+        return empty
+
+    n = len(trades)
+    wins = sum(1 for t in trades if t > 0)
+    pnl = sum(trades)
+    wr = wins / n * 100
+    # Max drawdown (equity-based)
+    equity = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for t in trades:
+        equity += t
+        peak = max(peak, equity)
+        dd = peak - equity
+        max_dd = max(max_dd, dd)
+
+    return {
+        "pnl": round(pnl, 2),
+        "n_trades": n,
+        "wr": round(wr, 1),
+        "max_dd": round(max_dd, 2),
+        "decision": "ok" if pnl > 0 else "negative",
+    }
+
+
+def _load_strategy_utils() -> Optional[dict]:
+    """Lazy import — load indicator functions from vt_autotrader.
+
+    Returns dict of utils (or None if import fails).
+    Avoids running vt_autotrader's main loop by importing only the functions.
+    """
+    try:
+        import importlib.util
+        import sys as _sys
+        path = os.path.join(os.path.dirname(__file__), "vt_autotrader.py")
+        spec = importlib.util.spec_from_file_location("vt_autotrader", path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        _sys.modules["vt_autotrader"] = mod
+        spec.loader.exec_module(mod)
+        if not hasattr(mod, "_init_strategy_utils"):
+            return None
+        mod._init_strategy_utils()
+        return mod._strategy_utils
+    except Exception:
+        return None
+
+
+def _load_strategy_module(strategy_name: str):
+    """Lazy import — load a strategy plugin from strategies/<name>.py.
+
+    Returns the module (with STRATEGY_NAME + check_entry) or None.
+    """
+    try:
+        import importlib.util
+        import sys as _sys
+        path = os.path.join(
+            os.path.dirname(__file__), "strategies", f"{strategy_name.lower()}.py"
+        )
+        if not os.path.exists(path):
+            return None
+        spec = importlib.util.spec_from_file_location(f"strategy_{strategy_name}", path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        _sys.modules[f"strategy_{strategy_name}"] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
 
 
 def run_mini_backtest_pair(sym: str, tf: str, config: dict, days: int = 7) -> dict:
