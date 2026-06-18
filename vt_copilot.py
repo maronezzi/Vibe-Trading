@@ -68,6 +68,28 @@ def notify_telegram(msg):
         log(f"[ERRO] Falha ao enviar notificação: {e}")
 
 
+def notify_telegram_media(media_path, caption=""):
+    """Envia mídia (PNG) pro Telegram via hermes CLI. Caption limitado a 1024 chars.
+
+    O Hermes envia mídia inline com prefixo MEDIA: no texto (Telegram, Discord, etc).
+    Caption é o texto que aparece junto.
+    """
+    import subprocess
+    try:
+        # Caption curta (Telegram aceita 1024)
+        body = f"MEDIA:{media_path}"
+        if caption:
+            body = f"{caption}\n\n{body}"
+        cmd = ["hermes", "send", "--to", TELEGRAM_TARGET, body]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            log(f"Mídia enviada: {media_path}")
+        else:
+            log(f"[WARN] hermes retornou {result.returncode}: {result.stderr[:200]}")
+    except Exception as e:
+        log(f"[ERRO] Falha ao enviar mídia: {e}")
+
+
 def check_autotrader_health():
     """Verifica se o autotrader está rodando e com log fresco."""
     import subprocess
@@ -441,41 +463,185 @@ def evaluate_and_pause():
     return paused
 
 
+def check_intraday_stats() -> dict:
+    """Métricas INTRADAY (somente HOJE): PnL realizado, flutuante, contadores, série.
+
+    Substitui o antigo check_performance() (janela 5 dias) como entrada do
+    generate_report(). Mantém evaluate_and_pause() usando a janela maior.
+
+    Retorna dict com:
+        ops, wins, losses, pnl_realized: agregados dos trades fechados hoje
+        open_count, open_pnl: posições abertas via MT5 status()
+        pnl_total: pnl_realized + open_pnl
+        pnl_cum: lista [(exit_time_iso, pnl_acumulado)] em ordem cronológica
+        max_drawdown: pior queda do peak até o fundo
+        best_trade, worst_trade: extremos do dia
+    """
+    conn = sqlite3.connect(str(DB_PATH))
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Realizado: trades fechados hoje
+    closed = conn.execute("""
+        SELECT COUNT(*) ops,
+               SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) wins,
+               SUM(CASE WHEN net_pnl <= 0 THEN 1 ELSE 0 END) losses,
+               COALESCE(SUM(net_pnl), 0) pnl
+        FROM trades
+        WHERE exit_time IS NOT NULL
+          AND date(exit_time) = ?
+    """, (today,)).fetchone()
+
+    # Série temporal ordenada
+    pnl_series = conn.execute("""
+        SELECT exit_time, net_pnl
+        FROM trades
+        WHERE exit_time IS NOT NULL
+          AND date(exit_time) = ?
+        ORDER BY exit_time
+    """, (today,)).fetchall()
+    conn.close()
+
+    # Acumulado + max drawdown
+    pnl_cum = []
+    acc = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for t, p in pnl_series:
+        acc += p
+        pnl_cum.append((t, round(acc, 2)))
+        peak = max(peak, acc)
+        max_dd = min(max_dd, acc - peak)
+
+    # Posições abertas via MT5 (fonte da verdade, nao o DB)
+    open_count, open_pnl = 0, 0.0
+    try:
+        mt5_state = mt5_status()
+        positions = mt5_state.get("positions", [])
+        open_count = len(positions)
+        open_pnl = round(sum(p.get("profit", 0) for p in positions), 2)
+    except Exception as e:
+        log(f"[WARN] Não foi possível obter MT5 status: {e}")
+
+    pnl_realized = round(closed[3] or 0.0, 2)
+
+    return {
+        "ops": closed[0] or 0,
+        "wins": closed[1] or 0,
+        "losses": closed[2] or 0,
+        "pnl_realized": pnl_realized,
+        "open_count": open_count,
+        "open_pnl": open_pnl,
+        "pnl_total": round(pnl_realized + open_pnl, 2),
+        "pnl_cum": pnl_cum,
+        "max_drawdown": round(max_dd, 2),
+        "best_trade": round(max((p for _, p in pnl_series), default=0.0), 2),
+        "worst_trade": round(min((p for _, p in pnl_series), default=0.0), 2),
+    }
+
+
+def render_pnl_chart(pnl_cum: list, today: str) -> Path:
+    """Gera PNG da evolução intraday do PnL realizado.
+
+    Tema escuro, igual ao terminal/IDE. Linha verde se último valor >= 0,
+    vermelha se < 0. Se pnl_cum vazio, mostra placeholder.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.dates import DateFormatter
+
+    fig, ax = plt.subplots(figsize=(10, 4.5), dpi=110)
+    fig.patch.set_facecolor("#1e1e1e")
+    ax.set_facecolor("#1e1e1e")
+
+    if not pnl_cum:
+        ax.text(0.5, 0.5, f"Sem trades fechados em {today}",
+                ha="center", va="center", color="#cccccc",
+                transform=ax.transAxes, fontsize=14)
+    else:
+        times = [datetime.fromisoformat(t) for t, _ in pnl_cum]
+        vals = [v for _, v in pnl_cum]
+        last = vals[-1]
+        line_color = "#4caf50" if last >= 0 else "#ef5350"
+        ax.plot(times, vals, color=line_color, linewidth=2.2, marker="o", markersize=4)
+        ax.fill_between(times, vals, 0, alpha=0.18, color=line_color)
+        ax.axhline(0, color="#666666", linewidth=0.8, linestyle="--")
+        # Anotação do valor final
+        ax.annotate(f"R$ {last:+.2f}", xy=(times[-1], vals[-1]),
+                    xytext=(8, 0), textcoords="offset points",
+                    color=line_color, fontsize=12, fontweight="bold", va="center")
+        ax.xaxis.set_major_formatter(DateFormatter("%H:%M"))
+        fig.autofmt_xdate()
+
+    ax.set_title(f"Vibe-Trading — PnL acumulado · {today}",
+                 color="#ffffff", fontsize=14, fontweight="bold", pad=14)
+    ax.set_xlabel("Hora", color="#aaaaaa", fontsize=10)
+    ax.set_ylabel("PnL realizado (R$)", color="#aaaaaa", fontsize=10)
+    ax.tick_params(colors="#cccccc")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#444444")
+    ax.spines["bottom"].set_color("#444444")
+    ax.grid(True, alpha=0.15)
+
+    out = Path(f"/tmp/vt_intraday_{today}.png")
+    fig.tight_layout()
+    fig.savefig(out, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return out
+
+
 def generate_report():
-    """Gera relatório completo para notificação."""
+    """Relatório INTRADAY: evolução do dia até o momento (sem histórico 5d)."""
     report = []
 
-    # Status do autotrader
+    # 1. Status do autotrader
     health = check_autotrader_health()
     if health["running"]:
         report.append(f"✅ Autotrader: rodando (PID {health['pid']})")
     else:
         report.append("❌ Autotrader: PARADO")
 
-    # Performance (últimos 5 dias)
-    stats = check_performance()
-    report.append("\n📊 *Performance (5 dias)*")
+    # 2. Estatísticas intraday
+    s = check_intraday_stats()
+    wr = (s["wins"] / s["ops"] * 100) if s["ops"] > 0 else 0
 
-    for row in stats["sym_tf"]:
-        symbol, tf, ops, wins, losses, avg_pnl, total_pnl = row
-        if ops > 0:
-            wr = wins / ops * 100
-            report.append(f"  {symbol} {tf}: {ops} ops | W:{wins} L:{losses} | "
-                         f"WR {wr:.0f}% | PnL R${total_pnl:+.2f}")
+    report.append("")
+    report.append(f"📈 *Intrade* ({datetime.now().strftime('%H:%M')})")
+    if s["ops"] > 0:
+        report.append(
+            f"  Trades: {s['ops']} (W:{s['wins']} L:{s['losses']} · WR {wr:.0f}%)"
+        )
+        report.append(f"  PnL realizado: R$ {s['pnl_realized']:+.2f}")
+        report.append(
+            f"  PnL flutuante ({s['open_count']} abertas): R$ {s['open_pnl']:+.2f}"
+        )
+        report.append(f"  *PnL total: R$ {s['pnl_total']:+.2f}*")
+        report.append(
+            f"  Melhor trade: R$ {s['best_trade']:+.2f} · Pior: R$ {s['worst_trade']:+.2f}"
+        )
+        report.append(f"  Max drawdown: R$ {s['max_drawdown']:.2f}")
+    else:
+        report.append(f"  Sem trades fechados hoje")
+        if s["open_count"] > 0:
+            report.append(
+                f"  PnL flutuante ({s['open_count']} abertas): R$ {s['open_pnl']:+.2f}"
+            )
 
-    # WDO
-    wdo_status = check_wdo_activity()
-    report.append(f"\n🟡 WDO: {wdo_status}")
-
-    # Trades abertos
-    conn = sqlite3.connect(str(DB_PATH))
-    open_count = conn.execute(
-        "SELECT COUNT(*) FROM trades WHERE exit_time IS NULL"
-    ).fetchone()[0]
-    conn.close()
-
-    if open_count > 0:
-        report.append(f"⚠️ {open_count} posição(ões) aberta(s)")
+    # 3. Posições abertas (detalhe)
+    if s["open_count"] > 0:
+        try:
+            mt5_state = mt5_status()
+            report.append("")
+            report.append(f"⚠️ *{s['open_count']} posição(ões) aberta(s)*")
+            for p in mt5_state.get("positions", [])[:5]:
+                pnl = p.get("profit", 0)
+                icon = "🟢" if pnl >= 0 else "🔴"
+                report.append(
+                    f"  {icon} {p.get('symbol')} {p.get('type')} · PnL R$ {pnl:+.2f}"
+                )
+        except Exception:
+            pass
 
     return "\n".join(report)
 
@@ -578,25 +744,35 @@ def main():
         if paused:
             actions.append(f"⏸️ Pausado: {', '.join(paused)}")
         
-        # 5. Gerar e enviar relatório
+        # 5. Gerar e enviar relatório + gráfico intraday
         report = generate_report()
-        
+        stats = check_intraday_stats()
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        chart_path = render_pnl_chart(stats["pnl_cum"], today_str)
+
         # Montar mensagem final
         msg_parts = [
             f"🤖 *Copilot {datetime.now().strftime('%Hh%M')}*",
             "",
             report,
         ]
-        
+
         if actions:
             msg_parts.extend([
                 "",
                 "⚡ *Ações tomadas:*",
                 "\n".join(f"  • {a}" for a in actions)
             ])
-        
+
         notify_telegram("\n".join(msg_parts))
-        
+
+        # Envia gráfico (caption curta, Telegram aceita 1024)
+        chart_caption = (
+            f"📊 PnL realizado · {datetime.now().strftime('%d/%m %H:%M')} · "
+            f"Total: R$ {stats['pnl_total']:+.2f}"
+        )
+        notify_telegram_media(chart_path, chart_caption)
+
         log("=" * 50)
         log(f"Copilot finalizado. {len(actions)} ações tomadas.")
         log("=" * 50)
