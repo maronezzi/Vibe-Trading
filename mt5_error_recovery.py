@@ -171,13 +171,47 @@ def _fix_invalid_stops(symbol: str, side: str, sl_pts: int, point_val: float, ti
     return int(sl_pts * 1.5)
 
 
+# Tabela point_mult (executor pts → 1 unidade de preço em R$) por símbolo.
+# Deve casar com _specs em vt_autotrader.py. Garante 1 native pt = 1 executor pt
+# (point * point_mult = 1.0 para todos). Usado por _fix_invalid_stops_modify
+# pra retornar valores em EXECUTOR PTS, consistentes com a convenção do sistema.
+_POINT_MULT = {
+    "WIN": 1, "WDO": 1000, "BIT": 100, "DOL": 1000, "IND": 1, "WSP": 100,
+}
+
+
+def _get_point_mult(symbol: str) -> int:
+    for prefix, mult in _POINT_MULT.items():
+        if prefix in symbol:
+            return mult
+    return 1
+
+
 def _fix_invalid_stops_modify(symbol: str, ticket: str, sl_pts: int, point_val: float,
                                entry_price: float, direction: str) -> int:
+    """Calcula novo SL quando MODIFY falha com 'Invalid stops'.
+
+    Retorna SEMPRE em EXECUTOR PTS, consistente com a entrada (sl_pts) e com
+    o que cmd_modify() em mt5_executor.py espera. Como 1 executor pt = 1 native
+    pt (point * point_mult = 1.0), a conversão é dividir por (point_val * point_mult)
+    que é 1.0 para todos os símbolos — mas mantemos a fórmula explícita para
+    legibilidade e futura tolerância a símbolos onde isso não seja 1.
+
+    Bug original (jun/2026): a função dividia só por point_val, retornando native
+    pts. O safe_modify_sl() tratava como executor pts, e o próximo modify fazia
+    `* point` de novo, gerando SLs 100x (BIT), 1000x (WDO/DOL), 1x (WIN/IND)
+    maiores do que deveriam. Resultado: 3 retries com SL crescendo
+    exponencialmente, todos rejeitados, trade ficava com SL original errado.
+    """
     from mt5_orchestrator import tick, info
     tick_data = tick(symbol)
     if not tick_data or tick_data.get("bid", 0) == 0:
         return sl_pts
     current = tick_data["bid"] if direction == "BUY" else tick_data["ask"]
+
+    # Multiplicador pra converter R$ → executor pts. 1 native pt = 1 executor pt
+    # por design do sistema, mas mantemos a divisão explícita.
+    pts_per_unit = point_val * _get_point_mult(symbol)  # = 1.0 para todos os símbolos atuais
 
     if direction == "BUY":
         current_sl_price = entry_price - sl_pts * point_val
@@ -186,7 +220,7 @@ def _fix_invalid_stops_modify(symbol: str, ticket: str, sl_pts: int, point_val: 
             stops = info_data.get("trade_stops_level", 0) if info_data and "error" not in info_data else 0
             min_dist = max(stops * point_val, point_val * 50)
             new_sl_price = current - min_dist
-            new_sl_pts = max(int((entry_price - new_sl_price) / point_val), 1)
+            new_sl_pts = max(int((entry_price - new_sl_price) / pts_per_unit), 1)
             _log(f"BUY SL acima do preço! sl={current_sl_price:.2f} current={current:.2f}. Novo: {new_sl_pts}pts")
             return new_sl_pts
     else:
@@ -196,7 +230,7 @@ def _fix_invalid_stops_modify(symbol: str, ticket: str, sl_pts: int, point_val: 
             stops = info_data.get("trade_stops_level", 0) if info_data and "error" not in info_data else 0
             min_dist = max(stops * point_val, point_val * 50)
             new_sl_price = current + min_dist
-            new_sl_pts = max(int((new_sl_price - entry_price) / point_val), 1)
+            new_sl_pts = max(int((new_sl_price - entry_price) / pts_per_unit), 1)
             _log(f"SELL SL abaixo do preço! sl={current_sl_price:.2f} current={current:.2f}. Novo: {new_sl_pts}pts")
             return new_sl_pts
 
@@ -212,10 +246,10 @@ def _fix_invalid_stops_modify(symbol: str, ticket: str, sl_pts: int, point_val: 
     if distance < min_dist:
         if direction == "BUY":
             new_sl_price = current - min_dist
-            return max(int((entry_price - new_sl_price) / point_val), 1)
+            return max(int((entry_price - new_sl_price) / pts_per_unit), 1)
         else:
             new_sl_price = current + min_dist
-            return max(int((new_sl_price - entry_price) / point_val), 1)
+            return max(int((new_sl_price - entry_price) / pts_per_unit), 1)
 
     return sl_pts
 
