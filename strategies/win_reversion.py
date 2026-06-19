@@ -78,9 +78,10 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     
     # Extra safety: don't fight strong trends
     # If EMA is very far from price, trend might be too strong for reversion
+    max_ema_dist = params.get("max_ema_dist", 0.015)  # 1.5% default for intraday
     if ema_val > 0:
         ema_dist = abs(price - ema_val) / ema_val
-        if ema_dist > 0.03:  # More than 3% from EMA — trend too strong
+        if ema_dist > max_ema_dist:
             return None
     
     # Calculate SL
