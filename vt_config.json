@@ -1,8 +1,8 @@
 {
-  "_version": 668,
-  "_updated_at": "2026-06-19T06:58:52.406350",
-  "_updated_by": "agi_17h_dol_halt_grid",
-  "_notes": "IND (Índice Cheio) e DOL (Dólar Cheio) removidos por decisão do Bruno em 2026-06-19. Apenas minis: WIN, BIT, WSP, WDO.",
+  "_version": 670,
+  "_updated_at": "2026-06-19T07:33:36.790245",
+  "_updated_by": "bruno_disable_bit_m30",
+  "_notes": "IND (\u00cdndice Cheio) e DOL (D\u00f3lar Cheio) removidos por decis\u00e3o do Bruno em 2026-06-19. Apenas minis: WIN, BIT, WSP, WDO.",
   "start_hour": 9,
   "start_minute": 5,
   "close_hour": 16,
@@ -201,7 +201,9 @@
     "hard_exit_minutes": 45
   },
   "disabled_symbols": [],
-  "disabled_timeframes": [],
+  "disabled_timeframes": [
+    "BIT_M30"
+  ],
   "max_daily_loss": -999999,
   "global_max_daily_trades": 999,
   "params_by_tf": {
@@ -350,11 +352,7 @@
     "WDO_M5": 3,
     "WDO_M15": 3,
     "WDO_M30": 4,
-    "WDO_H1": 5,
-    "DOL_M5": 2,
-    "DOL_M15": 3,
-    "DOL_M30": 2,
-    "DOL_H1": 3
+    "WDO_H1": 5
   },
   "halt_duration_minutes_by_tf": {
     "WIN_M5": 60,
@@ -372,11 +370,7 @@
     "WDO_M5": 45,
     "WDO_M15": 60,
     "WDO_M30": 90,
-    "WDO_H1": 90,
-    "DOL_M5": 120,
-    "DOL_M15": 120,
-    "DOL_M30": 120,
-    "DOL_H1": 120
+    "WDO_H1": 90
   },
   "halt_trading": false,
   "halt_new_trades": false,
