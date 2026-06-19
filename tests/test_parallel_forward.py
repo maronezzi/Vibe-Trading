@@ -179,7 +179,10 @@ class TestDiscoverPairs(unittest.TestCase):
         self.assertEqual(pairs, [])
 
     def test_current_vt_config_loads_correctly(self):
-        """Integration test: real vt_config.json should load all 6 symbols × 4 TFs = 24 pairs."""
+        """Integration test: real vt_config.json should load all active pairs.
+
+        2026-06-19: IND e DOL foram removidos. Esperado: 4 symbols × 4 TFs = 16 pairs.
+        """
         from vt_forward_backtest import discover_pairs
         import json
         config_path = Path(__file__).resolve().parent.parent / "vt_config.json"
@@ -187,13 +190,20 @@ class TestDiscoverPairs(unittest.TestCase):
             self.skipTest("vt_config.json not found")
         cfg = json.load(open(config_path))
         pairs = discover_pairs(cfg)
-        # Should have at least 6 symbols × 4 TFs = 24 pairs
-        self.assertGreaterEqual(len(pairs), 24)
+        # 2026-06-19: IND/DOL removidos — 4 minis × 4 TFs = 16 pairs
+        active_symbols = len(cfg.get("symbols", []))
+        active_tfs = len(cfg.get("timeframes", []))
+        expected_min = active_symbols * active_tfs
+        self.assertGreaterEqual(len(pairs), expected_min,
+            f"Esperado ao menos {expected_min} pairs ({active_symbols} symbols × {active_tfs} TFs), achou {len(pairs)}")
         # Each pair is (sym, tf, strategy, params)
         for p in pairs:
             self.assertEqual(len(p), 4)
             sym, tf, strategy, params = p
             self.assertIsInstance(sym, str)
+            # 2026-06-19: IND/DOL não devem mais aparecer nos pairs ativos
+            self.assertNotIn(sym, ["IND", "DOL"],
+                f"{sym} foi removido da config em 19/06/2026 — não deveria estar em discover_pairs")
             self.assertIn(tf, ["M5", "M15", "M30", "H1"])
             self.assertIsInstance(strategy, str)
             self.assertIsInstance(params, dict)

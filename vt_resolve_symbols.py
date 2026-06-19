@@ -28,7 +28,8 @@ with open(Path(__file__).parent / "vt_config.json") as f:
 def main():
     print(f"=== Resolução de Símbolos — {datetime.now().strftime('%Y-%m-%d %H:%M')} ===\n")
 
-    for root in CONFIG.get("symbols", ["WIN", "BIT", "DOL", "IND", "WSP", "WDO"]):
+    # 2026-06-19: lê apenas o que está em CONFIG["symbols"] (IND e DOL removidos).
+    for root in CONFIG.get("symbols", ["WIN", "BIT", "WSP", "WDO"]):
         try:
             symbol = resolve_symbol(root)
             if symbol:

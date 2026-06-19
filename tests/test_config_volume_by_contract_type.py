@@ -11,6 +11,15 @@ Referência:
 - https://blog.rico.com.br/mini-contratos
 - https://ajuda.nelogica.com.br/portal/pt-br/kb/articles/contratos-101
 - https://conteudos.xpi.com.br/mini-contratos/
+
+────────────────────────────────────────────────────────────────────────────────
+2026-06-19 — Bruno Maronezzi decidiu tirar IND (Índice Cheio) e DOL (Dólar
+Cheio) de circulação. Apenas os 4 minicontratos são operados a partir de hoje.
+
+Este arquivo continua documentando a regra B3 (cheio = 5, mini = 1) como
+referência viva, mas o ASSERT mudou: o que era "DOL/IND deve ter volume 5"
+agora é "DOL/IND não devem estar na config ativa" (fora de circulação).
+────────────────────────────────────────────────────────────────────────────────
 """
 
 import json
@@ -18,8 +27,8 @@ from pathlib import Path
 
 CONFIG_PATH = Path(__file__).parent.parent / "vt_config.json"
 
-# Mapeamento symbol_root -> tipo de contrato
-FULL_CONTRACTS = {"DOL", "IND"}  # contratos cheios (lote mínimo 5)
+# Mapeamento symbol_root -> tipo de contrato (referência, não assertado)
+FULL_CONTRACTS = {"DOL", "IND"}    # contratos cheios (lote mínimo 5)  — fora de circulação desde 19/06/2026
 MINI_CONTRACTS = {"WIN", "WDO", "BIT", "WSP"}  # minicontratos (lote mínimo 1)
 MIN_FULL_VOLUME = 5
 MIN_MINI_VOLUME = 1
@@ -31,31 +40,38 @@ def load_config():
         return json.load(f)
 
 
-def test_dol_is_full_contract_with_min_volume_5():
-    """DOL (dólar cheio DOLN26) deve ter volume 5 (lote mínimo B3)."""
-    cfg = load_config()
-    vol_by_sym = cfg.get("volume_by_symbol", {})
+# ─── IND e DOL: agora asserts "fora de circulação" ────────────────────────────
 
-    assert "DOL" in vol_by_sym, "DOL deve estar em volume_by_symbol"
-    assert vol_by_sym["DOL"] == 5, (
-        f"DOL é contrato CHEIO, lote mínimo B3 = 5 contratos. "
-        f"Config atual: {vol_by_sym['DOL']}. "
-        f"Volume 1 viola regra B3 e pode causar rejeição de ordens."
+def test_dol_out_of_circulation():
+    """DOL (dólar cheio) foi removido por decisão do Bruno em 2026-06-19.
+
+    Mantemos o teste vivo para garantir que ninguém reintroduza DOL sem
+    passar pela revisão explícita. Se DOL voltar, basta mudar o config
+    e este teste falhará — alerta intencional.
+    """
+    cfg = load_config()
+    assert "DOL" not in cfg.get("symbols", []), (
+        "DOL foi removido por decisão do Bruno em 19/06/2026. "
+        "Para reativar, confirme com ele e ajuste este teste."
+    )
+    assert "DOL" not in cfg.get("volume_by_symbol", {}), (
+        "DOL fora de circulação — não deve ter volume configurado."
     )
 
 
-def test_ind_is_full_contract_with_min_volume_5():
-    """IND (índice cheio INDM26) deve ter volume 5 (lote mínimo B3)."""
+def test_ind_out_of_circulation():
+    """IND (índice cheio) foi removido por decisão do Bruno em 2026-06-19."""
     cfg = load_config()
-    vol_by_sym = cfg.get("volume_by_symbol", {})
-
-    assert "IND" in vol_by_sym, "IND deve estar em volume_by_symbol"
-    assert vol_by_sym["IND"] == 5, (
-        f"IND é contrato CHEIO, lote mínimo B3 = 5 contratos. "
-        f"Config atual: {vol_by_sym['IND']}. "
-        f"Volume 1 viola regra B3 e pode causar rejeição de ordens."
+    assert "IND" not in cfg.get("symbols", []), (
+        "IND foi removido por decisão do Bruno em 19/06/2026. "
+        "Para reativar, confirme com ele e ajuste este teste."
+    )
+    assert "IND" not in cfg.get("volume_by_symbol", {}), (
+        "IND fora de circulação — não deve ter volume configurado."
     )
 
+
+# ─── Minis: regras B3 continuam valendo ───────────────────────────────────────
 
 def test_win_is_mini_contract_with_volume_1():
     """WIN (minicontrato WINQ26) deve ter volume 1 (lote mínimo mini)."""
@@ -105,41 +121,37 @@ def test_wsp_is_mini_contract_with_volume_1():
     )
 
 
-def test_all_symbols_have_volume_configured():
-    """Todos os 6 symbols devem ter volume_by_symbol explícito."""
+# ─── Cobertura total ──────────────────────────────────────────────────────────
+
+def test_all_active_symbols_have_volume_configured():
+    """Todos os symbols ativos (4 minis) devem ter volume_by_symbol explícito."""
     cfg = load_config()
     vol_by_sym = cfg.get("volume_by_symbol", {})
-    expected_symbols = {"WIN", "WDO", "BIT", "DOL", "IND", "WSP"}
+    active = set(cfg.get("symbols", []))
+    expected = {"WIN", "WDO", "BIT", "WSP"}
 
-    assert set(vol_by_sym.keys()) == expected_symbols, (
-        f"volume_by_symbol deve cobrir todos os 6 symbols. "
-        f"Esperado: {expected_symbols}, Atual: {set(vol_by_sym.keys())}"
+    assert active == expected, (
+        f"símbolos ativos esperados: {expected}, atual: {active}"
+    )
+    assert set(vol_by_sym.keys()) == expected, (
+        f"volume_by_symbol deve cobrir apenas os 4 minis ativos. "
+        f"Esperado: {expected}, Atual: {set(vol_by_sym.keys())}"
     )
 
 
-def test_resolved_symbols_match_full_vs_mini():
-    """Os resolved_symbols devem corresponder ao tipo (cheio vs mini)."""
+def test_resolved_symbols_only_minis():
+    """Apenas minis devem ter resolved_symbols (cheios fora de circulação)."""
     cfg = load_config()
     resolved = cfg.get("resolved_symbols", {})
 
-    # DOLN26 = dólar cheio (6 letras = N26)
-    # INDM26 = índice cheio
-    # WINQ26 = mini índice
-    # WDON26 = mini dólar
-    # BITM26 = mini bitcoin
-    # WSPM26 = mini S&P
-
-    full_expected = {"DOL": "DOLN26", "IND": "INDM26"}
     mini_expected = {"WIN": "WINQ26", "WDO": "WDON26", "BIT": "BITM26", "WSP": "WSPM26"}
-
-    for sym, expected in full_expected.items():
-        assert resolved.get(sym) == expected, (
-            f"{sym} deve ser contrato CHEIO ({expected}), "
-            f"atual: {resolved.get(sym)}"
-        )
 
     for sym, expected in mini_expected.items():
         assert resolved.get(sym) == expected, (
             f"{sym} deve ser MINICONTRATO ({expected}), "
             f"atual: {resolved.get(sym)}"
         )
+
+    # E nenhum contrato cheio presente
+    assert "DOL" not in resolved, "DOL fora de circulação — não deve ter resolved_symbol"
+    assert "IND" not in resolved, "IND fora de circulação — não deve ter resolved_symbol"
