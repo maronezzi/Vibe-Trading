@@ -86,8 +86,8 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     
     # Volume confirmation
     if bars and len(bars) >= 20:
-        recent_vol = sum(b["volume"] for b in bars[:5]) / 5
-        avg_vol = sum(b["volume"] for b in bars[:20]) / 20
+        recent_vol = sum(b.get("tick_volume", b.get("volume", 1)) for b in bars[:5]) / 5
+        avg_vol = sum(b.get("tick_volume", b.get("volume", 1)) for b in bars[:20]) / 20
         if avg_vol > 0 and recent_vol < avg_vol * 0.3:
             return None  # Very low volume — no conviction
     
