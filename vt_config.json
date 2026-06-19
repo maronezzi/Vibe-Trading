@@ -1,8 +1,8 @@
 {
-  "_version": 670,
-  "_updated_at": "2026-06-19T07:33:36.790245",
-  "_updated_by": "bruno_disable_bit_m30",
-  "_notes": "IND (\u00cdndice Cheio) e DOL (D\u00f3lar Cheio) removidos por decis\u00e3o do Bruno em 2026-06-19. Apenas minis: WIN, BIT, WSP, WDO.",
+  "_version": 672,
+  "_updated_at": "2026-06-19T11:08:12.780147",
+  "_updated_by": "trader_ia_11h",
+  "_notes": "auto-resolve vencimento: WSP: WSPM26 → WSPU26",
   "start_hour": 9,
   "start_minute": 5,
   "close_hour": 16,
@@ -103,7 +103,7 @@
   "resolved_symbols": {
     "WIN": "WINQ26",
     "BIT": "BITM26",
-    "WSP": "WSPM26",
+    "WSP": "WSPU26",
     "WDO": "WDON26"
   },
   "warmup_minutes": 15,
@@ -212,16 +212,17 @@
       "bb_period": 10,
       "bb_std": 1.5,
       "rsi_period": 7,
-      "rsi_overbought": 75,
+      "rsi_overbought": 70,
       "rsi_oversold": 25
     },
     "WIN_M15": {
-      "sl_atr_mult": 0.5,
+      "sl_atr_mult": 1.0,
       "bb_period": 10,
       "bb_std": 1.5,
       "rsi_period": 7,
       "rsi_overbought": 75,
-      "rsi_oversold": 30
+      "rsi_oversold": 25,
+      "cooldown_seconds": 600
     },
     "WIN_M30": {
       "sl_atr_mult": 0.8,
@@ -241,8 +242,8 @@
     "BIT_M5": {
       "sl_atr_mult": 1.0,
       "rsi_period": 7,
-      "rsi_overbought": 80,
-      "rsi_oversold": 20,
+      "rsi_overbought": 72,
+      "rsi_oversold": 28,
       "cooldown_seconds": 900,
       "macd_fast": 8
     },
@@ -253,7 +254,8 @@
       "adx_period": 14,
       "adx_threshold": 18,
       "pullback_pct": 0.1,
-      "rsi_overbought": 70
+      "rsi_overbought": 70,
+      "atr_multiplier": 1.5
     },
     "BIT_M30": {
       "sl_atr_mult": 1.0,
@@ -275,7 +277,7 @@
     "WSP_M5": {
       "sl_atr_mult": 1.5,
       "rsi_period": 7,
-      "rsi_overbought": 75,
+      "rsi_overbought": 68,
       "rsi_oversold": 25,
       "pullback_pct": 0.05
     },
