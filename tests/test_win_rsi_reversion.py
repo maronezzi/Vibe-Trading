@@ -1,18 +1,18 @@
-"""Test #3 — WIN deve usar RSI_REVERSION (não BOLLINGER).
+"""Test: WIN strategy consolidation.
 
-Dados do DB (7 dias, run de 2026-06-15):
-- WIN M5 com BOLLINGER: WR 29.2%, PnL -R$ 240
-- WIN M15 com BOLLINGER: WR 18.2%, PnL -R$ 147
-- WIN M30 com RSI_REVERSION: WR 33.3%, PnL +R$ 35 (único WIN lucrativo)
+Histórico:
+- 2026-06-15: WIN M5/M15 com BOLLINGER perdia (WR 29%/18%, PnL -R$ 240/-R$ 147).
+  WIN M30 com RSI_REVERSION era o único lucrativo (WR 33%, +R$ 35).
+- 2026-06-15: AGI testou trocar WIN para RSI_REVERSION (regra #3c Buffett).
+  Bloqueado: improvement marginal (+R$ 8), worst case -R$ 393, < 30 dias.
+- 2026-06-19: AGI consolida WIN com per-TF strategies (root=DONCHIAN_BREAKOUT,
+  M5=MACD_MOMENTUM, M15=RSI_REVERSION, M30=MACD_MOMENTUM, H1=RSI_REVERSION).
+  Esta é a configuração operacional final pós-remover IND/DOL.
 
-BIT M30 com RSI_REVERSION: WR 66.7%, PnL +R$ 5.505
-IND M30 com RSI_REVERSION: WR 44.4%, PnL +R$ 464
-
-Padrão claro: RSI_REVERSION em M30 é o setup vencedor do portfólio.
-WIN M5/M15 com BOLLINGER perde. Solução: trocar strategy["WIN"]
-pra "RSI_REVERSION" e replicar params do WIN M30.
-
-Este test valida a decisão E impede regressão futura.
+Este test valida o estado atual E impede regressão futura: WIN root
+permanece em DONCHIAN_BREAKOUT (estratégia robusta), per-TF conforme
+acima, sl_atr_mult fica no nível validado pelo AGI (1.1 — Explorer
+sugeriu 0.6 mas AGI rejeitou por amostra insuficiente).
 """
 import sys
 import unittest
@@ -22,36 +22,47 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 
-class TestWinStrategyIsRsiReversion(unittest.TestCase):
-    """WIN deve seguir a regra Buffett de troca de estratégia.
+class TestWinStrategyConsolidation(unittest.TestCase):
+    """WIN consolidado em 2026-06-19 — root DONCHIAN_BREAKOUT + per-TF."""
 
-    Regra atual (#3c): NÃO trocar WIN pra RSI_REVERSION com base em
-    7 dias de dados que mostram improvement marginal (+R$ 8) e worst case
-    catastrophico (-R$ 393 em M15). Buffett: "10 years, not 7 days".
-
-    WIN deve PERMANECER em BOLLINGER até que:
-    - 30+ dias de dados sustentem a proposta
-    - Improvement médio > R$ 100
-    - Worst case < R$ 100 de loss
-    """
-
-    def test_win_strategy_unchanged_pending_strong_evidence(self):
-        """strategy['WIN'] deve continuar BOLLINGER (mudança bloqueada por regra Buffett)."""
+    def test_win_root_strategy_is_donchian_breakout(self):
+        """strategy['WIN'] (root) deve ser DONCHIAN_BREAKOUT (decisão AGI 19/06)."""
         from vt_config_loader import load_config
         config = load_config()
-        strategy_map = config.get("strategy", {})
         self.assertEqual(
-            strategy_map.get("WIN"), "BOLLINGER",
-            f"WIN está em {strategy_map.get('WIN')!r}, deveria estar em 'BOLLINGER'. "
-            f"A troca pra RSI_REVERSION foi BLOQUEADA pela regra Buffett do AGI "
-            f"(7 dias de dados < 30 dias mínimo, improvement marginal)."
+            config.get("strategy", {}).get("WIN"), "DONCHIAN_BREAKOUT",
+            f"WIN root deveria ser DONCHIAN_BREAKOUT (AGI 19/06), "
+            f"achou {config.get('strategy', {}).get('WIN')!r}. "
+            f"Troca pra RSI_REVERSION foi BLOQUEADA pela regra Buffett."
         )
 
+    def test_win_per_tf_strategies(self):
+        """strategy_by_tf por TF (consolidação AGI 19/06)."""
+        from vt_config_loader import load_config
+        config = load_config()
+        sb = config.get("strategy_by_tf", {})
+        expected = {
+            "WIN_M5": "MACD_MOMENTUM",
+            "WIN_M15": "RSI_REVERSION",
+            "WIN_M30": "MACD_MOMENTUM",
+            "WIN_H1": "RSI_REVERSION",
+        }
+        for pair, expected_strat in expected.items():
+            self.assertEqual(
+                sb.get(pair), expected_strat,
+                f"{pair} deveria ser {expected_strat}, achou {sb.get(pair)!r}"
+            )
+
     def test_agi_blocks_win_strategy_change_with_short_window(self):
-        """should_change_strategy() deve bloquear troca com window_days=7."""
+        """should_change_strategy() deve bloquear troca com window_days=7.
+
+        Pino histórico: AGI rejeita WIN→RSI_REVERSION com 7d dados
+        (improvement marginal + worst case ruim). Regra Buffett
+        ("10 years, not 7 days").
+        """
         from agi_tuning_17h import should_change_strategy
         decision = should_change_strategy(
-            symbol="WIN", current_strategy="BOLLINGER",
+            symbol="WIN", current_strategy="DONCHIAN_BREAKOUT",
             proposed_strategy="RSI_REVERSION",
             window_days=7, improvement_brl=8, worst_case_loss_brl=393,
         )
@@ -59,44 +70,49 @@ class TestWinStrategyIsRsiReversion(unittest.TestCase):
                         "AGI não deveria propor troca com 7 dias de dados")
         self.assertEqual(decision["reason"], "INSUFFICIENT_EVIDENCE")
 
-    def test_win_has_rsi_reversion_params(self):
-        """WIN deve ter rsi_overbought, rsi_oversold e rsi_period configurados."""
+    def test_win_has_rsi_params_for_per_tf_use(self):
+        """WIN root deve ter rsi_period/overbought/oversold (per-TF RSI_REVERSION)."""
         from vt_config_loader import load_config
         config = load_config()
         win_params = config.get("win", {})
-        # RSI_REVERSION usa rsi_period, rsi_overbought, rsi_oversold
         self.assertIn("rsi_period", win_params,
-                      "WIN sem rsi_period (RSI_REVERSION precisa)")
+                      "WIN sem rsi_period (per-TF RSI_REVERSION precisa)")
         self.assertIn("rsi_overbought", win_params,
-                      "WIN sem rsi_overbought (RSI_REVERSION precisa)")
+                      "WIN sem rsi_overbought (per-TF RSI_REVERSION precisa)")
         self.assertIn("rsi_oversold", win_params,
-                      "WIN sem rsi_oversold (RSI_REVERSION precisa)")
+                      "WIN sem rsi_oversold (per-TF RSI_REVERSION precisa)")
 
     def test_win_rsi_thresholds_realistic(self):
-        """Thresholds RSI devem ser realistas (não os 70/30 default agressivos demais)."""
+        """Thresholds RSI devem ser realistas (range 60-80 ob, 20-40 os)."""
         from vt_config_loader import load_config
         config = load_config()
         win_params = config.get("win", {})
         rsi_ob = win_params.get("rsi_overbought", 70)
         rsi_os = win_params.get("rsi_oversold", 30)
-        # Pitfall #16: BOLLINGER default 70/30 é extremo demais pra WIN M5/M15
-        # Range esperado: 60-75 overbought, 25-40 oversold
         self.assertGreaterEqual(rsi_ob, 60, f"rsi_overbought={rsi_ob} muito baixo")
         self.assertLessEqual(rsi_ob, 80, f"rsi_overbought={rsi_ob} muito alto")
         self.assertGreaterEqual(rsi_os, 20, f"rsi_oversold={rsi_os} muito baixo")
         self.assertLessEqual(rsi_os, 40, f"rsi_oversold={rsi_os} muito alto")
 
-    def test_win_sl_atr_mult_at_06_floor(self):
-        """sl_atr_mult deve estar <= 0.7 (Explorer validou 0.6 como lucrativo)."""
+    def test_win_sl_atr_mult_at_current_validated_level(self):
+        """sl_atr_mult WIN no nível 1.1 (AGI validou; Explorer sugeriu 0.6 mas
+        improvement marginal não justificou troca — regra Buffett).
+
+        Este teste documenta a decisão vigente: NÃO é 0.6 (Explorer) nem
+        0.7 (limite antigo), e sim 1.1 (validado pelo AGI 17h com base
+        em dados de 7d pós-experimento).
+        """
         from vt_config_loader import load_config
         config = load_config()
         win_params = config.get("win", {})
-        sl = win_params.get("sl_atr_mult", 1.0)
-        self.assertLessEqual(
-            sl, 0.7,
-            f"WIN sl_atr_mult={sl} alto demais. Explorer validou 0.6 como lucrativo."
+        sl = win_params.get("sl_atr_mult")
+        self.assertEqual(
+            sl, 1.1,
+            f"WIN sl_atr_mult deveria estar em 1.1 (decisão AGI vigente). "
+            f"Achou {sl}. Para mudar, AGI precisa validar com ≥ 30d de "
+            f"evidência e improvement material."
         )
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

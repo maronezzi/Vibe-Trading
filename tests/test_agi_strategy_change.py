@@ -140,9 +140,15 @@ def test_apply_changes_updates_strategy_field(tmp_path):
     finally:
         agi_tuning_17h.save_params = original_save
 
-    # Verifica que strategy foi aplicada
-    assert len(applied) == 1
-    assert applied[0]["params"]["strategy"] == "EMA_PULLBACK"
+    # apply_changes() roda _optimize_dol_halt_grid internamente (lê config real do disco)
+    # e pode adicionar 1+ resultados. Verifica que a mudança de strategy está lá
+    # (independentemente de outros resultados de grid/halt).
+    assert len(applied) >= 1, f"Esperado >= 1 aplicação, achou {len(applied)}"
+    strategy_applied = [a for a in applied if "params" in a and "strategy" in a.get("params", {})]
+    assert len(strategy_applied) == 1, (
+        f"Esperado exatamente 1 aplicação de strategy, achou {len(strategy_applied)}: {applied}"
+    )
+    assert strategy_applied[0]["params"]["strategy"] == "EMA_PULLBACK"
     assert cfg["win"]["strategy"] == "EMA_PULLBACK"
     # Verifica que save_params foi chamado com strategy
     assert any("strategy" in params for sym, params in saved_calls)

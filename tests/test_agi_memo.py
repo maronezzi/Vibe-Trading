@@ -80,25 +80,38 @@ class TestMemoInjection(unittest.TestCase):
 
 
 class TestReenableSymbols(unittest.TestCase):
-    """apply_changes() deve HONRAR reenable_symbols e remover de disabled_symbols."""
+    """apply_changes() deve HONRAR reenable_symbols e remover de disabled_symbols.
+
+    2026-06-19 — Refatorado: o backup do config de produção agora fica
+    em tmp_path (isolado por teste, não compartilhado em /tmp). Antes
+    deste fix, múltiplos testes compartilhavam /tmp/_vt_config_real_backup.json
+    e o último writer vencia — causando corrupção quando rodava junto
+    com test_agi_strategy_change (que modificava apply_changes em monkey-patch).
+    """
 
     def setUp(self):
-        # Backup do config de produção — testes não podem tocar o real
+        # 2026-06-19: backup isolado por teste via tmp_path (era /tmp compartilhado)
         import shutil
+        import tempfile
         from vt_config_loader import load_config, save_full_config
         self._load = load_config
         self._save = save_full_config
-        # Salvar config real em tmp
+        # Snapshot do config real em arquivo tmp desta instância
+        self._backup_dir = tempfile.mkdtemp(prefix="vt_test_")
+        self._backup_path = f"{self._backup_dir}/vt_config_real.json"
         self._real_config = load_config(force=True)
-        with open("/tmp/_vt_config_real_backup.json", "w") as f:
+        with open(self._backup_path, "w") as f:
             json.dump(self._real_config, f)
 
     def tearDown(self):
-        # Restaurar config real após teste
+        # 2026-06-19: restaura config real e limpa tmp_dir (era /tmp compartilhado)
         import shutil
-        with open("/tmp/_vt_config_real_backup.json") as f:
-            real = json.load(f)
-        self._save(real, updated_by="test_agi_memo_teardown")
+        try:
+            with open(self._backup_path) as f:
+                real = json.load(f)
+            self._save(real, updated_by="test_agi_memo_teardown")
+        finally:
+            shutil.rmtree(self._backup_dir, ignore_errors=True)
 
     def _call_apply_changes(self, llm_result, config_overrides):
         """Wrapper: importa apply_changes e usa config real + overrides.

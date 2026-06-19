@@ -1,7 +1,7 @@
 {
-  "_version": 631,
-  "_updated_at": "2026-06-19T06:19:44.205992",
-  "_updated_by": "bruno_remove_full_contracts_final_v3",
+  "_version": 663,
+  "_updated_at": "2026-06-19T06:49:56.645252",
+  "_updated_by": "bruno_test_fix_post_pytest_clean",
   "_notes": "IND (\u00cdndice Cheio) e DOL (D\u00f3lar Cheio) removidos por decis\u00e3o do Bruno em 2026-06-19. Apenas minis: WIN, BIT, WSP, WDO.",
   "start_hour": 9,
   "start_minute": 5,
