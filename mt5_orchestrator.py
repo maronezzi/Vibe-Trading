@@ -130,12 +130,41 @@ def modify_sl(symbol: str, ticket: int, new_sl_pts: int) -> dict:
     return result
 
 
+def symbol_info(symbol: str) -> dict:
+    """Contract specs (point, digits, tick_size, tick_value, volume, margin, stops)."""
+    return _run_wine(EXECUTOR_WIN, "symbol_info", symbol)
+
+
+def book(symbol: str) -> dict:
+    """Market depth (DOM / Level 2)."""
+    return _run_wine(EXECUTOR_WIN, "book", symbol)
+
+
+def orders() -> dict:
+    """Pending orders with full details."""
+    return _run_wine(EXECUTOR_WIN, "orders")
+
+
+def bars(symbol: str, tf_str: str = "M5", count: int = 50) -> dict:
+    """OHLCV bars. tf_str: M1/M5/M15/M30/H1/H4/D1."""
+    return _run_wine(EXECUTOR_WIN, "bars", symbol, tf_str, str(count))
+
+
+def history(symbol: str = None, days: int = 7) -> dict:
+    """Deal history for the last N days."""
+    args = ["history"]
+    if symbol:
+        args.append(symbol)
+    args.append(str(days))
+    return _run_wine(EXECUTOR_WIN, *args, timeout=60)
+
+
 if __name__ == "__main__":
     # CLI de teste
     import sys
     if len(sys.argv) < 2:
         print("Uso: python mt5_orchestrator.py <comando>")
-        print("Comandos: status, tick WINQ26, info WINQ26, buy WINQ26 1 200, sell WINQ26 1 200, close WINQ26, close_all, resolve WIN")
+        print("Comandos: status, tick, info, symbol_info, book, orders, bars, history, buy, sell, close, close_all, resolve")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -163,3 +192,18 @@ if __name__ == "__main__":
         print(json.dumps(close_all(), indent=2))
     elif cmd == "resolve":
         print(f"Best {sys.argv[2]}: {resolve_symbol(sys.argv[2])}")
+    elif cmd == "symbol_info":
+        print(json.dumps(symbol_info(sys.argv[2]), indent=2))
+    elif cmd == "book":
+        print(json.dumps(book(sys.argv[2]), indent=2))
+    elif cmd == "orders":
+        print(json.dumps(orders(), indent=2))
+    elif cmd == "bars":
+        sym = sys.argv[2]
+        tf = sys.argv[3] if len(sys.argv) > 3 else "M5"
+        cnt = int(sys.argv[4]) if len(sys.argv) > 4 else 50
+        print(json.dumps(bars(sym, tf, cnt), indent=2))
+    elif cmd == "history":
+        sym = sys.argv[2] if len(sys.argv) > 2 else None
+        days = int(sys.argv[3]) if len(sys.argv) > 3 else 7
+        print(json.dumps(history(sym, days), indent=2))

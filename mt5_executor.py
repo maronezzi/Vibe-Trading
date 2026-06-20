@@ -81,7 +81,7 @@ def get_min_sl_points(symbol):
 def cmd_status():
     acc = mt5.account_info()
     if not acc:
-        print(json.dumps({"error": "sem conta"}))
+        print(json.dumps({"error": "no account connected", "error_code": "NO_ACCOUNT"}))
         return
 
     positions = mt5.positions_get()
@@ -94,12 +94,18 @@ def cmd_status():
                 "type": "BUY" if p.type == 0 else "SELL",
                 "volume": p.volume,
                 "price_open": p.price_open,
+                "price_current": p.price_current,
                 "sl": p.sl,
                 "tp": p.tp,
                 "profit": p.profit,
                 "swap": p.swap,
                 "comment": p.comment,
                 "time": str(p.time),
+                "magic": p.magic,
+                "identifier": p.identifier,
+                "time_msc": p.time_msc,
+                "reason": p.reason,
+                "external_id": p.external_id,
             })
 
     orders = mt5.orders_get()
@@ -313,6 +319,7 @@ def cmd_close(symbol):
         return True
 
     closed = 0
+    results = []
     for pos in positions:
         tick = mt5.symbol_info_tick(pos.symbol)
         if not tick:
@@ -342,13 +349,28 @@ def cmd_close(symbol):
 
         result = mt5.order_send(request)
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            profit = pos.profit
-            log(f"✅ Fechou {pos.symbol} ticket={pos.ticket} | PnL: R${profit:+.2f}")
+            log(f"✅ Fechou {pos.symbol} ticket={pos.ticket} | PnL: R${pos.profit:+.2f}")
             closed += 1
+            results.append({
+                "ticket": pos.ticket,
+                "symbol": pos.symbol,
+                "type": "BUY" if pos.type == 0 else "SELL",
+                "volume": pos.volume,
+                "entry_price": pos.price_open,
+                "close_price": result.price,
+                "profit": pos.profit,
+                "swap": pos.swap,
+                "magic": pos.magic,
+            })
         else:
             log(f"❌ Falha ao fechar {pos.ticket}: {result.comment if result else 'sem resultado'}", "ERROR")
+            results.append({
+                "ticket": pos.ticket,
+                "symbol": pos.symbol,
+                "error": result.comment if result else "sem resultado",
+            })
 
-    print(json.dumps({"status": "ok", "closed": closed, "total": len(positions)}))
+    print(json.dumps({"status": "ok", "closed": closed, "total": len(positions), "details": results}))
     return closed == len(positions)
 
 
@@ -370,6 +392,81 @@ def cmd_close_all():
             closed += 1
 
     print(json.dumps({"status": "ok", "closed": closed, "total": total}))
+
+
+def cmd_symbol_info(symbol):
+    """Contract specs: point, digits, tick_size, tick_value, volume limits, margin, stops."""
+    info = mt5.symbol_info(symbol)
+    if not info:
+        print(json.dumps({"error": f"símbolo {symbol} não encontrado"}))
+        return
+    print(json.dumps({
+        "name": info.name,
+        "point": info.point,
+        "digits": info.digits,
+        "tick_size": getattr(info, 'trade_tick_size', info.point),
+        "tick_value": getattr(info, 'trade_tick_value', 0),
+        "contract_size": info.trade_contract_size,
+        "volume_min": info.volume_min,
+        "volume_max": info.volume_max,
+        "volume_step": info.volume_step,
+        "margin_initial": info.margin_initial,
+        "margin_maintenance": info.margin_maintenance,
+        "trade_stops_level": info.trade_stops_level,
+        "trade_freeze_level": info.trade_freeze_level,
+        "swap_long": info.swap_long,
+        "swap_short": info.swap_short,
+        "currency_base": info.currency_base,
+        "currency_profit": info.currency_profit,
+        "trade_mode": info.trade_mode,
+    }, indent=2))
+
+
+def cmd_book(symbol):
+    """Market depth (DOM / Level 2)."""
+    book = mt5.market_book_get(symbol)
+    if not book:
+        print(json.dumps({"error": f"sem book para {symbol}"}))
+        return
+    depth = []
+    for entry in book:
+        depth.append({
+            "type": entry.type,
+            "price": entry.price,
+            "volume": entry.volume,
+        })
+    print(json.dumps({"symbol": symbol, "book": depth}))
+
+
+def cmd_orders():
+    """Pending orders with full details."""
+    orders = mt5.orders_get()
+    if not orders:
+        print(json.dumps({"orders": [], "count": 0}))
+        return
+    ord_list = []
+    for o in orders:
+        ord_list.append({
+            "ticket": o.ticket,
+            "symbol": o.symbol,
+            "type": o.type,
+            "type_time": o.type_time,
+            "state": o.state,
+            "volume_initial": o.volume_initial,
+            "volume_current": o.volume_current,
+            "price_open": o.price_open,
+            "sl": o.sl,
+            "tp": o.tp,
+            "price_current": o.price_current,
+            "magic": o.magic,
+            "comment": o.comment,
+            "time_setup": str(o.time_setup),
+            "time_expiration": str(o.time_expiration) if o.time_expiration else None,
+            "time_done": str(o.time_done) if o.time_done else None,
+            "reason": o.reason,
+            "position_id": o.position_id,
+        })
+    print(json.dumps({"orders": ord_list, "count": len(ord_list)}))
 
 
 def cmd_modify(symbol, ticket, new_sl_pts):
@@ -439,7 +536,9 @@ def cmd_tick(symbol):
         "ask": tick.ask,
         "last": tick.last,
         "volume": tick.volume,
+        "volume_real": getattr(tick, 'volume_real', 0),
         "time": str(tick.time),
+        "time_msc": getattr(tick, 'time_msc', 0),
         "flags": tick.flags,
     }, indent=2))
 
@@ -500,7 +599,8 @@ def cmd_bars(symbol, tf_str="M5", count=50):
     """Busca barras OHLCV do MT5."""
     tf_map = {
         "M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5,
-        "M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1,
+        "M15": mt5.TIMEFRAME_M15, "M30": mt5.TIMEFRAME_M30,
+        "H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4,
         "D1": mt5.TIMEFRAME_D1,
     }
     tf = tf_map.get(tf_str, mt5.TIMEFRAME_M5)
@@ -519,6 +619,7 @@ def cmd_bars(symbol, tf_str="M5", count=50):
             "low": float(r["low"]),
             "close": float(r["close"]),
             "volume": int(r["tick_volume"]),
+            "real_volume": int(r["real_volume"]),
         })
     print(json.dumps({"symbol": symbol, "timeframe": tf_str, "bars": bars}))
 
@@ -544,14 +645,17 @@ def cmd_history(symbol=None, days=7):
             "ticket": d.ticket,
             "symbol": d.symbol,
             "type": "BUY" if d.type == 0 else "SELL",
+            "deal_type": d.reason,
             "volume": d.volume,
             "price": d.price,
             "profit": d.profit,
             "swap": d.swap,
             "commission": d.commission,
+            "fee": getattr(d, 'fee', 0.0),
             "comment": d.comment,
             "magic": d.magic,
             "time": str(d.time),
+            "time_msc": d.time_msc,
             "position_id": d.position_id,
             "entry_id": d.position_id,
         })
@@ -597,6 +701,14 @@ def main():
         elif cmd == "info":
             symbol = sys.argv[2]
             cmd_info(symbol)
+        elif cmd == "symbol_info":
+            symbol = sys.argv[2]
+            cmd_symbol_info(symbol)
+        elif cmd == "book":
+            symbol = sys.argv[2]
+            cmd_book(symbol)
+        elif cmd == "orders":
+            cmd_orders()
         elif cmd == "bars":
             symbol = sys.argv[2]
             tf_str = sys.argv[3] if len(sys.argv) > 3 else "M5"
