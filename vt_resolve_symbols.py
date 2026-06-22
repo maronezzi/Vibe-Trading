@@ -1,44 +1,72 @@
 #!/usr/bin/env python3
 """
-Vibe-Trading Symbol Resolver — verifica e loga o contrato mais líquido.
-Roda às 08:55 (antes do pregão) pra garantir que estamos operando o contrato certo.
-
-Lógica: usa vt_calendar.resolve_symbol que compara spread real do MT5
-e mantém o contrato vigente até < 3 dias úteis do vencimento.
+vt_resolve_symbols.py — Sincroniza vt_config.json com os contratos resolvidos em runtime.
 
 Uso:
-    python3 vt_resolve_symbols.py
-"""
+    python3 vt_resolve_symbols.py          # dry-run (mostra o que mudaria)
+    python3 vt_resolve_symbols.py --apply  # aplica mudanças no vt_config.json
 
-import sys
+Lógica:
+    Chama vt_calendar.resolve_symbol() para cada símbolo do config
+    e atualiza resolved_symbols no vt_config.json.
+"""
+import argparse
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from vt_calendar import resolve_symbol
-
-
-# Load config
-with open(Path(__file__).parent / "vt_config.json") as f:
-    CONFIG = json.load(f)
+PROJECT_DIR = Path(__file__).parent
+CONFIG_FILE = PROJECT_DIR / "vt_config.json"
 
 
 def main():
-    print(f"=== Resolução de Símbolos — {datetime.now().strftime('%Y-%m-%d %H:%M')} ===\n")
+    parser = argparse.ArgumentParser(description="Sync resolved_symbols in vt_config.json")
+    parser.add_argument("--apply", action="store_true", help="Apply changes (default: dry-run)")
+    args = parser.parse_args()
 
-    # 2026-06-19: lê apenas o que está em CONFIG["symbols"] (IND e DOL removidos).
-    for root in CONFIG.get("symbols", ["WIN", "BIT", "WSP", "WDO"]):
-        try:
-            symbol = resolve_symbol(root)
-            if symbol:
-                print(f"{root}: {symbol}")
-            else:
-                print(f"{root}: ERRO na resolução!")
-        except Exception as e:
-            print(f"{root}: ERRO — {e}")
-        print()
+    # Load config
+    with open(CONFIG_FILE, "r") as f:
+        config = json.load(f)
+
+    symbols = config.get("symbols", [])
+    resolved = config.get("resolved_symbols", {})
+    changes = []
+
+    # Import resolve_symbol
+    sys.path.insert(0, str(PROJECT_DIR))
+    from vt_calendar import resolve_symbol
+
+    for sym in symbols:
+        new_contract = resolve_symbol(sym)
+        old_contract = resolved.get(sym, "")
+        if new_contract != old_contract:
+            changes.append((sym, old_contract, new_contract))
+            print(f"  📝 {sym}: {old_contract or '(nenhum)'} → {new_contract}")
+        else:
+            print(f"  ✅ {sym}: {old_contract} (sem mudança)")
+
+    if not changes:
+        print("\n✅ Config já sincronizado — nada a fazer.")
+        return
+
+    if not args.apply:
+        print(f"\n🔍 Dry-run: {len(changes)} mudança(s) encontrada(s). Use --apply para aplicar.")
+        return
+
+    # Apply changes
+    for sym, old, new in changes:
+        resolved[sym] = new
+
+    config["resolved_symbols"] = resolved
+    config["_version"] = config.get("_version", 0) + 1
+    config["_updated_at"] = datetime.now().isoformat()
+    config["_updated_by"] = "vt_resolve_symbols.py"
+
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+    print(f"\n✅ {len(changes)} símbolo(s) atualizado(s) no vt_config.json")
 
 
 if __name__ == "__main__":
