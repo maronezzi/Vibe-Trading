@@ -1142,6 +1142,9 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                                     log(f"[VALIDATOR] SL corrigido localmente para {sl_pts}pts")
                                     notify_telegram(f"✅ SL aplicado (local): {symbol} ticket={ticket} → {sl_pts}pts")
                                 break
+            # LLM falhou/timeout e sem alertas locais — logar para diagnóstico
+            if not validation.get("llm_analysis") and not validation.get("alerts"):
+                log(f"[VALIDATOR] Sem análise LLM (timeout/falha) | {symbol} {direction} {tf}")
         except Exception as e:
             log(f"[VALIDATOR] Erro na validação (não bloqueante): {e}")
 
