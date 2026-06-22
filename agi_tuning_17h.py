@@ -1048,6 +1048,38 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
     except Exception as e:
         log.warning(f"Falha ao carregar memo {memo_path}: {e}")
 
+    # Signal analysis (RSI/ATR por resultado)
+    signal_lines = []
+    for sym, sa in perf.get("signal_analysis", {}).items():
+        parts = []
+        if sa.get("avg_rsi_win") is not None:
+            parts.append(f"RSI win={sa['avg_rsi_win']:.0f}")
+        if sa.get("avg_rsi_loss") is not None:
+            parts.append(f"loss={sa['avg_rsi_loss']:.0f}")
+        if sa.get("avg_atr_win") is not None:
+            parts.append(f"ATR win={sa['avg_atr_win']:.0f}")
+        if sa.get("avg_atr_loss") is not None:
+            parts.append(f"loss={sa['avg_atr_loss']:.0f}")
+        if parts:
+            signal_lines.append(f"  {sym}: {' | '.join(parts)}")
+
+    # SL analysis (efetividade do stop)
+    sl_lines = []
+    for sym, sla in perf.get("sl_analysis", {}).items():
+        sl_lines.append(
+            f"  {sym}: SL hit rate={sla['sl_hit_rate']:.0f}% ({sla['sl_hits']}/{sla['n_trades']})"
+            + (f" | avg SL dist={sla['avg_sl_pts']:.0f}pts" if sla.get("avg_sl_pts") else "")
+            + (f" | slippage={sla['avg_sl_slippage']:.0f}pts" if sla.get("avg_sl_slippage") else "")
+        )
+
+    # Direction analysis (BUY vs SELL)
+    direction_lines = []
+    for sym, dirs in perf.get("direction_analysis", {}).items():
+        for d, data in dirs.items():
+            direction_lines.append(
+                f"  {sym} {d}: {data['n_trades']}t | WR={data['win_rate']:.0f}% | PnL=R${data['total_pnl']:+.2f}"
+            )
+
     prompt = f"""Você é o AGI de tuning do bot Vibe-Trading (B3 futuros). Analise a performance abaixo e sugira ajustes CIRÚRGICOS nos parâmetros.
 
 {memo_block}## PERFORMANCE ({perf['period_days']} dias, desde {perf['cutoff_date']})
@@ -1058,6 +1090,15 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
 
 ### Exit reasons:
 {chr(10).join(exit_lines)}
+
+### Signal analysis (RSI/ATR no momento da entrada):
+{chr(10).join(signal_lines) if signal_lines else "  Sem dados de signal_detail"}
+
+### Efetividade do Stop Loss:
+{chr(10).join(sl_lines) if sl_lines else "  Sem dados de SL"}
+
+### Performance por direction (BUY vs SELL):
+{chr(10).join(direction_lines) if direction_lines else "  Sem dados de direction"}
 
 ## PROBLEMAS DETECTADOS
 {chr(10).join(issue_lines) if issue_lines else "  Nenhum problema crítico detectado"}
