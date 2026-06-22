@@ -1,7 +1,7 @@
 {
-  "_version": 685,
-  "_updated_at": "2026-06-22T12:02:53.861572",
-  "_updated_by": "meio_dia",
+  "_version": 726,
+  "_updated_at": "2026-06-22T14:43:45.388604",
+  "_updated_by": "agi_17h_v725",
   "_notes": "auto-resolve vencimento: WDO: WDON26 → WDOQ26",
   "start_hour": 9,
   "start_minute": 5,
@@ -55,23 +55,23 @@
     "vwap_period": 20,
     "vwap_buy_threshold": 1.002,
     "vwap_sell_threshold": 0.998,
-    "sl_atr_mult": 1.1,
+    "sl_atr_mult": 0.6,
     "trail_activate": 0.8,
     "trail_distance": 0.3,
     "cooldown_seconds": 180,
-    "max_daily_trades": 6,
+    "max_daily_trades": 4,
     "ema_fast": 5,
     "ema_slow": 13,
     "rsi_period": 7,
     "rsi_overbought": 75,
     "rsi_oversold": 24,
     "trend_min_spread": 0,
-    "breakeven_minutes": 8,
-    "time_trail_minutes": 20,
+    "breakeven_minutes": 10,
+    "time_trail_minutes": 25,
     "max_position_minutes": 60,
-    "pullback_pct": 0.15,
+    "pullback_pct": 0.12,
     "adx_period": 14,
-    "adx_threshold": 20,
+    "adx_threshold": 22,
     "hard_exit_minutes": 45
   },
   "win": {
@@ -80,15 +80,16 @@
     "rsi_period": 21,
     "rsi_overbought": 70,
     "rsi_oversold": 20,
-    "sl_atr_mult": 1.1,
+    "sl_atr_mult": 0.6,
     "trail_activate": 0.8,
     "trail_distance": 0.3,
     "cooldown_seconds": 180,
-    "max_daily_trades": 999,
-    "breakeven_minutes": 10,
-    "time_trail_minutes": 25,
-    "max_position_minutes": 60,
-    "hard_exit_minutes": 60
+    "max_daily_trades": 500,
+    "breakeven_minutes": 12,
+    "time_trail_minutes": 30,
+    "max_position_minutes": 75,
+    "hard_exit_minutes": 60,
+    "buy_enabled": false
   },
   "volume": 1,
   "volume_by_symbol": {
@@ -118,7 +119,7 @@
     "BIT_M15": "KELTNER_CHANNEL",
     "BIT_M30": "RSI_REVERSION",
     "BIT_H1": "MACD_MOMENTUM",
-    "WSP_M5": "MACD_MOMENTUM",
+    "WSP_M5": "RSI_REVERSION",
     "WSP_M15": "KELTNER_CHANNEL",
     "WSP_M30": "DONCHIAN_BREAKOUT",
     "WSP_H1": "KELTNER_CHANNEL",
@@ -157,14 +158,14 @@
     "vwap_period": 30,
     "vwap_buy_threshold": 1.01,
     "vwap_sell_threshold": 0.99,
-    "sl_atr_mult": 1.1,
-    "trail_activate": 0.3,
-    "trail_distance": 0.2,
+    "sl_atr_mult": 0.6,
+    "trail_activate": 0.507,
+    "trail_distance": 0.338,
     "cooldown_seconds": 180,
-    "max_daily_trades": 999,
-    "breakeven_minutes": 8,
-    "time_trail_minutes": 32,
-    "max_position_minutes": 45,
+    "max_daily_trades": 125,
+    "breakeven_minutes": 10,
+    "time_trail_minutes": 35,
+    "max_position_minutes": 55,
     "rsi_period": 7,
     "rsi_overbought": 80,
     "rsi_oversold": 20,
@@ -186,11 +187,11 @@
     "macd_fast": 9,
     "macd_slow": 21,
     "macd_signal": 12,
-    "sl_atr_mult": 1.1,
+    "sl_atr_mult": 1.2,
     "trail_activate": 0.8,
     "trail_distance": 0.3,
-    "cooldown_seconds": 180,
-    "max_daily_trades": 999,
+    "cooldown_seconds": 600,
+    "max_daily_trades": 62,
     "breakeven_minutes": 10,
     "time_trail_minutes": 30,
     "max_position_minutes": 65,
@@ -198,13 +199,12 @@
     "vwap_period": 10,
     "vwap_buy_threshold": 1.003,
     "vwap_sell_threshold": 0.997,
-    "hard_exit_minutes": 45
+    "hard_exit_minutes": 45,
+    "strategy": "RSI_REVERSION"
   },
   "disabled_symbols": [],
-  "disabled_timeframes": [
-    "BIT_M30"
-  ],
-  "max_daily_loss": -999999,
+  "disabled_timeframes": [],
+  "max_daily_loss": -500,
   "global_max_daily_trades": 999,
   "params_by_tf": {
     "WIN_M5": {
@@ -220,7 +220,7 @@
       "bb_period": 10,
       "bb_std": 1.5,
       "rsi_period": 10,
-      "rsi_overbought": 78,
+      "rsi_overbought": 70,
       "rsi_oversold": 16,
       "cooldown_seconds": 900
     },
@@ -408,8 +408,8 @@
     "max_daily_trades": 2
   },
   "win_m5": {
-    "sl_atr_mult": 1.5,
-    "cooldown_seconds": 360,
+    "sl_atr_mult": 1.4,
+    "cooldown_seconds": 480,
     "bb_std": 1.7
   },
   "win_m15": {
@@ -424,7 +424,8 @@
   },
   "wsp_m5": {
     "sl_atr_mult": 1.2,
-    "cooldown_seconds": 1800
+    "cooldown_seconds": 1800,
+    "strategy": "RSI_REVERSION"
   },
   "bit_m15": {
     "sl_atr_mult": 1.2,
@@ -449,5 +450,19 @@
     "sl_atr_mult": 1.2,
     "rsi_overbought": 72,
     "rsi_oversold": 20
+  },
+  "dol": {
+    "cooldown_seconds": 1800,
+    "sl_atr_mult": 1.0,
+    "max_daily_trades": 2,
+    "breakeven_minutes": 12
+  },
+  "ind": {
+    "breakeven_minutes": 15,
+    "time_trail_minutes": 40,
+    "buy_enabled": false,
+    "max_daily_trades": 6,
+    "sl_atr_mult": 0.8,
+    "cooldown_seconds": 420
   }
 }
