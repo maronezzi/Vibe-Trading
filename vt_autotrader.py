@@ -1837,16 +1837,20 @@ def run_daemon():
         else:
             log(f"  {root} → {contract}")
 
-    # Log das estratégias
-    strat_info = []
-    for sym, strat in CONFIG["strategy"].items():
-        strat_info.append(f"{sym}={strat}")
-    strat_str = " | ".join(strat_info)
+    # Log das estratégias (por TF — mostra a estratégia real que será executada)
+    by_tf = CONFIG.get("strategy_by_tf", {})
+    for sym in CONFIG["symbols"]:
+        tfs = CONFIG.get("timeframes_by_symbol", {}).get(sym, CONFIG.get("timeframes", []))
+        tf_strats = []
+        for tf in tfs:
+            key = f"{sym}_{tf}"
+            strat = by_tf.get(key, CONFIG["strategy"].get(sym, "VWAP"))
+            tf_strats.append(f"{tf}={strat}")
+        log(f"  {sym}: {' | '.join(tf_strats)}")
 
     log("=" * 60)
     log("Vibe-Trading Autotrader SPLIT INICIADO")
     log(f"Símbolos: {CONFIG['symbols']}")
-    log(f"Estratégias: {strat_str}")
     for _s in CONFIG["symbols"]:
         _p = CONFIG.get(_s.lower(), {})
         log(f"{_s}: SL {_p.get('sl_atr_mult', 1.5)}x ATR | Trail {_p.get('trail_activate', 1.5)}x/{_p.get('trail_distance', 0.5)}x ATR")
@@ -1859,10 +1863,21 @@ def run_daemon():
     log("=" * 60)
 
     _syms = ", ".join(CONFIG["symbols"])
+    _strat_summary = []
+    _by_tf = CONFIG.get("strategy_by_tf", {})
+    for _sym in CONFIG["symbols"]:
+        _tfs = CONFIG.get("timeframes_by_symbol", {}).get(_sym, CONFIG.get("timeframes", []))
+        _tf_list = []
+        for _tf in _tfs:
+            _key = f"{_sym}_{_tf}"
+            _st = _by_tf.get(_key, CONFIG["strategy"].get(_sym, "VWAP"))
+            _tf_list.append(f"{_tf}={_st}")
+        _strat_summary.append(f"{_sym}: {', '.join(_tf_list)}")
+    _strat_block = "\n".join(f"  {s}" for s in _strat_summary)
     notify_telegram(
         f"🚀 *Vibe-Trading Autotrader*\n"
         f"⏰ {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
-        f"📊 {strat_str}\n"
+        f"📊 Estratégias por TF:\n{_strat_block}\n"
         f"🎯 Ativos: {_syms}\n"
         f"⏱️ Timeframes: {', '.join(CONFIG.get('timeframes', []))}"
     )
