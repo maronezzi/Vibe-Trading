@@ -13,4 +13,4 @@ if [ "$HOUR" -eq 16 ] && [ "$MIN" -ge 45 ]; then
     exit 0
 fi
 
-cd /home/bruno/Projects/Vibe-Trading && python3 vt_trade_watchdog.py 2>&1 | grep -v "^✅"
+cd /home/bruno/Projects/Vibe-Trading && python3 monitoring/vt_trade_watchdog.py 2>&1 | grep -v "^✅"

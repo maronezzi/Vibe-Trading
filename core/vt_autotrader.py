@@ -33,15 +33,15 @@ import signal
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary, sync_fees_from_mt5
-from mt5_orchestrator import status, buy, sell, close, close_all, tick, modify_sl, _run_wine, EXECUTOR_WIN
-from mt5_error_recovery import safe_buy, safe_sell, safe_modify_sl, safe_close
-from vt_config_loader import load_config
-from vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
-from vt_order_validator_v2 import validate_order
-from vt_calendar import is_trading_day, resolve_all_symbols, resolve_symbol, get_contract_expiry, _parse_contract_code
+from core.vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary, sync_fees_from_mt5
+from mt5.mt5_orchestrator import status, buy, sell, close, close_all, tick, modify_sl, _run_wine, EXECUTOR_WIN
+from mt5.mt5_error_recovery import safe_buy, safe_sell, safe_modify_sl, safe_close
+from core.vt_config_loader import load_config
+from core.vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
+from core.vt_order_validator_v2 import validate_order
+from core.vt_calendar import is_trading_day, resolve_all_symbols, resolve_symbol, get_contract_expiry, _parse_contract_code
 
 # ===== CONFIGURAÇÃO =====
 # Config carregada do vt_config.json com hot reload

@@ -39,7 +39,7 @@ fi
 # === 4. Iniciar autotrader ===
 log_line "🚀 Iniciando autotrader..."
 cd "$PROJECT"
-PYTHONUNBUFFERED=1 nohup python3 vt_autotrader.py >> "$LOG" 2>&1 &
+PYTHONUNBUFFERED=1 nohup python3 core/vt_autotrader.py >> "$LOG" 2>&1 &
 AUTO_PID=$!
 disown
 log_line "✅ Autotrader PID: $AUTO_PID"

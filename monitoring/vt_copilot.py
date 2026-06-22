@@ -20,10 +20,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 # Adicionar projeto ao path
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mt5_orchestrator import status as mt5_status, _run_wine, EXECUTOR_WIN
-from vt_config_loader import load_config
+from mt5.mt5_orchestrator import status as mt5_status, _run_wine, EXECUTOR_WIN
+from core.vt_config_loader import load_config
 
 # ===== CONFIGURAÇÃO =====
 DB_PATH = Path(__file__).parent / "vt_trades.db"
@@ -38,7 +38,7 @@ PAUSE_CRITERIA = {"min_trades": 15, "max_wr": 35, "max_pnl": 0}  # fallback (con
 def _load_pause_criteria():
     """Carrega pause_criteria do vt_config.json. Se disabled ou ausente, retorna None."""
     try:
-        from vt_config_loader import load_config
+        from core.vt_config_loader import load_config
         cfg = load_config()
         pc = cfg.get("pause_criteria", {})
         if not pc.get("enabled", False):
@@ -356,7 +356,7 @@ def check_performance():
 def _apply_pauses(paused_items: list, today: str):
     """Desativa símbolos/timeframes no config (disabled_symbols/disabled_timeframes).
     paused_items: lista de strings como "WIN", "WDO_M15" etc."""
-    from vt_config_loader import load_config, save_full_config
+    from core.vt_config_loader import load_config, save_full_config
 
     config = load_config(force=True)
     disabled_syms = set(config.get("disabled_symbols", []))
@@ -651,7 +651,7 @@ def generate_report():
 def _restore_pauses_if_needed():
     """No primeiro run do dia, reativa símbolos/timeframes desativados no dia anterior.
     Limpa disabled_symbols/disabled_timeframes do config."""
-    from vt_config_loader import load_config, save_full_config
+    from core.vt_config_loader import load_config, save_full_config
 
     pause_file = Path("/tmp/vt_paused_timeframes.json")
     if not pause_file.exists():

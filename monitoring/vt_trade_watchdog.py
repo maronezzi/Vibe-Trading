@@ -27,11 +27,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mt5_orchestrator import status as mt5_status, _run_wine, EXECUTOR_WIN
-from vt_config_loader import load_config
-from vt_trade_log import get_multiplier
+from mt5.mt5_orchestrator import status as mt5_status, _run_wine, EXECUTOR_WIN
+from core.vt_config_loader import load_config
+from core.vt_trade_log import get_multiplier
 
 # ===== CONFIG =====
 STATE_FILE = "/tmp/vt_autotrader_state.json"

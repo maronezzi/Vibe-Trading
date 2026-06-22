@@ -20,9 +20,9 @@ import sqlite3
 from datetime import datetime, date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mt5_orchestrator import status, close_all
+from mt5.mt5_orchestrator import status, close_all
 
 
 DB_PATH = Path(__file__).parent / "vt_trades.db"

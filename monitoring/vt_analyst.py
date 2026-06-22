@@ -32,10 +32,10 @@ from datetime import datetime
 from pathlib import Path
 from collections import deque
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mt5_orchestrator import _run_wine, EXECUTOR_WIN, status, tick
-from vt_config_loader import load_config
+from mt5.mt5_orchestrator import _run_wine, EXECUTOR_WIN, status, tick
+from core.vt_config_loader import load_config
 
 SNAPSHOT_FILE = Path("/tmp/vt_market_state.json")
 ANOMALY_FILE = Path("/tmp/vt_anomalies.jsonl")
@@ -99,7 +99,7 @@ def _init_metrics_buffer():
     """Cria METRICS_BUFFER dinamicamente a partir dos símbolos ativos no config."""
     buf = {}
     try:
-        from vt_config_loader import CONFIG as _cfg
+        from core.vt_config_loader import CONFIG as _cfg
         symbols = _cfg.get("symbols", ["WIN", "WDO", "BIT", "DOL", "IND", "WSP"])
     except Exception:
         symbols = ["WIN", "WDO", "BIT", "DOL", "IND", "WSP"]

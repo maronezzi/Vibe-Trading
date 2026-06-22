@@ -31,8 +31,8 @@ from typing import Optional
 PROJECT_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-from vt_forward_backtest import run_mini_backtest_pair, simulate_forward, fetch_bars_for_backtest, _resolve_pair_params
-from agi_tuning_17h import VALID_STRATEGIES
+from optimization.vt_forward_backtest import run_mini_backtest_pair, simulate_forward, fetch_bars_for_backtest, _resolve_pair_params
+from optimization.agi_tuning_17h import VALID_STRATEGIES
 
 log = logging.getLogger("experiment_runner")
 logging.basicConfig(

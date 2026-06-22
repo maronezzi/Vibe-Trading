@@ -31,9 +31,9 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from vt_config_loader import load_config, save_params, save_full_config
+from core.vt_config_loader import load_config, save_params, save_full_config
 
 # ─── Constants ───
 PROJECT_DIR = Path(__file__).parent
@@ -2409,7 +2409,7 @@ def main():
     # Regra: se Explorer achou config com PF>1.2 E melhoria >10%, auto-aplica
     explorer_applied = []
     if optimization:
-        from vt_config_loader import save_params as _save_params
+        from core.vt_config_loader import save_params as _save_params
         for sym, data in optimization.items():
             if sym.startswith("_"):
                 continue
