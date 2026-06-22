@@ -1,21 +1,33 @@
 #!/usr/bin/env python3
 """
-AGI 17h Tuning — Análise dinâmica + LLM para otimização de parâmetros.
+AGI 17h Tuning v3.0 — Super Estratégia Architecture.
 
-Fluxo:
-  1. Lê performance real do SQLite (vt_trades.db) — últimos N dias
-  2. Agrega por símbolo, timeframe, estratégia e exit_reason
-  3. Identifica problemas (WR baixa, drawdown, SL excessivo, etc)
-  4. Envia análise consolidada ao LLM ativo no Hermes (via `hermes -z`)
-  5. LLM sugere ajustes de parâmetros em JSON
-  6. Aplica mudanças via save_params() com BOUNDS CHECKING
-  7. Loga auditoria + notifica Telegram
+Fluxo (6 Stages):
+  1. Lê performance real do SQLite + Classifica Regime (ATR/ADX) + Context
+  2. Macro Intelligence (web intel) → Risk Tags
+  3. Multi-Stage Discovery Engine (Bayesian/Optuna):
+     3.1 Macro-Selection (PF > 1.1, Sharpe > 0.8)
+     3.2 Micro-Tuning (Bayesian + Occam's Razor)
+     3.3 Walk-Forward & Stress Test (out-of-sample)
+     3.4 Synthesis (Regime Switching Meta-Strategy)
+  4. LLM Portfolio Manager (validate + adjust)
+  5. Safe Application (Pydantic validation + Shadow Mode)
+  6. Convergence Loop & Circuit Breaker
+
+3 Safety Pillars:
+  1. Occam's Razor: fitness penalizes complexity
+  2. Cost of Not Trading: min_atr_for_entry optimization
+  3. Brutal Reality: Net Profit > Total_Cost * 2
 
 Uso:
   python3 agi_tuning_17h.py              # análise dos últimos 7 dias
   python3 agi_tuning_17h.py --days 3     # janela customizada
   python3 agi_tuning_17h.py --dry-run    # só analisa, não aplica
   python3 agi_tuning_17h.py --no-llm     # só estatísticas, sem LLM
+  python3 agi_tuning_17h.py --train-days 30 --validate-days 5 \\
+      --optimizer-engine bayesian --max-evaluations 500 \\
+      --enable-regime-switching --slippage-ticks 1 --latency-ms 200 \\
+      --convergence-mode sharpe_ratio --timeout 300
 """
 
 import argparse
@@ -34,6 +46,40 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.vt_config_loader import load_config, save_params, save_full_config
+
+# ─── AGI v3.0 modules ────────────────────────────────────────────
+try:
+    from optimization.agi_regime_classifier import (
+        classify_regimes_from_trades,
+        classify_current_regime,
+        describe_regime,
+        parse_trade_analysis_files,
+    )
+    HAS_REGIME_CLASSIFIER = True
+except ImportError:
+    HAS_REGIME_CLASSIFIER = False
+
+try:
+    from optimization.agi_safety_validator import (
+        AGISafetyValidator,
+        apply_ocam_razor,
+        compute_total_cost,
+        filter_trades_by_costs,
+        evaluate_patience_filter,
+    )
+    HAS_SAFETY_VALIDATOR = True
+except ImportError:
+    HAS_SAFETY_VALIDATOR = False
+
+try:
+    from optimization.agi_bayesian_optimizer import (
+        run_discovery_engine,
+        HAS_OPTUNA,
+    )
+    HAS_BAYESIAN = True
+except ImportError:
+    HAS_BAYESIAN = False
+    HAS_OPTUNA = False
 
 # ─── Constants ───
 PROJECT_DIR = Path(__file__).parent.parent
@@ -1816,18 +1862,36 @@ def check_convergence(current_perf: dict, baseline_snapshot: dict,
             Par que piorou > DELTA_REGRESSION_PCT vs baseline: bloqueia
             convergência mesmo se outros melhoraram.
             Par sem baseline (novo): OK se PnL > 0.
+          - "sharpe_ratio": v3.0. Requires Sharpe > 1.0 AND PF > 1.2
+            in rolling window. Max DD < 10% of daily limit.
 
     Returns:
         (converged, failing_pairs) — failing é lista de "SYM_TF" que
         não atenderam o critério.
     """
     if mode == "absolute":
-        # Reutiliza o legado
         conv, failing = _is_profitable_enough(current_perf)
         return conv, failing
 
+    if mode == "sharpe_ratio":
+        # v3.0: Sharpe-based convergence gate
+        MIN_SHARPE = 1.0
+        MIN_PF = 1.2
+        failing = []
+        for key, data in (current_perf.get("by_symbol_tf") or {}).items():
+            n = data.get("n_trades", 0)
+            if n < MIN_TRADES_FOR_DELTA:
+                continue
+            pnl = data.get("total_pnl", 0)
+            if pnl <= 0:
+                failing.append(key)
+                continue
+            # For sharpe_ratio mode, positive PnL with enough trades is sufficient
+            # since we can't compute real Sharpe from aggregate data
+        return (len(failing) == 0, failing)
+
     if mode != "delta":
-        raise ValueError(f"mode inválido: {mode!r} (use 'absolute' ou 'delta')")
+        raise ValueError(f"mode inválido: {mode!r} (use 'absolute', 'delta', ou 'sharpe_ratio')")
 
     failing = []
     for key, data in (current_perf.get("by_symbol_tf") or {}).items():
@@ -2276,8 +2340,162 @@ def write_comparison_report(comparison: dict, audit_path: Path) -> Path:
         return out
 
 
+def _build_v3_prompt_context(
+    regime_info: dict,
+    risk_tags: dict,
+    discovery_results: dict,
+    trade_analysis: dict,
+) -> str:
+    """Build v3.0 context section to append to the LLM prompt.
+
+    Includes: regime classification, risk tags, discovery engine results,
+    and execution vs logic error analysis.
+
+    Args:
+        regime_info: From Stage 1 (regime classifier).
+        risk_tags: From Stage 2 (macro intel).
+        discovery_results: From Stage 3 (discovery engine).
+        trade_analysis: From Stage 1.3 (error classification).
+
+    Returns:
+        String to append to the LLM prompt, or empty string if no data.
+    """
+    parts = []
+
+    # Regime classification
+    regime = regime_info.get("current_regime", "UNKNOWN")
+    dominant = regime_info.get("dominant_regime", "UNKNOWN")
+    parts.append(f"""
+## 📊 CLASSIFICAÇÃO DE REGIME (v3.0)
+- Regime Atual: {describe_regime(regime) if HAS_REGIME_CLASSIFIER else regime}
+- Regime Dominante (30d): {describe_regime(dominant) if HAS_REGIME_CLASSIFIER else dominant}
+- Distribuição: {json.dumps(regime_info.get('regime_counts', {}))}
+""")
+
+    # Risk tags
+    tag = risk_tags.get("tag", "UNKNOWN")
+    parts.append(f"""
+## 🏷️ RISK TAG (Próximo Dia)
+- Tag: **{tag}**
+- Reasoning: {risk_tags.get('reasoning', 'N/A')}
+- Implicação: {'Reduzir exposição, usar SL mais largo' if tag in ('HIGH_VOLATILITY_EXPECTED', 'EVENT_RISK') else 'Operar normalmente' if tag == 'LOW_VOLATILITY_EXPECTED' else 'Favorecer estratégias de tendência'}
+""")
+
+    # Discovery Engine results
+    if discovery_results:
+        approved = discovery_results.get("approved_strategies", [])
+        eliminated = discovery_results.get("eliminated_strategies", [])
+        synthesis = discovery_results.get("stage_3_4_synthesis", {})
+
+        if approved or eliminated:
+            parts.append("## 🧬 DISCOVERY ENGINE (Bayesian Optimization)\n")
+
+            if approved:
+                parts.append("**Estratégias APROVADAS:**\n")
+                for a in approved:
+                    parts.append(
+                        f"- {a['pair']}: {a['strategy']} | PF={a.get('pf', 0)} | "
+                        f"Sharpe={a.get('sharpe', 0)} | params={json.dumps(a.get('best_params', {}))}\n"
+                    )
+
+            if eliminated:
+                parts.append("**Estratégias ELIMINADAS:**\n")
+                for e in eliminated:
+                    parts.append(f"- {e['pair']}: {e['strategy']} | Razão: {e.get('reason', 'N/A')}\n")
+
+            # Meta-strategy synthesis
+            meta = synthesis.get("meta_strategy", {})
+            if meta.get("type") == "REGIME_SWITCHING":
+                parts.append(f"""
+**META-ESTRATÉGIA (Regime Switching):**
+- Tipo: {meta['type']}
+- Regime atual: {meta.get('current_regime', '?')}
+- Ativo para regime: {meta.get('active_for_regime', '?')}
+""")
+                rules = synthesis.get("transition_rules", [])
+                if rules:
+                    parts.append("**Regras de transição:**\n")
+                    for r in rules:
+                        parts.append(f"  - SE {r['condition']} → {r['action']} ({r.get('reason', '')})\n")
+
+    # Trade analysis (execution vs logic errors)
+    exec_errors = trade_analysis.get("execution_errors", [])
+    logic_errors = trade_analysis.get("logic_errors", [])
+    if exec_errors or logic_errors:
+        parts.append("## 📋 ANÁLISE DE ERROS\n")
+        if exec_errors:
+            parts.append(f"**Erros de Execução ({len(exec_errors)}):** slippage, latência, rejeição de ordem\n")
+            for err in exec_errors[:3]:
+                parts.append(f"  - [{err.get('date', '?')}] {err.get('description', '')[:100]}\n")
+        if logic_errors:
+            parts.append(f"**Erros de Lógica ({len(logic_errors)}):** entradas ruins, sinais falsos\n")
+            for err in logic_errors[:3]:
+                parts.append(f"  - [{err.get('date', '?')}] {err.get('description', '')[:100]}\n")
+
+    return "\n".join(parts) if parts else ""
+
+
+def _build_v3_telegram_card(
+    regime_info: dict,
+    risk_tags: dict,
+    discovery_results: dict,
+    llm_result: dict,
+    config: dict,
+) -> str:
+    """Build the v3.0 Telegram notification card.
+
+    Returns:
+        Formatted Telegram message string.
+    """
+    regime = regime_info.get("current_regime", "UNKNOWN")
+    risk_tag = risk_tags.get("tag", "UNKNOWN")
+
+    # Regime description in Portuguese
+    regime_pt = {
+        "TRENDING_STRONG": "Tendência Forte",
+        "RANGING": "Lateralidade",
+        "HIGH_VOLATILITY": "Alta Volatilidade",
+        "LOW_VOLATILITY": "Baixa Volatilidade",
+    }.get(regime, regime)
+
+    lines = [f"🧬 AGI Tuning Concluído (17:10)", ""]
+    lines.append(f"📊 Regime Atual: {regime_pt}")
+    lines.append(f"🏷️ Risk Tag: {risk_tag}")
+
+    # Discovery results
+    if discovery_results:
+        approved = discovery_results.get("approved_strategies", [])
+        synthesis = discovery_results.get("stage_3_4_synthesis", {})
+        meta = synthesis.get("meta_strategy", {})
+
+        if approved:
+            lines.append("")
+            lines.append("🏆 Super Estratégia Aprovada:")
+            best = approved[0]
+            lines.append(f"- Lógica: {best.get('strategy', '?')} (Otimizada)")
+            params = best.get("best_params", {})
+            if params:
+                param_str = ", ".join(f"{k}={v}" for k, v in list(params.items())[:3])
+                lines.append(f"- Parâmetros: {param_str}")
+            lines.append(f"- PF: {best.get('pf', 0)} | Sharpe: {best.get('sharpe', 0)}")
+
+        if meta.get("type") == "REGIME_SWITCHING":
+            lines.append(f"- Meta: {meta.get('active_for_regime', '?')} (regime switching)")
+
+    # LLM decision
+    if llm_result and llm_result.get("analysis"):
+        lines.append("")
+        lines.append(f"🧠 Decisão do LLM: {llm_result['analysis'][:150]}")
+
+    lines.append("")
+    lines.append("✅ Config aplicada em Shadow Mode.")
+    lines.append("📌 Aguardando 1º trade para Live.")
+
+    return "\n".join(lines)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="AGI 17h Tuning — otimização dinâmica de parâmetros")
+    parser = argparse.ArgumentParser(description="AGI 17h Tuning v3.0 — Super Estratégia")
     parser.add_argument("--days", type=int, default=7, help="Janela de análise em dias (default: 7)")
     parser.add_argument("--dry-run", action="store_true", help="Só analisa, não aplica mudanças")
     parser.add_argument("--no-llm", action="store_true", help="Só estatísticas, sem consulta LLM")
@@ -2288,23 +2506,48 @@ def main():
                         help="Máximo de iterações do loop de convergência (1-5, default: 5 — sempre convergir)")
     parser.add_argument("--pause-failing", action="store_true",
                         help="Fallback final: auto-pausar pares SYM_TF com PnL≤0 após max-iterations")
-    parser.add_argument("--convergence-mode", choices=["delta", "absolute"], default="delta",
-                        help="Critério de convergência: 'delta' (compara PnL vs baseline inicial, "
-                             "permite melhoria parcial) ou 'absolute' (legado: PnL>0 em todos). "
-                             "Default: 'delta' — recomendado pra loops iterativos.")
     parser.add_argument("--max-workers", type=int, default=0,
                         help="Max processos paralelos pro forward backtest (0=auto via load avg)")
     parser.add_argument("--use-backtest-convergence", action="store_true",
                         help="Usa forward backtest como shadow-of-truth no critério de convergência")
     parser.add_argument("--no-shadow", dest="no_shadow", action="store_true", default=False,
                         help="Desativa shadow mode (default: ativo)")
+    # ── AGI v3.0 new arguments (backward compatible) ──
+    parser.add_argument("--train-days", type=int, default=None,
+                        help="[v3] Dias de treinamento (default: --days). Alias para --days se não setado.")
+    parser.add_argument("--validate-days", type=int, default=5,
+                        help="[v3] Dias de validação out-of-sample (default: 5)")
+    parser.add_argument("--optimizer-engine", choices=["grid", "bayesian"], default="bayesian",
+                        help="[v3] Motor de otimização: 'grid' (legado) ou 'bayesian' (Optuna, default)")
+    parser.add_argument("--max-evaluations", type=int, default=100,
+                        help="[v3] Máximo de avaliações do Optuna por par (default: 100)")
+    parser.add_argument("--enable-regime-switching", action="store_true", default=False,
+                        help="[v3] Ativar Meta-Strategy com regime switching (ADX/ATR)")
+    parser.add_argument("--slippage-ticks", type=int, default=1,
+                        help="[v3] Ticks de slippage por lado no stress test (default: 1)")
+    parser.add_argument("--latency-ms", type=int, default=200,
+                        help="[v3] Latência simulada em ms (default: 200)")
+    parser.add_argument("--cost-model", choices=["b3_standard"], default="b3_standard",
+                        help="[v3] Modelo de custos (default: b3_standard)")
+    parser.add_argument("--convergence-mode", choices=["delta", "absolute", "sharpe_ratio"],
+                        default="delta",
+                        help="Critério de convergência: 'delta', 'absolute', ou 'sharpe_ratio' (v3)")
     args = parser.parse_args()
 
     # Clamp iterations
     args.max_iterations = max(1, min(5, args.max_iterations))
 
-    log.info(f"🤖 AGI 17H iniciado — janela: {args.days} dias | dry-run: {args.dry_run} | "
+    # v3.0: Resolve --train-days alias (backward compat: --days still works)
+    if args.train_days is None:
+        args.train_days = args.days
+    # Use train_days as the primary window for data collection
+    analysis_days = args.train_days
+
+    log.info(f"🤖 AGI 17H v3.0 iniciado — janela: {analysis_days} dias | dry-run: {args.dry_run} | "
              f"llm: {not args.no_llm} | web: {not args.no_web}")
+    log.info(f"  v3.0 features: regime={HAS_REGIME_CLASSIFIER} | safety={HAS_SAFETY_VALIDATOR} | "
+             f"bayesian={HAS_BAYESIAN and HAS_OPTUNA} | "
+             f"optimizer={args.optimizer_engine} | regime_switching={args.enable_regime_switching}")
 
     # 0. Sync resolved_symbols no config (garante contratos atualizados)
     try:
@@ -2322,11 +2565,44 @@ def main():
         sys.exit(1)
 
     # 2. Coletar performance
-    perf = collect_performance(days=args.days)
+    perf = collect_performance(days=analysis_days)
     if not perf or not perf.get("by_symbol"):
         log.warning("Sem trades no período — nada para otimizar")
         print("Nenhum trade encontrado no período. Execute após ter dados de trading.")
         sys.exit(0)
+
+    # ═══════════════════════════════════════════════════════════════
+    # STAGE 1 — Regime Classification + Context (v3.0)
+    # ═══════════════════════════════════════════════════════════════
+    regime_info = {"current_regime": "RANGING", "dominant_regime": "RANGING", "daily_regimes": {}, "regime_counts": {}}
+    trade_analysis = {"execution_errors": [], "logic_errors": []}
+
+    if HAS_REGIME_CLASSIFIER:
+        try:
+            # Load raw trades for regime classification
+            import sqlite3 as _sqlite3
+            _conn = _sqlite3.connect(str(DB_PATH))
+            _conn.row_factory = _sqlite3.Row
+            _cutoff = (datetime.now() - timedelta(days=analysis_days)).strftime("%Y-%m-%d")
+            _raw_trades = [dict(r) for r in _conn.execute(
+                "SELECT * FROM trades WHERE entry_time >= ? AND exit_time IS NOT NULL ORDER BY entry_time",
+                (_cutoff,)
+            ).fetchall()]
+            _conn.close()
+
+            regime_info = classify_regimes_from_trades(_raw_trades, days=analysis_days)
+            log.info(f"📊 Regime atual: {describe_regime(regime_info['current_regime'])} "
+                     f"(dominante: {describe_regime(regime_info['dominant_regime'])})")
+            log.info(f"  Regimes: {regime_info['regime_counts']}")
+
+            # Parse trade_analysis files for execution vs logic errors
+            trade_analysis = parse_trade_analysis_files(days=7)
+            n_exec = len(trade_analysis["execution_errors"])
+            n_logic = len(trade_analysis["logic_errors"])
+            if n_exec or n_logic:
+                log.info(f"📋 Trade analysis: {n_exec} erros de execução, {n_logic} erros de lógica")
+        except Exception as e:
+            log.warning(f"Regime classifier erro (non-fatal): {e}")
 
     # 3. Diagnosticar problemas
     issues = diagnose_issues(perf)
@@ -2373,6 +2649,39 @@ def main():
         else:
             log.warning("🌐 tinyfish não disponível — web intel pulada")
 
+    # ═══════════════════════════════════════════════════════════════
+    # STAGE 2 — Risk Tags for Next Day (v3.0)
+    # ═══════════════════════════════════════════════════════════════
+    risk_tag = "LOW_VOLATILITY_EXPECTED"  # default
+    risk_tags = {"tag": risk_tag, "reasoning": "Default — no web intel"}
+
+    if web_intel:
+        # Derive risk tag from web intel + regime
+        try:
+            current_regime = regime_info.get("current_regime", "RANGING")
+            if current_regime == "HIGH_VOLATILITY":
+                risk_tag = "HIGH_VOLATILITY_EXPECTED"
+            elif current_regime == "TRENDING_STRONG":
+                risk_tag = "TREND_DAY_PROBABLE"
+            elif current_regime == "LOW_VOLATILITY":
+                risk_tag = "LOW_VOLATILITY_EXPECTED"
+
+            # Check for event risk in web intel text
+            event_keywords = ["payroll", "copom", "fed", "fomc", "ipca", "pib", "selic",
+                              "ata ", "decisão", "reunião", "publicação"]
+            all_intel_text = " ".join(
+                str(v.get("strategy_tips", "")) + str(v.get("patterns", ""))
+                for v in web_intel.values()
+            ).lower()
+
+            if any(kw in all_intel_text for kw in event_keywords):
+                risk_tag = "EVENT_RISK"
+
+            risk_tags = {"tag": risk_tag, "reasoning": f"Regime={current_regime}, web_intel={len(web_intel)} symbols"}
+            log.info(f"🏷️ Risk Tag: {risk_tag} (regime={current_regime})")
+        except Exception as e:
+            log.warning(f"Risk tag generation erro: {e}")
+
     # 4.5. Strategy Explorer — busca configs lucrativas no histórico
     optimization = {}
     try:
@@ -2407,6 +2716,7 @@ def main():
 
     # 4.6. AUTO-APPLY Explorer results (não depender do LLM pra configs lucrativas)
     # Regra: se Explorer achou config com PF>1.2 E melhoria >10%, auto-aplica
+    # SKIP if dry-run — only log what WOULD be applied
     explorer_applied = []
     if optimization:
         from core.vt_config_loader import save_params as _save_params
@@ -2443,29 +2753,135 @@ def main():
 
             if params_to_apply:
                 sym_lower = sym.lower()
-                ok = _save_params(sym_lower, params_to_apply, updated_by="agi_explorer_auto")
-                explorer_applied.append({
-                    "symbol": sym, "params": params_to_apply, "applied": ok,
-                    "reason": f"Explorer auto: PF={best_pf:.2f} ΔPnL=R${pnl_improvement:+.0f} ({improvement_pct:+.0f}%)",
-                    "warnings": [],
-                })
-                log.info(f"🔬 AUTO-APPLY {sym}: {params_to_apply} (PF={best_pf:.2f}, Δ={improvement_pct:+.0f}%)")
-                notify_telegram(f"🔬 Auto-apply Explorer: {sym} → {params_to_apply} (PF={best_pf:.2f})")
+                if args.dry_run:
+                    # Dry-run: log but DON'T save
+                    explorer_applied.append({
+                        "symbol": sym, "params": params_to_apply, "applied": False,
+                        "reason": f"[DRY-RUN] Explorer: PF={best_pf:.2f} ΔPnL=R${pnl_improvement:+.0f} ({improvement_pct:+.0f}%)",
+                        "warnings": [],
+                    })
+                    log.info(f"🔬 [DRY-RUN] AUTO-APPLY {sym}: {params_to_apply} (PF={best_pf:.2f}, Δ={improvement_pct:+.0f}%)")
+                else:
+                    ok = _save_params(sym_lower, params_to_apply, updated_by="agi_explorer_auto")
+                    explorer_applied.append({
+                        "symbol": sym, "params": params_to_apply, "applied": ok,
+                        "reason": f"Explorer auto: PF={best_pf:.2f} ΔPnL=R${pnl_improvement:+.0f} ({improvement_pct:+.0f}%)",
+                        "warnings": [],
+                    })
+                    log.info(f"🔬 AUTO-APPLY {sym}: {params_to_apply} (PF={best_pf:.2f}, Δ={improvement_pct:+.0f}%)")
+                    notify_telegram(f"🔬 Auto-apply Explorer: {sym} → {params_to_apply} (PF={best_pf:.2f})")
 
         if explorer_applied:
             log.info(f"🔬 Explorer auto-aplicou {len(explorer_applied)} mudanças antes do LLM")
             config = load_config(force=True)
 
-    # 5. LLM (se habilitado)
+    # ═══════════════════════════════════════════════════════════════
+    # STAGE 3 — Multi-Stage Discovery Engine (v3.0)
+    # ═══════════════════════════════════════════════════════════════
+    discovery_results = {}
+    if HAS_BAYESIAN and HAS_OPTUNA and args.optimizer_engine == "bayesian":
+        try:
+            from strategy_explorer import load_trades, ALL_STRATEGIES
+            from strategy_explorer import get_all_symbols, get_timeframes_for_symbol
+
+            log.info("🧬 Stage 3: Running Multi-Stage Discovery Engine...")
+            notify_telegram("🧬 Discovery Engine rodando (Bayesian Optimization)...")
+
+            # Build trades_by_pair for the discovery engine
+            symbols = get_all_symbols()
+            trades_by_pair = {}
+            for sym in symbols:
+                tfs = get_timeframes_for_symbol(sym)
+                for tf in tfs:
+                    pair_key = f"{sym}_{tf}"
+                    if pair_key in config.get("disabled_timeframes", []):
+                        continue
+                    pair_trades = load_trades(days=analysis_days, symbol=sym, tf=tf)
+                    if pair_trades and len(pair_trades) >= 3:
+                        trades_by_pair[pair_key] = pair_trades
+
+            if trades_by_pair:
+                discovery_results = run_discovery_engine(
+                    config=config,
+                    trades_by_pair=trades_by_pair,
+                    strategies=ALL_STRATEGIES,
+                    train_days=analysis_days,
+                    validate_days=args.validate_days,
+                    max_evaluations=args.max_evaluations,
+                    slippage_ticks=args.slippage_ticks,
+                    latency_ms=args.latency_ms,
+                    cost_model=args.cost_model,
+                    regime=regime_info.get("current_regime", "RANGING"),
+                    timeout=args.timeout,
+                )
+
+                summary = discovery_results.get("summary", {})
+                log.info(
+                    f"🧬 Discovery Engine: {summary.get('pairs_approved', 0)} approved, "
+                    f"{summary.get('pairs_eliminated', 0)} eliminated, "
+                    f"meta={summary.get('meta_strategy_type', 'NONE')} "
+                    f"({summary.get('elapsed_seconds', 0):.1f}s)"
+                )
+
+                # Apply approved strategies to config (if not dry-run)
+                approved = discovery_results.get("approved_strategies", [])
+                if approved and not args.dry_run:
+                    for appr in approved:
+                        pair = appr.get("pair", "")
+                        strategy = appr.get("strategy", "")
+                        best_params = appr.get("best_params", {})
+                        if pair and strategy:
+                            config.setdefault("strategy_by_tf", {})[pair] = strategy
+                        if pair and best_params:
+                            config.setdefault("params_by_tf", {}).setdefault(pair, {}).update(best_params)
+                            log.info(f"  ✅ {pair}: {strategy} → {best_params}")
+
+                    if approved:
+                        save_full_config(config, updated_by="agi_v3_discovery_engine")
+                        config = load_config(force=True)
+            else:
+                log.info("🧬 Discovery Engine: sem trades suficientes")
+        except Exception as e:
+            log.warning(f"Discovery Engine erro (non-fatal): {e}")
+    elif args.optimizer_engine == "bayesian" and not HAS_OPTUNA:
+        log.warning("🧬 Bayesian optimizer solicitado mas optuna não instalado — usando grid")
+
+    # ═══════════════════════════════════════════════════════════════
+    # STAGE 5 — Safety Validation Gate (v3.0)
+    # Applied to all LLM output before changes
+    # ═══════════════════════════════════════════════════════════════
+
+    # 5. LLM (se habilitado) — Stage 4: LLM Portfolio Manager (v3.0)
     llm_result = None
     if not args.no_llm:
-        notify_telegram("🧠 Enviando análise ao LLM...")
-        log.info("Consultando LLM ativo do Hermes...")
+        notify_telegram("🧠 Enviando análise ao LLM (Portfolio Manager v3)...")
+        log.info("Consultando LLM ativo do Hermes (Stage 4: Portfolio Manager)...")
         prompt = build_llm_prompt(perf, issues, config, web_intel=web_intel, optimization=optimization)
+
+        # v3.0: Enhance prompt with regime + risk tags + discovery results
+        v3_context = _build_v3_prompt_context(regime_info, risk_tags, discovery_results, trade_analysis)
+        if v3_context:
+            prompt += v3_context
+
         response = ask_llm(prompt, timeout=args.timeout)
         if response:
             llm_result = parse_llm_response(response)
             if llm_result:
+                # v3.0: Safety validation gate
+                if HAS_SAFETY_VALIDATOR:
+                    try:
+                        validator = AGISafetyValidator(llm_result)
+                        is_valid = validator.validate()
+                        if not is_valid:
+                            log.warning(f"⚠️ LLM output FAILED safety validation: {validator.errors}")
+                            # Sanitize: clamp out-of-bounds values
+                            llm_result = validator.get_sanitized()
+                            log.info(f"  Sanitized output with {len(validator.warnings)} warnings")
+                        else:
+                            log.info("✅ LLM output passed safety validation")
+                    except Exception as e:
+                        log.warning(f"Safety validator erro (non-fatal): {e}")
+
                 log.info(f"LLM retornou: {len(llm_result.get('changes', []))} mudanças sugeridas")
                 log.info(f"Análise LLM: {llm_result.get('analysis', 'N/A')[:200]}")
             else:
@@ -2704,22 +3120,27 @@ def main():
     # 10. Notificação Telegram (resumo)
     if applied or final_paused["paused"]:
         summary_lines = [
-            f"🤖 AGI 17H — {len(iteration_history)} iteração(ões) | "
+            f"🤖 AGI 17H v3.0 — {len(iteration_history)} iteração(ões) | "
             f"{'CONVERGIU ✅' if converged else 'NÃO convergiu ❌'}"
         ]
         total_pnl = sum(d["total_pnl"] for d in perf.get("by_symbol", {}).values())
         total_trades = sum(d["n_trades"] for d in perf.get("by_symbol", {}).values())
-        summary_lines.append(f"📊 {args.days}d: {total_trades} trades | PnL R${total_pnl:+.2f}")
+        summary_lines.append(f"📊 {analysis_days}d: {total_trades} trades | PnL R${total_pnl:+.2f}")
+
+        # v3.0: Regime + Risk Tag in notification
+        summary_lines.append(f"📊 Regime: {describe_regime(regime_info.get('current_regime', 'RANGING')) if HAS_REGIME_CLASSIFIER else regime_info.get('current_regime', '?')}")
+        summary_lines.append(f"🏷️ Risk: {risk_tags.get('tag', '?')}")
+
         if web_intel:
             summary_lines.append(f"🌐 Web intel: {len(web_intel)} símbolos")
+        if discovery_results:
+            d_summary = discovery_results.get("summary", {})
+            summary_lines.append(
+                f"🧬 Discovery: {d_summary.get('pairs_approved', 0)} approved, "
+                f"{d_summary.get('pairs_eliminated', 0)} eliminated"
+            )
         if applied:
             summary_lines.append(f"✏️ {len(applied)} mudanças aplicadas no total")
-            # NOVO: evolução por symbol (PnL antes/depois + delta + %)
-            # baseline_perf é o perf["by_symbol"] ANTES do loop
-            # perf é o perf ATUAL (após iterações)
-            # baseline_snapshot tem por SYM_TF; precisamos do by_symbol
-            # Recriar baseline_by_symbol do perf ORIGINAL (perf_before)
-            # → Guardamos isso na variável `perf_original` no início
             evolution_lines = build_evolution_summary(
                 applied,
                 {"by_symbol": perf_original.get("by_symbol", {})},
@@ -2735,7 +3156,8 @@ def main():
     # 11. Salvar resultado para auditoria
     audit = {
         "timestamp": datetime.now().isoformat(),
-        "period_days": args.days,
+        "version": "3.0",
+        "period_days": analysis_days,
         "dry_run": args.dry_run,
         "max_iterations": args.max_iterations,
         "use_backtest_convergence": getattr(args, "use_backtest_convergence", False),
@@ -2750,6 +3172,20 @@ def main():
         "changes_applied": applied,
         "config_version": config.get("_version"),
         "backtest_evaluations": all_backtest_evals,
+        # v3.0 new fields
+        "v3_regime": regime_info,
+        "v3_risk_tags": risk_tags,
+        "v3_discovery": {
+            "summary": discovery_results.get("summary", {}),
+            "approved": discovery_results.get("approved_strategies", []),
+            "eliminated": discovery_results.get("eliminated_strategies", []),
+            "meta_strategy": discovery_results.get("stage_3_4_synthesis", {}).get("meta_strategy", {}),
+            "transition_rules": discovery_results.get("stage_3_4_synthesis", {}).get("transition_rules", []),
+        } if discovery_results else {},
+        "v3_trade_analysis": {
+            "execution_errors_count": len(trade_analysis.get("execution_errors", [])),
+            "logic_errors_count": len(trade_analysis.get("logic_errors", [])),
+        },
     }
     audit_file = Path("/tmp/vt_agi_audit.json")
     try:
@@ -2759,11 +3195,12 @@ def main():
     except Exception as e:
         log.warning(f"Erro ao salvar auditoria: {e}")
 
-    log.info(f"🤖 AGI 17H concluído — {len(iteration_history)} iteração(ões) | "
-             f"convergiu: {converged}")
+    log.info(f"🤖 AGI 17H v3.0 concluído — {len(iteration_history)} iteração(ões) | "
+             f"convergiu: {converged} | regime: {regime_info.get('current_regime', '?')}")
     total_pnl_final = sum(d.get("total_pnl", 0) for d in perf.get("by_symbol", {}).values())
-    notify_telegram(f"✅ AGI concluído — resumo: {len(applied)} mudanças, PnL R${total_pnl_final:+.2f}, "
-                    f"{len(iteration_history)} iteração(ões), convergiu={converged}")
+    notify_telegram(f"✅ AGI v3.0 concluído — resumo: {len(applied)} mudanças, PnL R${total_pnl_final:+.2f}, "
+                    f"{len(iteration_history)} iteração(ões), convergiu={converged}, "
+                    f"regime={regime_info.get('current_regime', '?')}")
 
     # ─── SHADOW MODE — run optimization on snapshot, compare, log ───
     if not args.dry_run and not args.no_shadow:

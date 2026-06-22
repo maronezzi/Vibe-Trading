@@ -52,13 +52,17 @@ LOAD_THRESHOLD_BUSY = 2.0  # load avg > this = busy (25% workers)
 SIM_WARMUP_BARS = 20         # bars skipped for indicator warmup
 SIM_MIN_BARS = 30            # min bars required to run simulation
 SIM_ATR_PERIOD = 14          # ATR period for trade management
-SIM_COOLDOWN_BARS = 5        # bars to wait after each exit
+SIM_COOLDOWN_BARS = 5        # DEFAULT bars to wait after each exit (overridden by config)
 SIM_TRAIL_ACTIVATE_ATR = 1.0 # trail activates after this × ATR profit
 SIM_TRAIL_DISTANCE_ATR = 0.2 # trail distance = this × ATR
 SIM_COMMISSION = 2.5         # commission per trade (R$)
 SIM_EOD_HOUR = 16            # EOD close hour (BRT)
 SIM_EOD_MINUTE = 45          # EOD close minute (BRT)
 SIM_BRT_OFFSET_HOURS = 3     # UTC → BRT offset
+SIM_WARMUP_MINUTES = 5       # minutes after market open to skip (matches bot warmup_minutes)
+SIM_WINDDOWN_MINUTES = 15    # minutes before close to skip (matches bot winddown_minutes)
+SIM_MARKET_OPEN_HOUR = 9     # market open hour (BRT)
+SIM_MARKET_OPEN_MINUTE = 5   # market open minute (BRT) — matches bot start_hour/start_minute
 
 # Bar count per timeframe (7-day forward backtest coverage)
 BAR_COUNT_PER_TF = {
@@ -189,8 +193,40 @@ def fetch_bars_for_backtest(symbol: str, tf: str, count: int = 500) -> list:
         return []
 
 
+def _resolve_sim_max_daily(params: dict, symbol: str, config: Optional[dict] = None) -> int:
+    """Resolve per-symbol daily trade limit for simulation.
+
+    Mirrors the autotrader's _resolve_max_daily_trades hierarchy:
+    1. params (merged base+TF override) → max_daily_trades
+    2. config[symbol_root].max_daily_trades
+    3. config["max_daily_trades"]
+    4. 15 (safety default)
+    """
+    # From merged params (most specific)
+    val = params.get("max_daily_trades")
+    if val is not None:
+        return int(val)
+    if config:
+        # From symbol-level config
+        sym_root = symbol.upper()
+        for key in ("WIN", "WDO", "BIT", "DOL", "IND", "WSP"):
+            if key in sym_root:
+                sym_root = key
+                break
+        sym_cfg = config.get(sym_root.lower(), {})
+        val = sym_cfg.get("max_daily_trades")
+        if val is not None:
+            return int(val)
+        # From root config
+        val = config.get("max_daily_trades")
+        if val is not None:
+            return int(val)
+    return 15  # safety default
+
+
 def simulate_forward(
-    symbol: str, tf: str, bars: list, strategy_name: str, params: dict
+    symbol: str, tf: str, bars: list, strategy_name: str, params: dict,
+    config: Optional[dict] = None,
 ) -> dict:
     """Bar-by-bar forward simulation. Returns metrics dict.
 
@@ -200,7 +236,11 @@ def simulate_forward(
     Trade lifecycle:
       - Entry: strategy.check_entry() returns {direction, sl_pts, ...}
       - Exit: SL hit intra-bar, trailing after 1.0x ATR, or EOD close at 16:45
-      - Cooldown: 5 bars after each exit
+      - Cooldown: from config (cooldown_seconds) converted to bars, or default 5 bars
+      - Per-symbol daily trade limits: max_daily_trades from config
+      - Warmup/winddown: skip entries in first/last N min of session
+      - Execution delay (simulate_execution_delay): when True, signal on bar N
+        enters at bar N+1's open price (realistic 1-bar delay)
 
     Returns:
       dict with keys: pnl, n_trades, wr, max_dd, decision
@@ -231,8 +271,30 @@ def simulate_forward(
     slip = spec["slip"]
     commission = SIM_COMMISSION
 
+    # ── Resolve realistic limits from config ──
+    # Cooldown: convert seconds → bars (approximate based on TF)
+    tf_minutes = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60}.get(tf, 5)
+    cooldown_seconds = params.get("cooldown_seconds", SIM_COOLDOWN_BARS * tf_minutes * 60)
+    cooldown_bars = max(1, int(cooldown_seconds / (tf_minutes * 60)))
+
+    # Per-symbol daily trade limit
+    max_daily = _resolve_sim_max_daily(params, symbol, config)
+
+    # Warmup/winddown from config (or defaults)
+    if config:
+        warmup_min = config.get("warmup_minutes", SIM_WARMUP_MINUTES)
+        winddown_min = config.get("winddown_minutes", SIM_WINDDOWN_MINUTES)
+    else:
+        warmup_min = SIM_WARMUP_MINUTES
+        winddown_min = SIM_WINDDOWN_MINUTES
+
     # bars are newest-first; reverse to chronological for simulation
     chronological = list(reversed(bars))
+
+    # Execution delay: read from config (default True for realism)
+    exec_delay = True
+    if config:
+        exec_delay = config.get("simulate_execution_delay", True)
 
     pos = 0
     ep = 0.0
@@ -241,6 +303,10 @@ def simulate_forward(
     trail_on = False
     cooldown_until = 0
     trades = []
+    pending_signal = None  # stores signal from bar N, executed on bar N+1
+
+    # Per-symbol daily trade tracking (across simulated days)
+    daily_counts = {}  # {day_str: count}
 
     import datetime  # used for EOD close check
 
@@ -250,16 +316,55 @@ def simulate_forward(
         price = float(bar["close"])
         high = float(bar["high"])
         low = float(bar["low"])
+        bar_open = float(bar["open"])
         bar_ts = int(bar["time"])
 
         atr = utils["calculate_atr"](prev_bars, SIM_ATR_PERIOD)
         if atr <= 0:
             continue
 
+        # ── Execute pending signal from previous bar (1-bar execution delay) ──
+        if pending_signal is not None and pos == 0:
+            psig = pending_signal
+            pending_signal = None
+            psig_dir = psig["direction"]
+            psig_sl = psig["sl_pts"]
+            psig_atr = psig["atr"]
+            if psig_dir in ("BUY", "SELL"):
+                # Entry at this bar's open (delayed execution)
+                pos = 1 if psig_dir == "BUY" else -1
+                ep = bar_open
+                e_atr = psig_atr
+                sl_price = ep - psig_sl if pos == 1 else ep + psig_sl
+                trail_on = False
+                # Fall through to exit logic for this bar
+            # If direction invalid, pending_signal is discarded
+
         if pos == 0:
             # Check cooldown
             if i < cooldown_until:
                 continue
+
+            # ── Warmup/Winddown window filter ──
+            t = datetime.datetime.utcfromtimestamp(bar_ts) - datetime.timedelta(
+                hours=SIM_BRT_OFFSET_HOURS
+            )
+            bar_minute_of_day = t.hour * 60 + t.minute
+            session_open = SIM_MARKET_OPEN_HOUR * 60 + SIM_MARKET_OPEN_MINUTE
+            session_close = SIM_EOD_HOUR * 60 + SIM_EOD_MINUTE
+            # Skip warmup period
+            if session_open <= bar_minute_of_day <= session_open + warmup_min:
+                continue
+            # Skip winddown period
+            if session_close - winddown_min <= bar_minute_of_day <= session_close:
+                continue
+
+            # ── Per-symbol daily trade limit ──
+            day_str = t.strftime("%Y-%m-%d")
+            day_count = daily_counts.get(day_str, 0)
+            if day_count >= max_daily:
+                continue
+
             # Try entry
             try:
                 sig = strategy.check_entry(
@@ -274,24 +379,45 @@ def simulate_forward(
             direction = sig.get("direction")
             if direction not in ("BUY", "SELL"):
                 continue
-            pos = 1 if direction == "BUY" else -1
-            ep = price
-            e_atr = atr
-            sl_price = ep - sl_pts if pos == 1 else ep + sl_pts
-            trail_on = False
+
+            if exec_delay:
+                # Store signal for next-bar execution (1-bar delay)
+                pending_signal = {
+                    "direction": direction,
+                    "sl_pts": sl_pts,
+                    "atr": atr,
+                }
+            else:
+                # Immediate execution (original behavior)
+                pos = 1 if direction == "BUY" else -1
+                ep = price
+                e_atr = atr
+                sl_price = ep - sl_pts if pos == 1 else ep + sl_pts
+                trail_on = False
         else:
             # Check exit: SL hit intra-bar
             if pos == 1 and low <= sl_price:
                 pnl = (sl_price - ep) * mult - slip - commission
                 trades.append(pnl)
                 pos = 0
-                cooldown_until = i + SIM_COOLDOWN_BARS
+                cooldown_until = i + cooldown_bars
+                # Track daily count
+                t = datetime.datetime.utcfromtimestamp(bar_ts) - datetime.timedelta(
+                    hours=SIM_BRT_OFFSET_HOURS
+                )
+                day_str = t.strftime("%Y-%m-%d")
+                daily_counts[day_str] = daily_counts.get(day_str, 0) + 1
                 continue
             if pos == -1 and high >= sl_price:
                 pnl = (ep - sl_price) * mult - slip - commission
                 trades.append(pnl)
                 pos = 0
-                cooldown_until = i + SIM_COOLDOWN_BARS
+                cooldown_until = i + cooldown_bars
+                t = datetime.datetime.utcfromtimestamp(bar_ts) - datetime.timedelta(
+                    hours=SIM_BRT_OFFSET_HOURS
+                )
+                day_str = t.strftime("%Y-%m-%d")
+                daily_counts[day_str] = daily_counts.get(day_str, 0) + 1
                 continue
             # Trailing stop: activate after SIM_TRAIL_ACTIVATE_ATR × ATR profit
             profit_pts = (high - ep) if pos == 1 else (ep - low)
@@ -315,7 +441,9 @@ def simulate_forward(
                 pnl = ((price - ep) if pos == 1 else (ep - price)) * mult - slip - commission
                 trades.append(pnl)
                 pos = 0
-                cooldown_until = i + SIM_COOLDOWN_BARS
+                cooldown_until = i + cooldown_bars
+                day_str = t.strftime("%Y-%m-%d")
+                daily_counts[day_str] = daily_counts.get(day_str, 0) + 1
 
     if not trades:
         empty["decision"] = "no_trades"
@@ -428,7 +556,7 @@ def run_mini_backtest_pair(sym: str, tf: str, config: dict, days: int = 7) -> di
         return empty
 
     # Simulate
-    return simulate_forward(sym, tf, bars, strategy_name, params)
+    return simulate_forward(sym, tf, bars, strategy_name, params, config=config)
 
 
 def _resolve_pair_params(config: dict, sym: str, tf: str) -> dict:
