@@ -234,7 +234,15 @@ def _fix_invalid_stops_modify(symbol: str, ticket: str, sl_pts: int, point_val: 
             _log(f"SELL SL abaixo do preço! sl={current_sl_price:.2f} current={current:.2f}. Novo: {new_sl_pts}pts")
             return new_sl_pts
 
-    # SL no lado certo mas muito perto
+    # SL no lado certo mas muito perto — usar stops_level (não hardcoded 50pts)
+    # Bug fix (2026-06-22): min_dist era point_val*50 (0.50 R$ p/ BIT), ignorando
+    # trade_stops_level (3300 nativos = 33 R$ p/ BIT). Resultado: SL continuava
+    # perto demais do preço, MT5 rejeitava de novo → loop infinito de retries.
+    # Agora usa max(stops_level, 50pts) * 1.5 (margem de segurança pra ticks
+    # entre cálculo e envio).
+    info_data = info(symbol)
+    stops = info_data.get("trade_stops_level", 0) if info_data and "error" not in info_data else 0
+
     if direction == "BUY":
         sl_price = entry_price - sl_pts * point_val
         distance = current - sl_price
@@ -242,14 +250,18 @@ def _fix_invalid_stops_modify(symbol: str, ticket: str, sl_pts: int, point_val: 
         sl_price = entry_price + sl_pts * point_val
         distance = sl_price - current
 
-    min_dist = point_val * 50
+    min_dist = max(stops * point_val, point_val * 50) * 1.5
     if distance < min_dist:
         if direction == "BUY":
             new_sl_price = current - min_dist
-            return max(int((entry_price - new_sl_price) / pts_per_unit), 1)
+            new_sl_pts = max(int((entry_price - new_sl_price) / pts_per_unit), 1)
         else:
             new_sl_price = current + min_dist
-            return max(int((new_sl_price - entry_price) / pts_per_unit), 1)
+            new_sl_pts = max(int((new_sl_price - entry_price) / pts_per_unit), 1)
+        _log(f"SL muito perto! dist={distance:.2f} min={min_dist:.2f} "
+             f"entry={entry_price:.2f} current={current:.2f} stops={stops}. "
+             f"{sl_pts}pts → {new_sl_pts}pts")
+        return new_sl_pts
 
     return sl_pts
 
@@ -443,9 +455,18 @@ def safe_sell(symbol: str, volume: float = 1.0, sl_pts: int = None,
 
 def safe_modify_sl(symbol: str, ticket, sl_pts: int, entry_price: float = None,
                     direction: str = None, atr: float = None) -> dict:
-    """modify_sl com auto-recuperação + LLM fallback."""
+    """modify_sl com auto-recuperação + LLM fallback.
+
+    Guard contra loop infinito de "Invalid stops fix":
+    - MAX_FIX_ATTEMPTS: máx 3 chamadas a _fix_invalid_stops_modify por invocação
+    - Convergence check: se fix retorna mesmo valor (±5%), escala pra 3x stops_level
+    - Same-value abort: se mesmo após escala ainda falha, aborta
+    """
     from mt5_orchestrator import modify_sl, tick, status
     result = None
+    fix_attempts = 0          # quantas vezes _fix_invalid_stops_modify foi chamado
+    MAX_FIX_ATTEMPTS = 3      # máximo de fix por invocação de safe_modify_sl
+    prev_sl_pts = None        # valor anterior do fix (pra detecção de convergência)
 
     for attempt in range(MAX_RETRIES):
         result = modify_sl(symbol, ticket, sl_pts)
@@ -458,15 +479,44 @@ def safe_modify_sl(symbol: str, ticket, sl_pts: int, entry_price: float = None,
 
         # 1. Fix padrão
         if err_type == "INVALID_STOPS" and entry_price and direction:
+            if fix_attempts >= MAX_FIX_ATTEMPTS:
+                _log(f"MODIFY {symbol}: max fix attempts ({MAX_FIX_ATTEMPTS}) atingido. Abortando fix.")
+                _notify_fix(f"⚠️ MODIFY {symbol}: Invalid stops após {fix_attempts} fixes — abortado (SL={sl_pts}pts)")
+                return result
+
             point_val = _get_point_val(symbol)
             new_sl = _fix_invalid_stops_modify(symbol, str(ticket), sl_pts, point_val,
                                                 entry_price, direction)
-            if new_sl != sl_pts and new_sl > 0:
-                _log(f"Fix padrão: SL {sl_pts}pts → {new_sl}pts")
-                sl_pts = new_sl
-                _notify_fix(f"🔧 MODIFY {symbol}: SL →{new_sl}pts (Invalid stops fix)")
-                time.sleep(RETRY_DELAY)
-                continue
+            fix_attempts += 1
+
+            if new_sl > 0:
+                # Convergence check: se new_sl ≈ prev_sl_pts, escala pra 3x stops_level
+                if prev_sl_pts is not None and abs(new_sl - prev_sl_pts) <= max(prev_sl_pts * 0.05, 1):
+                    from mt5_orchestrator import info as mt5_info
+                    info_data = mt5_info(symbol)
+                    stops = info_data.get("trade_stops_level", 0) if info_data else 0
+                    if stops > 0:
+                        escalated_sl = int(stops * 3)
+                        _log(f"Convergence detectada ({prev_sl_pts}≈{new_sl}), escalando: "
+                             f"{new_sl}pts → {escalated_sl}pts (3x stops_level={stops})")
+                        new_sl = escalated_sl
+                    else:
+                        new_sl = int(new_sl * 3)
+                        _log(f"Convergence detectada ({prev_sl_pts}≈{new_sl}), escalando 3x: → {new_sl}pts")
+
+                if new_sl != sl_pts:
+                    _log(f"Fix padrão: SL {sl_pts}pts → {new_sl}pts (fix_attempt #{fix_attempts})")
+                    prev_sl_pts = sl_pts
+                    sl_pts = new_sl
+                    _notify_fix(f"🔧 MODIFY {symbol}: SL →{new_sl}pts (Invalid stops fix)")
+                    time.sleep(RETRY_DELAY)
+                    continue
+                else:
+                    # Fix retornou mesmo valor → MT5 vai rejeitar de novo.
+                    # Abortar em vez de retry infinito.
+                    _log(f"Fix retornou mesmo valor ({sl_pts}pts). Abortando.")
+                    _notify_fix(f"⚠️ MODIFY {symbol}: fix não resolveu ({sl_pts}pts) após {fix_attempts} tentativas")
+                    return result
 
         elif err_type == "POSITION_NOT_FOUND":
             positions = status().get("positions", [])
