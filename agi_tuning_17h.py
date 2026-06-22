@@ -222,12 +222,103 @@ def collect_performance(days: int = 7) -> dict:
 
     conn.close()
 
+    # ── Signal analysis: correlação RSI/ATR na entrada com resultado ──
+    signal_analysis = {}
+    try:
+        conn2 = sqlite3.connect(str(DB_PATH))
+        conn2.row_factory = sqlite3.Row
+        for r in conn2.execute("""
+            SELECT substr(symbol,1,3) as root,
+                   AVG(CASE WHEN net_pnl > 0 THEN json_extract(signal_detail, '$.rsi') END) as avg_rsi_win,
+                   AVG(CASE WHEN net_pnl <= 0 THEN json_extract(signal_detail, '$.rsi') END) as avg_rsi_loss,
+                   AVG(CASE WHEN net_pnl > 0 THEN json_extract(signal_detail, '$.atr') END) as avg_atr_win,
+                   AVG(CASE WHEN net_pnl <= 0 THEN json_extract(signal_detail, '$.atr') END) as avg_atr_loss,
+                   COUNT(*) as n
+            FROM trades
+            WHERE entry_time >= ? AND exit_time IS NOT NULL
+              AND signal_detail IS NOT NULL AND signal_detail != ''
+            GROUP BY root
+        """, (cutoff,)).fetchall():
+            if r["n"] >= 2:
+                signal_analysis[r["root"]] = {
+                    "avg_rsi_win": round(r["avg_rsi_win"], 1) if r["avg_rsi_win"] else None,
+                    "avg_rsi_loss": round(r["avg_rsi_loss"], 1) if r["avg_rsi_loss"] else None,
+                    "avg_atr_win": round(r["avg_atr_win"], 1) if r["avg_atr_win"] else None,
+                    "avg_atr_loss": round(r["avg_atr_loss"], 1) if r["avg_atr_loss"] else None,
+                    "n_with_signal": r["n"],
+                }
+        conn2.close()
+    except Exception as e:
+        log.warning(f"Signal analysis erro (não crítico): {e}")
+
+    # ── SL analysis: efetividade do stop loss ──
+    sl_analysis = {}
+    try:
+        conn3 = sqlite3.connect(str(DB_PATH))
+        conn3.row_factory = sqlite3.Row
+        for r in conn3.execute("""
+            SELECT substr(symbol,1,3) as root,
+                   COUNT(*) as n,
+                   SUM(CASE WHEN exit_reason LIKE 'SL%' THEN 1 ELSE 0 END) as sl_hits,
+                   AVG(CASE WHEN entry_sl IS NOT NULL AND entry_sl > 0
+                       THEN ABS(entry_price - entry_sl) END) as avg_sl_pts,
+                   AVG(CASE WHEN exit_reason LIKE 'SL%' AND entry_sl IS NOT NULL
+                       THEN ABS(exit_price - entry_sl) END) as avg_sl_slippage
+            FROM trades
+            WHERE entry_time >= ? AND exit_time IS NOT NULL
+            GROUP BY root
+        """, (cutoff,)).fetchall():
+            if r["n"] >= 2:
+                sl_analysis[r["root"]] = {
+                    "sl_hit_rate": round(r["sl_hits"] / r["n"] * 100, 1) if r["n"] else 0,
+                    "sl_hits": r["sl_hits"],
+                    "avg_sl_pts": round(r["avg_sl_pts"], 0) if r["avg_sl_pts"] else None,
+                    "avg_sl_slippage": round(r["avg_sl_slippage"], 0) if r["avg_sl_slippage"] else None,
+                    "n_trades": r["n"],
+                }
+        conn3.close()
+    except Exception as e:
+        log.warning(f"SL analysis erro (não crítico): {e}")
+
+    # ── Direction analysis: BUY vs SELL performance ──
+    direction_analysis = {}
+    try:
+        conn4 = sqlite3.connect(str(DB_PATH))
+        conn4.row_factory = sqlite3.Row
+        for r in conn4.execute("""
+            SELECT substr(symbol,1,3) as root, direction,
+                   COUNT(*) as n,
+                   SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) as wins,
+                   round(SUM(net_pnl), 2) as total_pnl,
+                   round(AVG(net_pnl), 2) as avg_pnl
+            FROM trades
+            WHERE entry_time >= ? AND exit_time IS NOT NULL
+            GROUP BY root, direction
+        """, (cutoff,)).fetchall():
+            sym = r["root"]
+            if sym not in direction_analysis:
+                direction_analysis[sym] = {}
+            wr = round(r["wins"] / r["n"] * 100, 1) if r["n"] else 0
+            direction_analysis[sym][r["direction"]] = {
+                "n_trades": r["n"],
+                "wins": r["wins"],
+                "win_rate": wr,
+                "total_pnl": r["total_pnl"],
+                "avg_pnl": r["avg_pnl"],
+            }
+        conn4.close()
+    except Exception as e:
+        log.warning(f"Direction analysis erro (não crítico): {e}")
+
     return {
         "by_symbol": by_symbol,
         "by_symbol_tf": by_symbol_tf,
         "exit_reasons": exit_reasons,
         "today": today_perf,
         "streaks": streaks,
+        "signal_analysis": signal_analysis,
+        "sl_analysis": sl_analysis,
+        "direction_analysis": direction_analysis,
         "period_days": days,
         "cutoff_date": cutoff,
     }
@@ -296,6 +387,75 @@ def diagnose_issues(perf: dict) -> list:
             issues.append({
                 "symbol": "ALL", "type": "ORPHAN_TRADES",
                 "detail": f"{reason}: {data['count']} trades órfãos — bug de sync MT5/DB",
+                "severity": "MEDIUM",
+            })
+
+    # ── Signal-based diagnostics ──
+    for sym, sa in perf.get("signal_analysis", {}).items():
+        rsi_win = sa.get("avg_rsi_win")
+        rsi_loss = sa.get("avg_rsi_loss")
+        atr_win = sa.get("avg_atr_win")
+        atr_loss = sa.get("avg_atr_loss")
+
+        # RSI extremes na entrada indicam entradas ruins
+        if rsi_loss and rsi_loss > 75 and sa.get("n_with_signal", 0) >= 3:
+            issues.append({
+                "symbol": sym, "type": "RSI_EXTREME_LOSS",
+                "detail": f"RSI médio nas perdas: {rsi_loss:.0f} (sobrecomprado) — evitar BUY quando RSI > 70",
+                "severity": "MEDIUM",
+            })
+        if rsi_loss and rsi_loss < 25 and sa.get("n_with_signal", 0) >= 3:
+            issues.append({
+                "symbol": sym, "type": "RSI_EXTREME_LOSS",
+                "detail": f"RSI médio nas perdas: {rsi_loss:.0f} (sobrevendido) — evitar SELL quando RSI < 30",
+                "severity": "MEDIUM",
+            })
+
+        # ATR alto nas perdas = SL largo demais para a volatilidade
+        if atr_loss and atr_win and atr_loss > atr_win * 1.8 and sa.get("n_with_signal", 0) >= 3:
+            issues.append({
+                "symbol": sym, "type": "ATR_MISMATCH",
+                "detail": f"ATR nas perdas ({atr_loss:.0f}) 1.8x maior que nos ganhos ({atr_win:.0f}) — SL não se adapta à volatilidade",
+                "severity": "HIGH",
+            })
+
+    # ── SL effectiveness diagnostics ──
+    for sym, sla in perf.get("sl_analysis", {}).items():
+        # SL hit rate muito alto = SL apertado demais ou entradas ruins
+        if sla["sl_hit_rate"] > 70 and sla["n_trades"] >= 5:
+            issues.append({
+                "symbol": sym, "type": "HIGH_SL_HIT_RATE",
+                "detail": f"SL hit rate {sla['sl_hit_rate']:.0f}% ({sla['sl_hits']}/{sla['n_trades']}) — SL muito apertado ou entradas ruins",
+                "severity": "HIGH",
+            })
+
+        # SL slippage alto = ordem não executada no preço
+        if sla.get("avg_sl_slippage") and sla["avg_sl_slippage"] > 50:
+            issues.append({
+                "symbol": sym, "type": "SL_SLIPPAGE",
+                "detail": f"Slippage médio no SL: {sla['avg_sl_slippage']:.0f}pts — preço se move rápido, considerar SL mais largo",
+                "severity": "MEDIUM",
+            })
+
+    # ── Direction-based diagnostics ──
+    for sym, dirs in perf.get("direction_analysis", {}).items():
+        buy = dirs.get("BUY")
+        sell = dirs.get("SELL")
+        if not buy or not sell:
+            continue
+        if buy["n_trades"] < 3 or sell["n_trades"] < 3:
+            continue
+
+        # Uma direction muito pior que a outra
+        wr_diff = abs(buy["win_rate"] - sell["win_rate"])
+        if wr_diff > 30:
+            worst_dir = "BUY" if buy["win_rate"] < sell["win_rate"] else "SELL"
+            worst_wr = buy["win_rate"] if worst_dir == "BUY" else sell["win_rate"]
+            best_wr = sell["win_rate"] if worst_dir == "BUY" else buy["win_rate"]
+            opposite = "SELL" if worst_dir == "BUY" else "BUY"
+            issues.append({
+                "symbol": sym, "type": "DIRECTION_BIAS",
+                "detail": f"{worst_dir} WR={worst_wr:.0f}% vs {opposite} WR={best_wr:.0f}% — considerar filtrar {worst_dir}",
                 "severity": "MEDIUM",
             })
 
