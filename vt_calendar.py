@@ -255,12 +255,12 @@ def resolve_symbol(symbol_root: str, force_check: bool = False) -> str:
     Lógica:
     1. Verifica se o contrato atual (do config) ainda está vigente
     2. Se sim, compara spread com o próximo contrato — escolhe o de menor spread
-    3. Se contrato atual está perto de vencer (< 3 dias úteis), migra para o próximo
+    3. Se contrato atual está perto de vencer (< 2 dias úteis), migra para o próximo
     4. Confirma no MT5 que o contrato existe e tem liquidez
 
-    Critério: escaneia TODOS os próximos 6 contratos a partir do mês atual
-    e escolhe o de menor spread real (MT5). Mantém o atual se ele ainda tiver
-    cotação, > 3 dias úteis, e spread <= melhor alternativa.
+    Critério: escaneia os próximos vencimentos válidos (trimestrais para WDO/WIN,
+    mensais para BIT/WSP) e escolhe o de menor spread real (MT5). Mantém o atual
+    se ele ainda tiver cotação, > 2 dias úteis, e spread <= melhor alternativa.
 
     Retorna o código do contrato (ex: WINQ26, WDON26, INDM26).
     """
@@ -270,14 +270,43 @@ def resolve_symbol(symbol_root: str, force_check: bool = False) -> str:
     resolved = config.get("resolved_symbols", {})
     current = resolved.get(symbol_root, "")
 
-    # Lista de candidatos: 6 meses consecutivos a partir do mês atual
-    # (cobre tanto trimestrais H/M/U/Z quanto mensais N/Q)
+    # Lista de candidatos a partir do mês atual.
+    # Trimestrais (WDO/WIN): só meses H/M/U/Z — evita gerar contratos
+    # inválidos como WDON26 (jul) ou WDOQ26 (ago) que não existem.
+    # Mensais (BIT/WSP): 6 meses consecutivos.
     today = date.today()
+    rule = EXPIRY_RULES.get(symbol_root, "quarterly")
     candidates = []
-    for i in range(6):
-        m = ((today.month - 1 + i) % 12) + 1
-        y = today.year + ((today.month - 1 + i) // 12)
-        candidates.append((m, y))
+
+    if rule == "quarterly":
+        # Só meses trimestrais (H/M/U/Z) — contratos oficiais B3
+        quarterly_months = sorted(QUARTERLY_MONTHS.keys())
+        year = today.year
+        for qm in quarterly_months:
+            expiry = _third_friday(year, qm)
+            if expiry >= today:
+                candidates.append((qm, year))
+        # Se acabou o ano, adicionar Q1 do próximo
+        if not candidates or all(c[1] == year for c in candidates):
+            for qm in quarterly_months:
+                candidates.append((qm, year + 1))
+        candidates = candidates[:4]
+        # Adicionar "bridge": próximo mês não-trimestral que o MT5 pode estar
+        # cotando (ex: WDON26 quando WDOU26 ainda não tem liquidez).
+        # Isso permite operar o mês mais próximo até o trimestral ficar líquido.
+        bridge_candidates = []
+        for i in range(1, 4):
+            bm = ((today.month - 1 + i) % 12) + 1
+            by = today.year + ((today.month - 1 + i) // 12)
+            if bm not in QUARTERLY_MONTHS:
+                bridge_candidates.append((bm, by))
+    else:
+        # Mensal: 6 meses consecutivos
+        bridge_candidates = []
+        for i in range(6):
+            m = ((today.month - 1 + i) % 12) + 1
+            y = today.year + ((today.month - 1 + i) // 12)
+            candidates.append((m, y))
 
     # Para cada candidato, busca contrato + spread + dias úteis
     candidate_info = []
@@ -303,17 +332,45 @@ def resolve_symbol(symbol_root: str, force_check: bool = False) -> str:
             "spread": spread,
         })
 
-    # Filtra apenas contratos com cotação real (spread < 999) e > 0 dias úteis
-    # (não opera no último dia útil, mas permite se < 3 dias se não há alternativa)
-    liquidos_3d = [c for c in candidate_info if c["spread"] < 999 and c["days_util"] > 3]
+    # Filtra contratos com cotação real (spread < 999) e > 0 dias úteis
+    liquidos_2d = [c for c in candidate_info if c["spread"] < 999 and c["days_util"] > 2]
     liquidos_1d = [c for c in candidate_info if c["spread"] < 999 and c["days_util"] > 0]
 
-    # Caso ideal: liquidez + 3+ dias úteis (evita surpresa de rollover)
-    if liquidos_3d:
-        liquidos = liquidos_3d
+    if liquidos_2d:
+        liquidos = liquidos_2d
     else:
-        # Fallback: aceita mesmo < 3 dias (mas não no último dia)
         liquidos = liquidos_1d
+
+    # Para trimestrais: se nenhum candidato trimestral tem liquidez,
+    # usar bridge (mês não-trimestral mais próximo com cotação).
+    # Isso cobre o caso de WDOU26 (set) sem cotação → usar WDON26 (jul).
+    if rule == "quarterly" and not liquidos and bridge_candidates:
+        bridge_info = []
+        for bm, by in bridge_candidates:
+            bcontract = _make_contract_code(symbol_root, bm, by)
+            try:
+                bexpiry = get_contract_expiry(symbol_root, bm, by)
+            except Exception:
+                continue
+            bdays = 0
+            bcheck = today
+            while bcheck < bexpiry:
+                bcheck += timedelta(days=1)
+                if is_trading_day(bcheck)[0]:
+                    bdays += 1
+            if bdays <= 0:
+                continue
+            bspread = _check_contract_spread(bcontract)
+            if bspread < 999:
+                bridge_info.append({
+                    "contract": bcontract, "month": bm, "year": by,
+                    "expiry": bexpiry, "days_util": bdays, "spread": bspread,
+                })
+        if bridge_info:
+            bridge_info.sort(key=lambda c: c["spread"])
+            # Usar bridge com mais dias úteis (evita rolagem prematura)
+            bridge_info.sort(key=lambda c: -c["days_util"])
+            liquidos = [bridge_info[0]]
 
     if not liquidos:
         # Nenhum contrato líquido — fallback para o config atual

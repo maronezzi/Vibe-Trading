@@ -5,7 +5,7 @@ vt_pre_flight.py — Pre-flight check executado às 08:55 (antes do autotrader).
 Responsabilidades (em ordem):
  1. Validar dia útil (B3 holidays) e sessão de trading
  2. Verificar/criar config fresh (hot-reload detecta mtime)
- 3. Resolver símbolos ativos (vence em <=3 dias úteis → rolla)
+ 3. Resolver símbolos ativos (vence em <=2 dias úteis → rolla)
  4. Validar integridade do /tmp/vt_autotrader_state.json (limpar stale)
  5. Confirmar MT5 up + saldo + margem
  6. Confirmar hermes binário achável (PATH do cron)
@@ -110,7 +110,7 @@ def check_config() -> tuple[bool, str, dict]:
 def check_symbols(cfg: dict) -> tuple[bool, str]:
     section("3. RESOLUÇÃO DE CONTRATOS")
 
-    # Resolver (auto-rolla se vence em <=3 dias)
+    # Resolver (auto-rolla se vence em <=2 dias)
     try:
         resolved = resolve_all_symbols()
         log(f"Contratos resolvidos: {resolved}")

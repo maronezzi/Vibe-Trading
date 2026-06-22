@@ -59,7 +59,7 @@
     "trail_activate": 0.8,
     "trail_distance": 0.3,
     "cooldown_seconds": 180,
-    "max_daily_trades": 10,
+    "max_daily_trades": 6,
     "ema_fast": 5,
     "ema_slow": 13,
     "rsi_period": 7,

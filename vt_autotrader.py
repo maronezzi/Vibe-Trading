@@ -1850,8 +1850,11 @@ def run_daemon():
     for _s in CONFIG["symbols"]:
         _p = CONFIG.get(_s.lower(), {})
         log(f"{_s}: SL {_p.get('sl_atr_mult', 1.5)}x ATR | Trail {_p.get('trail_activate', 1.5)}x/{_p.get('trail_distance', 0.5)}x ATR")
-    log(f"WDO: Cooldown({CONFIG['wdo']['cooldown_seconds']}s) | Max({CONFIG['wdo']['max_daily_trades']}/dia)")
-    log(f"WIN: Cooldown({CONFIG['win']['cooldown_seconds']}s) | Max({CONFIG['win']['max_daily_trades']}/dia)")
+    rm_daily = CONFIG.get("risk_management", {}).get("daily_limits", {})
+    wdo_eff = rm_daily.get("max_daily_trades_by_symbol", {}).get("WDO", CONFIG["wdo"]["max_daily_trades"])
+    win_eff = rm_daily.get("max_daily_trades_by_symbol", {}).get("WIN", CONFIG["win"]["max_daily_trades"])
+    log(f"WDO: Cooldown({CONFIG['wdo']['cooldown_seconds']}s) | Max({wdo_eff}/dia efetivo)")
+    log(f"WIN: Cooldown({CONFIG['win']['cooldown_seconds']}s) | Max({win_eff}/dia efetivo)")
     log(f"Volume: {CONFIG['volume']} contrato(s)")
     log("=" * 60)
 
