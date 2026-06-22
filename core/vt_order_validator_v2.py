@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-PROJECT = Path(__file__).parent
+PROJECT = Path(__file__).parent.parent
 DB_PATH = PROJECT / "vt_trades.db"
 VALIDATOR_LOG = Path("/tmp/vt_order_validator_v2.log")
 ALERT_LOG = Path("/tmp/vt_order_alerts_v2.log")

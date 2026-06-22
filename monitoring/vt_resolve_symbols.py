@@ -16,7 +16,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-PROJECT_DIR = Path(__file__).parent
+PROJECT_DIR = Path(__file__).parent.parent
 CONFIG_FILE = PROJECT_DIR / "vt_config.json"
 
 

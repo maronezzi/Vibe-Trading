@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-PROJECT_DIR = Path(__file__).parent
+PROJECT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 from optimization.vt_forward_backtest import run_mini_backtest_pair, simulate_forward, fetch_bars_for_backtest, _resolve_pair_params

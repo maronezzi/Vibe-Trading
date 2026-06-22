@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from mt5.mt5_orchestrator import status, close_all
 
 
-DB_PATH = Path(__file__).parent / "vt_trades.db"
+DB_PATH = Path(__file__).parent.parent / "vt_trades.db"
 TELEGRAM_GROUP = "-1004284773048"
 
 

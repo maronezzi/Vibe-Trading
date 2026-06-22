@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.vt_config_loader import load_config, save_params, save_full_config
 
 # ─── Constants ───
-PROJECT_DIR = Path(__file__).parent
+PROJECT_DIR = Path(__file__).parent.parent
 DB_PATH = PROJECT_DIR / "vt_trades.db"
 LOG_FILE = Path("/tmp/vt_agi_tuning.log")
 TODAY = datetime.now().strftime("%Y-%m-%d")

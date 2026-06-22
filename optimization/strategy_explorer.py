@@ -22,8 +22,8 @@ import json
 
 log = logging.getLogger("strategy_explorer")
 
-DB_PATH = Path(__file__).parent / "vt_trades.db"
-CONFIG_PATH = Path(__file__).parent / "vt_config.json"
+DB_PATH = Path(__file__).parent.parent / "vt_trades.db"
+CONFIG_PATH = Path(__file__).parent.parent / "vt_config.json"
 
 # ── Dynamic strategy discovery — scans strategies/ directory ────────────────
 def discover_strategies() -> list[str]:
@@ -31,7 +31,7 @@ def discover_strategies() -> list[str]:
     Reads STRATEGY_NAME from each .py file without importing (fast).
     """
     strategies = []
-    strategies_dir = Path(__file__).parent / "strategies"
+    strategies_dir = Path(__file__).parent.parent / "strategies"
     for py_file in sorted(strategies_dir.glob("*.py")):
         if py_file.name.startswith("_"):
             continue

@@ -38,7 +38,7 @@ DEFAULT_PARAMS = {
     },
 }
 
-STRATEGIES_DIR = Path(__file__).parent / "strategies"
+STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"
 
 
 def fetch(symbol, tf, n_bars):

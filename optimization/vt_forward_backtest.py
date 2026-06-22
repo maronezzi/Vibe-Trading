@@ -28,7 +28,7 @@ from typing import Optional
 
 WINE_PYTHON = os.path.expanduser("~/.wine/drive_c/Python311/python.exe")
 FETCH_SCRIPT = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "mt5_fetch.py"
+    os.path.dirname(os.path.abspath(__file__)), "..", "mt5", "mt5_fetch.py"
 )
 
 # Per-symbol contract specs (multiplier, slippage)
@@ -353,7 +353,7 @@ def _load_strategy_utils() -> Optional[dict]:
     try:
         import importlib.util
         import sys as _sys
-        path = os.path.join(os.path.dirname(__file__), "vt_autotrader.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "core", "vt_autotrader.py")
         spec = importlib.util.spec_from_file_location("vt_autotrader", path)
         if spec is None or spec.loader is None:
             return None
@@ -377,7 +377,7 @@ def _load_strategy_module(strategy_name: str):
         import importlib.util
         import sys as _sys
         path = os.path.join(
-            os.path.dirname(__file__), "strategies", f"{strategy_name.lower()}.py"
+            os.path.dirname(__file__), "..", "strategies", f"{strategy_name.lower()}.py"
         )
         if not os.path.exists(path):
             return None

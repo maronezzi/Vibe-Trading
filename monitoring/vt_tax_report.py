@@ -23,8 +23,8 @@ import csv
 from datetime import datetime, date
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "vt_trades.db"
-CSV_DIR = Path(__file__).parent / "reports"
+DB_PATH = Path(__file__).parent.parent / "vt_trades.db"
+CSV_DIR = Path(__file__).parent.parent / "reports"
 
 
 def get_db():

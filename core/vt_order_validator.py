@@ -21,7 +21,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-PROJECT = Path(__file__).parent
+PROJECT = Path(__file__).parent.parent
 VALIDATOR_LOG = Path("/tmp/vt_order_validator.log")
 ALERT_LOG = Path("/tmp/vt_order_alerts.log")
 

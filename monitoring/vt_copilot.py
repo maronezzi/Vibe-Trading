@@ -26,7 +26,7 @@ from mt5.mt5_orchestrator import status as mt5_status, _run_wine, EXECUTOR_WIN
 from core.vt_config_loader import load_config
 
 # ===== CONFIGURAÇÃO =====
-DB_PATH = Path(__file__).parent / "vt_trades.db"
+DB_PATH = Path(__file__).parent.parent / "vt_trades.db"
 LOG_PATH = Path("/tmp/vt_autotrader.log")
 TELEGRAM_TARGET = "telegram:-1004284773048"
 
@@ -137,7 +137,7 @@ def restart_autotrader():
     # Iniciar novo
     subprocess.Popen(
         ["python3", "vt_autotrader.py"],
-        cwd=str(Path(__file__).parent),
+        cwd=str(Path(__file__).parent.parent),
         stdout=open(LOG_PATH, "w"),
         stderr=subprocess.STDOUT,
         start_new_session=True

@@ -20,7 +20,7 @@ from datetime import datetime
 
 log = logging.getLogger("vt_config")
 
-CONFIG_PATH = Path(__file__).parent / "vt_config.json"
+CONFIG_PATH = Path(__file__).parent.parent / "vt_config.json"
 
 # Cache
 _config = None

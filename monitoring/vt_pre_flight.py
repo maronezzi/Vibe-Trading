@@ -29,7 +29,7 @@ import sys
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 CONFIG_PATH = ROOT / "vt_config.json"
 STATE_PATH = Path("/tmp/vt_autotrader_state.json")
 LOG_PATH = Path("/tmp/vt_pre_flight.log")

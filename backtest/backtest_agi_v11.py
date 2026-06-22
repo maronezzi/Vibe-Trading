@@ -464,7 +464,7 @@ def backtest(df, symbol, tf, strategy, params, *, capital=1_000_000.0):
 
 def run():
     # Load config
-    config_path = Path(__file__).parent / "vt_config.json"
+    config_path = Path(__file__).parent.parent / "vt_config.json"
     with open(config_path) as f:
         config = json.load(f)
     

@@ -23,7 +23,7 @@ from pathlib import Path
 
 log = logging.getLogger("vt_strategies")
 
-STRATEGIES_DIR = Path(__file__).parent / "strategies"
+STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"
 
 # Cache: nome → módulo
 _strategies: dict = {}

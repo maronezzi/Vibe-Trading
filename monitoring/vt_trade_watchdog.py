@@ -36,7 +36,7 @@ from core.vt_trade_log import get_multiplier
 # ===== CONFIG =====
 STATE_FILE = "/tmp/vt_autotrader_state.json"
 STATUS_FILE = "/tmp/vt_watchdog_status.json"
-DB_PATH = Path(__file__).parent / "vt_trades.db"
+DB_PATH = Path(__file__).parent.parent / "vt_trades.db"
 TELEGRAM_TARGET = "telegram:-1004284773048"
 MAGIC = 555501
 

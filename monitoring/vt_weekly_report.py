@@ -26,8 +26,8 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 from collections import defaultdict
 
-DB_PATH = Path(__file__).parent / "vt_trades.db"
-REPORTS_DIR = Path(__file__).parent / "reports"
+DB_PATH = Path(__file__).parent.parent / "vt_trades.db"
+REPORTS_DIR = Path(__file__).parent.parent / "reports"
 TELEGRAM_GROUP = "-1004284773048"
 
 # Matplotlib com Agg backend (sem display)
