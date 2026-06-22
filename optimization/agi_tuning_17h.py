@@ -66,6 +66,9 @@ try:
         compute_total_cost,
         filter_trades_by_costs,
         evaluate_patience_filter,
+        apply_sl_hit_rate_penalty,
+        compute_dynamic_sl_mult,
+        compute_atr_based_min_sl,
     )
     HAS_SAFETY_VALIDATOR = True
 except ImportError:
@@ -108,7 +111,8 @@ PARAM_BOUNDS = {
     "adx_threshold":        (10, 35),
     "cooldown_seconds":     (120, 3600),
     "max_daily_trades":     (2, 12),
-    "sl_atr_mult":          (0.5, 3.0),
+    "sl_atr_mult":          (1.0, 3.0),  # was (0.5, 3.0) — 0.5 results in noise-level stops
+    "min_atr_for_entry":    (0.0, 1000.0),
     "trail_activate":       (0.8, 3.0),
     "trail_distance":       (0.3, 1.5),
     "pullback_pct":         (0.03, 0.30),
@@ -1289,7 +1293,7 @@ NÃO duvide dos resultados do Explorer — eles são baseados em dados reais.
 1. PRIORIDADE ZERO — LER COM ATENÇÃO: se o Strategy Explorer encontrou config lucrativa (PF>1 E PnL>0) para um símbolo, USE ESSA CONFIG. NÃO desative.
 2. SÓ desative se (a) Explorer NÃO achou config lucrativa E (b) WR < 25% com 5+ trades E PnL negativo
 3. Se WR 25-40% com PnL negativo e Explorer achou config: aplicar config do Explorer (com moderação 30% se quiser)
-4. Se SL_SERVIDOR é a causa principal: ajustar sl_atr_mult (geralmente aumentar 0.2-0.5)
+4. Se SL_SERVIDOR é a causa principal: ajustar sl_atr_mult (geralmente aumentar 0.2-0.5). MÍNIMO ABSOLUTO: sl_atr_mult ≥ 1.0 (floor subiu de 0.5 para 1.0 para evitar ruído)
 5. Se worst trade > -500R$: apertar SL (reduzir sl_atr_mult)
 6. Se streak >= 4 perdas: aumentar cooldown_seconds + reduzir max_daily_trades
 7. NUNCA sugerir mudanças maiores que 30% do valor atual por parâmetro
@@ -2441,8 +2445,17 @@ def _build_v3_telegram_card(
     discovery_results: dict,
     llm_result: dict,
     config: dict,
+    perf: dict = None,
 ) -> str:
     """Build the v3.0 Telegram notification card.
+
+    Args:
+        regime_info: From Stage 1 (regime classifier).
+        risk_tags: From Stage 2 (macro intel).
+        discovery_results: From Stage 3 (discovery engine).
+        llm_result: LLM analysis result.
+        config: Current config.
+        perf: Performance data (optional, for SL diagnostics).
 
     Returns:
         Formatted Telegram message string.
@@ -2461,6 +2474,26 @@ def _build_v3_telegram_card(
     lines = [f"🧬 AGI Tuning Concluído (17:10)", ""]
     lines.append(f"📊 Regime Atual: {regime_pt}")
     lines.append(f"🏷️ Risk Tag: {risk_tag}")
+
+    # SL diagnostics per symbol
+    if perf and perf.get("sl_analysis"):
+        lines.append("")
+        lines.append("🛡️ Stop Loss Analysis:")
+        for sym, sla in sorted(perf["sl_analysis"].items()):
+            hit_rate = sla.get("sl_hit_rate", 0)
+            n_trades = sla.get("n_trades", 0)
+            sl_hits = sla.get("sl_hits", 0)
+            # Visual indicator: green if <40%, yellow if 40-60%, red if >60%
+            if hit_rate > 60:
+                icon = "🔴"
+                recommendation = "⚠️ Aumentar sl_atr_mult"
+            elif hit_rate > 40:
+                icon = "🟡"
+                recommendation = "Monitorar"
+            else:
+                icon = "🟢"
+                recommendation = "OK"
+            lines.append(f"  {icon} {sym}: SL hit {hit_rate:.0f}% ({sl_hits}/{n_trades}) — {recommendation}")
 
     # Discovery results
     if discovery_results:
@@ -3186,6 +3219,7 @@ def main():
             "execution_errors_count": len(trade_analysis.get("execution_errors", [])),
             "logic_errors_count": len(trade_analysis.get("logic_errors", [])),
         },
+        "v3_sl_analysis": perf.get("sl_analysis", {}),
     }
     audit_file = Path("/tmp/vt_agi_audit.json")
     try:

@@ -520,6 +520,27 @@ class TestV3TelegramCard(unittest.TestCase):
         self.assertIn("Regime", card)
         self.assertIn("Risk Tag", card)
 
+    def test_card_with_sl_diagnostics(self):
+        """Card should include SL diagnostics when perf is provided."""
+        sys.path.insert(0, str(PROJECT_DIR / "optimization"))
+        from agi_tuning_17h import _build_v3_telegram_card
+
+        regime_info = {"current_regime": "RANGING"}
+        risk_tags = {"tag": "LOW_VOLATILITY_EXPECTED"}
+        perf = {
+            "sl_analysis": {
+                "WIN": {"sl_hit_rate": 85.0, "sl_hits": 17, "n_trades": 20},
+                "WDO": {"sl_hit_rate": 30.0, "sl_hits": 3, "n_trades": 10},
+            }
+        }
+
+        card = _build_v3_telegram_card(regime_info, risk_tags, {}, {}, {}, perf=perf)
+        self.assertIn("Stop Loss Analysis", card)
+        self.assertIn("WIN", card)
+        self.assertIn("85%", card)
+        self.assertIn("Aumentar sl_atr_mult", card)
+        self.assertIn("🟢", card)  # WDO should be green
+
 
 class TestCLICompatibility(unittest.TestCase):
     """Test backward compatibility of CLI arguments."""
@@ -618,6 +639,149 @@ class TestConvergenceSharpeMode(unittest.TestCase):
         converged, failing = check_convergence(current, baseline, mode="sharpe_ratio")
         self.assertFalse(converged)
         self.assertIn("WIN_M5", failing)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SL Management Tests (v3.1)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestSLHitRatePenalty(unittest.TestCase):
+    """Test SL hit rate penalty in fitness function."""
+
+    def test_high_hit_rate_penalty(self):
+        """SL hit rate >70% should reduce score by 30%."""
+        from agi_safety_validator import apply_sl_hit_rate_penalty
+        result = apply_sl_hit_rate_penalty(1.0, 89.0)  # 89% hit rate
+        self.assertAlmostEqual(result, 0.70)
+
+    def test_medium_hit_rate_penalty(self):
+        """SL hit rate 50-70% should reduce score by 15%."""
+        from agi_safety_validator import apply_sl_hit_rate_penalty
+        result = apply_sl_hit_rate_penalty(1.0, 60.0)  # 60% hit rate
+        self.assertAlmostEqual(result, 0.85)
+
+    def test_normal_hit_rate_no_penalty(self):
+        """SL hit rate <50% should not penalize."""
+        from agi_safety_validator import apply_sl_hit_rate_penalty
+        result = apply_sl_hit_rate_penalty(1.0, 30.0)  # 30% hit rate
+        self.assertAlmostEqual(result, 1.0)
+
+    def test_boundary_70(self):
+        """Exactly 70% should get medium penalty (15%, not 30%)."""
+        from agi_safety_validator import apply_sl_hit_rate_penalty
+        result = apply_sl_hit_rate_penalty(1.0, 70.0)
+        self.assertAlmostEqual(result, 0.85)  # 15% penalty (50-70% range)
+
+    def test_boundary_50(self):
+        """Exactly 50% should not penalize (only >50%)."""
+        from agi_safety_validator import apply_sl_hit_rate_penalty
+        result = apply_sl_hit_rate_penalty(1.0, 50.0)
+        self.assertAlmostEqual(result, 1.0)
+
+    def test_penalty_with_actual_score(self):
+        """Penalty should scale with actual score."""
+        from agi_safety_validator import apply_sl_hit_rate_penalty
+        result = apply_sl_hit_rate_penalty(2.5, 80.0)  # PF=2.5, 80% hit
+        self.assertAlmostEqual(result, 2.5 * 0.70)
+
+
+class TestDynamicSL(unittest.TestCase):
+    """Test dynamic SL adjustment based on volatility."""
+
+    def test_high_volatility_widens_sl(self):
+        """ATR > 1.5x average should widen SL by 20%."""
+        from agi_safety_validator import compute_dynamic_sl_mult
+        result = compute_dynamic_sl_mult(1.0, 200.0, 100.0)  # 2x avg
+        self.assertAlmostEqual(result, 1.2)
+
+    def test_low_volatility_tightens_sl(self):
+        """ATR < 0.7x average should tighten SL by 20%."""
+        from agi_safety_validator import compute_dynamic_sl_mult
+        result = compute_dynamic_sl_mult(1.0, 50.0, 100.0)  # 0.5x avg
+        self.assertAlmostEqual(result, 0.8)
+
+    def test_normal_volatility_no_change(self):
+        """Normal volatility (0.7-1.5x) should not change SL."""
+        from agi_safety_validator import compute_dynamic_sl_mult
+        result = compute_dynamic_sl_mult(1.0, 100.0, 100.0)  # 1x avg
+        self.assertAlmostEqual(result, 1.0)
+
+    def test_zero_avg_returns_base(self):
+        """Zero ATR average should return base (safety fallback)."""
+        from agi_safety_validator import compute_dynamic_sl_mult
+        result = compute_dynamic_sl_mult(1.5, 100.0, 0.0)
+        self.assertAlmostEqual(result, 1.5)
+
+    def test_boundary_1_5x(self):
+        """ATR exactly at 1.5x should not trigger widening."""
+        from agi_safety_validator import compute_dynamic_sl_mult
+        result = compute_dynamic_sl_mult(1.0, 150.0, 100.0)
+        self.assertAlmostEqual(result, 1.0)  # not >1.5, just ==1.5
+
+    def test_boundary_0_7x(self):
+        """ATR exactly at 0.7x should not trigger tightening."""
+        from agi_safety_validator import compute_dynamic_sl_mult
+        result = compute_dynamic_sl_mult(1.0, 70.0, 100.0)
+        self.assertAlmostEqual(result, 1.0)  # not <0.7, just ==0.7
+
+    def test_custom_base_multiplier(self):
+        """Dynamic SL should scale with custom base multiplier."""
+        from agi_safety_validator import compute_dynamic_sl_mult
+        result = compute_dynamic_sl_mult(2.0, 200.0, 100.0)  # 2x avg, base=2.0
+        self.assertAlmostEqual(result, 2.0 * 1.2)
+
+
+class TestATRBasedMinSL(unittest.TestCase):
+    """Test ATR-based minimum SL to prevent noise-level stops."""
+
+    def test_atr_based_exceeds_fixed(self):
+        """ATR-based min should exceed fixed min when ATR is large."""
+        from agi_safety_validator import compute_atr_based_min_sl
+        result = compute_atr_based_min_sl(fixed_min_native=3, atr=10.0)
+        # int(10 * 0.8) = 8, max(3, 8) = 8
+        self.assertEqual(result, 8)
+
+    def test_fixed_min_preserved(self):
+        """Fixed min should be preserved when ATR is very low."""
+        from agi_safety_validator import compute_atr_based_min_sl
+        result = compute_atr_based_min_sl(fixed_min_native=150, atr=50.0)
+        # int(50 * 0.8) = 40, max(150, 40) = 150
+        self.assertEqual(result, 150)
+
+    def test_wdo_noise_level_fix(self):
+        """WDO min_native=3 with ATR=8 should derive min=6."""
+        from agi_safety_validator import compute_atr_based_min_sl
+        result = compute_atr_based_min_sl(fixed_min_native=3, atr=8.0)
+        # int(8 * 0.8) = 6, max(3, 6) = 6
+        self.assertEqual(result, 6)
+
+    def test_custom_floor_pct(self):
+        """Custom floor percentage should be used."""
+        from agi_safety_validator import compute_atr_based_min_sl
+        result = compute_atr_based_min_sl(fixed_min_native=3, atr=10.0, atr_floor_pct=0.5)
+        # int(10 * 0.5) = 5, max(3, 5) = 5
+        self.assertEqual(result, 5)
+
+
+class TestParamBoundsSL(unittest.TestCase):
+    """Test that PARAM_BOUNDS enforce minimum SL multiplier."""
+
+    def test_sl_atr_mult_floor_is_1_0(self):
+        """PARAM_BOUNDS should enforce sl_atr_mult >= 1.0."""
+        sys.path.insert(0, str(PROJECT_DIR / "optimization"))
+        from agi_tuning_17h import PARAM_BOUNDS
+        lo, hi = PARAM_BOUNDS["sl_atr_mult"]
+        self.assertGreaterEqual(lo, 1.0)
+        self.assertEqual(hi, 3.0)
+
+    def test_min_atr_for_entry_in_bounds(self):
+        """PARAM_BOUNDS should include min_atr_for_entry."""
+        sys.path.insert(0, str(PROJECT_DIR / "optimization"))
+        from agi_tuning_17h import PARAM_BOUNDS
+        self.assertIn("min_atr_for_entry", PARAM_BOUNDS)
+        lo, hi = PARAM_BOUNDS["min_atr_for_entry"]
+        self.assertGreaterEqual(lo, 0.0)
+        self.assertGreater(hi, lo)
 
 
 if __name__ == "__main__":

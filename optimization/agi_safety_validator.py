@@ -154,7 +154,7 @@ PARAM_HARD_BOUNDS = {
     "rsi_period": (5, 50),
     "rsi_overbought": (60, 90),
     "rsi_oversold": (10, 40),
-    "sl_atr_mult": (0.3, 5.0),
+    "sl_atr_mult": (0.8, 5.0),  # was (0.3, 5.0) — 0.3 results in noise-level stops
     "trail_activate": (0.3, 5.0),
     "trail_distance": (0.1, 3.0),
     "cooldown_seconds": (60, 7200),
@@ -403,3 +403,85 @@ def evaluate_patience_filter(trades: list[dict], config: dict) -> dict:
         "wins_lost": wins_lost,
         "net_benefit": losses_avoided - wins_lost,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SL Quality Metrics & Dynamic Adjustment
+# ═══════════════════════════════════════════════════════════════════
+
+def apply_sl_hit_rate_penalty(raw_score: float, sl_hit_rate: float) -> float:
+    """Apply fitness penalty for strategies with high SL hit rates.
+
+    If >70% of exits are SL_SERVIDOR, the strategy's fitness score is
+    reduced by 30%. This penalizes strategies where stops are too tight
+    and get hit by normal market noise before the trade develops.
+
+    Args:
+        raw_score: The raw fitness score (e.g., profit factor, Sharpe ratio).
+        sl_hit_rate: SL hit rate as percentage (0-100).
+
+    Returns:
+        Adjusted score penalized for excessive SL hits.
+    """
+    if sl_hit_rate > 70.0:
+        return raw_score * 0.70  # 30% penalty
+    elif sl_hit_rate > 50.0:
+        return raw_score * 0.85  # 15% penalty
+    return raw_score
+
+
+def compute_dynamic_sl_mult(
+    base_sl_mult: float,
+    current_atr: float,
+    atr_20d_avg: float,
+) -> float:
+    """Compute adaptive SL multiplier based on current volatility vs average.
+
+    - If ATR > 1.5x 20-day average: SL = base_sl_mult × 1.2 (wider, high vol)
+    - If ATR < 0.7x 20-day average: SL = base_sl_mult × 0.8 (tighter, low vol)
+    - Otherwise: SL = base_sl_mult (normal)
+
+    Args:
+        base_sl_mult: The base sl_atr_mult parameter.
+        current_atr: Current ATR value.
+        atr_20d_avg: 20-day average ATR.
+
+    Returns:
+        Adjusted SL multiplier.
+    """
+    if atr_20d_avg <= 0:
+        return base_sl_mult
+
+    atr_ratio = current_atr / atr_20d_avg
+
+    if atr_ratio > 1.5:
+        # High volatility — widen SL
+        return base_sl_mult * 1.2
+    elif atr_ratio < 0.7:
+        # Low volatility — tighten SL (but floor is enforced by min_native)
+        return base_sl_mult * 0.8
+    return base_sl_mult
+
+
+def compute_atr_based_min_sl(
+    fixed_min_native: int,
+    atr: float,
+    atr_floor_pct: float = 0.8,
+) -> int:
+    """Compute ATR-based minimum SL to prevent noise-level stops.
+
+    Instead of using a fixed min_native (e.g., WDO=3 pts = R$1.50),
+    derive the minimum from ATR so the SL always has room to breathe.
+
+    Formula: min_from_atr = max(fixed_min_native, int(atr * atr_floor_pct))
+
+    Args:
+        fixed_min_native: The instrument's fixed minimum SL in native points.
+        atr: Current ATR value.
+        atr_floor_pct: Minimum SL as fraction of ATR (default 0.8 = 80%).
+
+    Returns:
+        Minimum SL in native points (never below fixed_min_native).
+    """
+    min_from_atr = int(atr * atr_floor_pct)
+    return max(fixed_min_native, min_from_atr)
