@@ -1,8 +1,8 @@
 {
-  "_version": 678,
-  "_updated_at": "2026-06-19T13:04:09.533612",
-  "_updated_by": "meio_dia_params",
-  "_notes": "auto-resolve vencimento: WSP: WSPM26 → WSPU26",
+  "_version": 685,
+  "_updated_at": "2026-06-22T12:02:53.861572",
+  "_updated_by": "meio_dia",
+  "_notes": "auto-resolve vencimento: WDO: WDON26 → WDOQ26",
   "start_hour": 9,
   "start_minute": 5,
   "close_hour": 16,
@@ -104,17 +104,17 @@
     "WIN": "WINQ26",
     "BIT": "BITM26",
     "WSP": "WSPU26",
-    "WDO": "WDON26"
+    "WDO": "WDOQ26"
   },
   "warmup_minutes": 15,
   "winddown_minutes": 15,
   "validate_with_llm": true,
   "strategy_by_tf": {
-    "WIN_M5": "MACD_MOMENTUM",
+    "WIN_M5": "DONCHIAN_BREAKOUT",
     "WIN_M15": "RSI_REVERSION",
     "WIN_M30": "MACD_MOMENTUM",
     "WIN_H1": "RSI_REVERSION",
-    "BIT_M5": "RSI_REVERSION",
+    "BIT_M5": "KELTNER_CHANNEL",
     "BIT_M15": "KELTNER_CHANNEL",
     "BIT_M30": "RSI_REVERSION",
     "BIT_H1": "MACD_MOMENTUM",
@@ -229,7 +229,9 @@
       "rsi_period": 14,
       "rsi_overbought": 75,
       "rsi_oversold": 25,
-      "cooldown_seconds": 900
+      "cooldown_seconds": 900,
+      "macd_fast": 8,
+      "macd_signal": 7
     },
     "WIN_H1": {
       "sl_atr_mult": 0.8,
@@ -241,9 +243,9 @@
     },
     "BIT_M5": {
       "sl_atr_mult": 1.0,
-      "rsi_period": 7,
+      "rsi_period": 14,
       "rsi_overbought": 75,
-      "rsi_oversold": 20,
+      "rsi_oversold": 15,
       "cooldown_seconds": 1200,
       "macd_fast": 8
     },
