@@ -1,0 +1,1781 @@
+{
+  "timestamp": "2026-06-19T17:13:06.563994",
+  "period_days": 7,
+  "dry_run": false,
+  "max_iterations": 5,
+  "use_backtest_convergence": true,
+  "iterations": [],
+  "converged": false,
+  "paused_by_fallback": {
+    "paused": [],
+    "skipped": []
+  },
+  "performance": {
+    "by_symbol": {
+      "WIN": {
+        "n_trades": 51,
+        "wins": 19,
+        "losses": 32,
+        "win_rate": 37.3,
+        "total_pnl": -375.2,
+        "avg_pnl": -7.36,
+        "worst": -101.2,
+        "best": 123.8,
+        "total_fees": 61.2,
+        "total_pnl_real": -375.2,
+        "avg_pnl_real": -7.36,
+        "worst_real": -101.2,
+        "best_real": 123.8
+      },
+      "IND": {
+        "n_trades": 30,
+        "wins": 15,
+        "losses": 15,
+        "win_rate": 50.0,
+        "total_pnl": -366.0,
+        "avg_pnl": -12.2,
+        "worst": -716.2,
+        "best": 553.8,
+        "total_fees": 36.0,
+        "total_pnl_real": -366.0,
+        "avg_pnl_real": -12.2,
+        "worst_real": -716.2,
+        "best_real": 553.8
+      },
+      "WDO": {
+        "n_trades": 37,
+        "wins": 13,
+        "losses": 24,
+        "win_rate": 35.1,
+        "total_pnl": -194.4,
+        "avg_pnl": -5.25,
+        "worst": -96.2,
+        "best": 148.8,
+        "total_fees": 44.4,
+        "total_pnl_real": -194.4,
+        "avg_pnl_real": -5.25,
+        "worst_real": -96.2,
+        "best_real": 148.8
+      },
+      "DOL": {
+        "n_trades": 30,
+        "wins": 8,
+        "losses": 22,
+        "win_rate": 26.7,
+        "total_pnl": -127.6,
+        "avg_pnl": -4.25,
+        "worst": -61.0,
+        "best": 41.5,
+        "total_fees": 69.6,
+        "total_pnl_real": -127.6,
+        "avg_pnl_real": -4.25,
+        "worst_real": -61.0,
+        "best_real": 41.5
+      },
+      "WSP": {
+        "n_trades": 42,
+        "wins": 15,
+        "losses": 27,
+        "win_rate": 35.7,
+        "total_pnl": -13.65,
+        "avg_pnl": -0.32,
+        "worst": -12.45,
+        "best": 22.05,
+        "total_fees": 50.4,
+        "total_pnl_real": -13.65,
+        "avg_pnl_real": -0.32,
+        "worst_real": -12.45,
+        "best_real": 22.05
+      },
+      "BIT": {
+        "n_trades": 43,
+        "wins": 20,
+        "losses": 23,
+        "win_rate": 46.5,
+        "total_pnl": 546.0,
+        "avg_pnl": 12.7,
+        "worst": -981.2,
+        "best": 2338.8,
+        "total_fees": 54.0,
+        "total_pnl_real": 546.0,
+        "avg_pnl_real": 12.7,
+        "worst_real": -981.2,
+        "best_real": 2338.8
+      }
+    },
+    "by_symbol_tf": {
+      "BIT_H1": {
+        "n_trades": 10,
+        "win_rate": 40.0,
+        "total_pnl": 388.0,
+        "avg_pnl": 38.8,
+        "total_pnl_real": 388.0,
+        "avg_pnl_real": 38.8,
+        "strategy": "VWAP"
+      },
+      "BIT_M15": {
+        "n_trades": 15,
+        "win_rate": 60.0,
+        "total_pnl": 3322.0,
+        "avg_pnl": 221.47,
+        "total_pnl_real": 3322.0,
+        "avg_pnl_real": 221.47,
+        "strategy": "EMA_PULLBACK"
+      },
+      "BIT_M30": {
+        "n_trades": 9,
+        "win_rate": 22.2,
+        "total_pnl": -2713.2,
+        "avg_pnl": -301.47,
+        "total_pnl_real": -2713.2,
+        "avg_pnl_real": -301.47,
+        "strategy": "RSI_REVERSION"
+      },
+      "BIT_M5": {
+        "n_trades": 9,
+        "win_rate": 55.6,
+        "total_pnl": -450.8,
+        "avg_pnl": -50.09,
+        "total_pnl_real": -450.8,
+        "avg_pnl_real": -50.09,
+        "strategy": "RSI_REVERSION"
+      },
+      "DOL_M15": {
+        "n_trades": 8,
+        "win_rate": 37.5,
+        "total_pnl": -39.4,
+        "avg_pnl": -4.92,
+        "total_pnl_real": -39.4,
+        "avg_pnl_real": -4.92,
+        "strategy": "EMA_PULLBACK"
+      },
+      "DOL_M30": {
+        "n_trades": 5,
+        "win_rate": 0.0,
+        "total_pnl": -92.2,
+        "avg_pnl": -18.44,
+        "total_pnl_real": -92.2,
+        "avg_pnl_real": -18.44,
+        "strategy": "EMA_PULLBACK"
+      },
+      "DOL_M5": {
+        "n_trades": 17,
+        "win_rate": 29.4,
+        "total_pnl": 4.0,
+        "avg_pnl": 0.24,
+        "total_pnl_real": 4.0,
+        "avg_pnl_real": 0.24,
+        "strategy": "EMA_PULLBACK"
+      },
+      "IND_M15": {
+        "n_trades": 5,
+        "win_rate": 80.0,
+        "total_pnl": 609.0,
+        "avg_pnl": 121.8,
+        "total_pnl_real": 609.0,
+        "avg_pnl_real": 121.8,
+        "strategy": "BOLLINGER"
+      },
+      "IND_M30": {
+        "n_trades": 23,
+        "win_rate": 47.8,
+        "total_pnl": -167.6,
+        "avg_pnl": -7.29,
+        "total_pnl_real": -167.6,
+        "avg_pnl_real": -7.29,
+        "strategy": "RSI_REVERSION"
+      },
+      "IND_M5": {
+        "n_trades": 2,
+        "win_rate": 0.0,
+        "total_pnl": -807.4,
+        "avg_pnl": -403.7,
+        "total_pnl_real": -807.4,
+        "avg_pnl_real": -403.7,
+        "strategy": "BOLLINGER"
+      },
+      "WDO_H1": {
+        "n_trades": 1,
+        "win_rate": 0.0,
+        "total_pnl": -56.2,
+        "avg_pnl": -56.2,
+        "total_pnl_real": -56.2,
+        "avg_pnl_real": -56.2,
+        "strategy": "EMA_PULLBACK"
+      },
+      "WDO_M15": {
+        "n_trades": 9,
+        "win_rate": 44.4,
+        "total_pnl": 204.2,
+        "avg_pnl": 22.69,
+        "total_pnl_real": 204.2,
+        "avg_pnl_real": 22.69,
+        "strategy": "EMA_PULLBACK"
+      },
+      "WDO_M30": {
+        "n_trades": 14,
+        "win_rate": 28.6,
+        "total_pnl": -181.8,
+        "avg_pnl": -12.99,
+        "total_pnl_real": -181.8,
+        "avg_pnl_real": -12.99,
+        "strategy": "RSI_REVERSION"
+      },
+      "WDO_M5": {
+        "n_trades": 13,
+        "win_rate": 38.5,
+        "total_pnl": -160.6,
+        "avg_pnl": -12.35,
+        "total_pnl_real": -160.6,
+        "avg_pnl_real": -12.35,
+        "strategy": "RSI_REVERSION"
+      },
+      "WIN_H1": {
+        "n_trades": 3,
+        "win_rate": 66.7,
+        "total_pnl": 12.4,
+        "avg_pnl": 4.13,
+        "total_pnl_real": 12.4,
+        "avg_pnl_real": 4.13,
+        "strategy": "RSI_REVERSION"
+      },
+      "WIN_M15": {
+        "n_trades": 19,
+        "win_rate": 52.6,
+        "total_pnl": 63.2,
+        "avg_pnl": 3.33,
+        "total_pnl_real": 63.2,
+        "avg_pnl_real": 3.33,
+        "strategy": "BOLLINGER"
+      },
+      "WIN_M30": {
+        "n_trades": 20,
+        "win_rate": 30.0,
+        "total_pnl": -254.0,
+        "avg_pnl": -12.7,
+        "total_pnl_real": -254.0,
+        "avg_pnl_real": -12.7,
+        "strategy": "RSI_REVERSION"
+      },
+      "WIN_M5": {
+        "n_trades": 9,
+        "win_rate": 11.1,
+        "total_pnl": -196.8,
+        "avg_pnl": -21.87,
+        "total_pnl_real": -196.8,
+        "avg_pnl_real": -21.87,
+        "strategy": "BOLLINGER"
+      },
+      "WSP_H1": {
+        "n_trades": 9,
+        "win_rate": 22.2,
+        "total_pnl": -1.3,
+        "avg_pnl": -0.14,
+        "total_pnl_real": -1.3,
+        "avg_pnl_real": -0.14,
+        "strategy": "VWAP"
+      },
+      "WSP_M15": {
+        "n_trades": 13,
+        "win_rate": 23.1,
+        "total_pnl": -30.85,
+        "avg_pnl": -2.37,
+        "total_pnl_real": -30.85,
+        "avg_pnl_real": -2.37,
+        "strategy": "STRONG_TREND"
+      },
+      "WSP_M30": {
+        "n_trades": 6,
+        "win_rate": 66.7,
+        "total_pnl": 13.8,
+        "avg_pnl": 2.3,
+        "total_pnl_real": 13.8,
+        "avg_pnl_real": 2.3,
+        "strategy": "MACD_MOMENTUM"
+      },
+      "WSP_M5": {
+        "n_trades": 14,
+        "win_rate": 42.9,
+        "total_pnl": 4.7,
+        "avg_pnl": 0.34,
+        "total_pnl_real": 4.7,
+        "avg_pnl_real": 0.34,
+        "strategy": "RSI_REVERSION"
+      }
+    },
+    "exit_reasons": {
+      "SL_SERVIDOR": {
+        "count": 229,
+        "total_pnl": -482.05,
+        "avg_pnl": -2.11
+      },
+      "EOD_16:45": {
+        "count": 4,
+        "total_pnl": -48.8,
+        "avg_pnl": -12.2
+      }
+    },
+    "today": {
+      "BIT": {
+        "n_trades": 5,
+        "win_rate": 40.0,
+        "total_pnl": -486.0
+      },
+      "WDO": {
+        "n_trades": 8,
+        "win_rate": 50.0,
+        "total_pnl": 65.4
+      },
+      "WIN": {
+        "n_trades": 12,
+        "win_rate": 33.3,
+        "total_pnl": -216.4
+      },
+      "WSP": {
+        "n_trades": 7,
+        "win_rate": 0.0,
+        "total_pnl": -28.15
+      }
+    },
+    "streaks": {
+      "WIN": [
+        {
+          "losses": 5,
+          "pnl": -255.0
+        },
+        {
+          "losses": 3,
+          "pnl": -85.6
+        },
+        {
+          "losses": 3,
+          "pnl": -57.6
+        },
+        {
+          "losses": 3,
+          "pnl": -167.6
+        },
+        {
+          "losses": 3,
+          "pnl": -140.6
+        },
+        {
+          "losses": 3,
+          "pnl": -78.6
+        }
+      ],
+      "IND": [
+        {
+          "losses": 3,
+          "pnl": -643.6
+        }
+      ],
+      "DOL": [
+        {
+          "losses": 3,
+          "pnl": -21.1
+        },
+        {
+          "losses": 7,
+          "pnl": -28.9
+        },
+        {
+          "losses": 9,
+          "pnl": -128.1
+        }
+      ],
+      "WSP": [
+        {
+          "losses": 3,
+          "pnl": -7.6
+        },
+        {
+          "losses": 3,
+          "pnl": -18.85
+        },
+        {
+          "losses": 5,
+          "pnl": -13.0
+        },
+        {
+          "losses": 4,
+          "pnl": -15.3
+        },
+        {
+          "losses": 8,
+          "pnl": -33.1
+        }
+      ],
+      "BIT": [
+        {
+          "losses": 3,
+          "pnl": -2166.0
+        },
+        {
+          "losses": 3,
+          "pnl": -1503.6
+        },
+        {
+          "losses": 4,
+          "pnl": -2324.8
+        },
+        {
+          "losses": 3,
+          "pnl": -363.6
+        }
+      ],
+      "WDO": [
+        {
+          "losses": 6,
+          "pnl": -227.2
+        },
+        {
+          "losses": 4,
+          "pnl": -149.8
+        },
+        {
+          "losses": 4,
+          "pnl": -194.8
+        }
+      ]
+    },
+    "streaks_by_tf": {
+      "WIN_M5": {
+        "max_streak": 5,
+        "max_streak_pnl": -77.0
+      },
+      "IND_M5": {
+        "max_streak": 2,
+        "max_streak_pnl": -807.4
+      },
+      "DOL_M5": {
+        "max_streak": 6,
+        "max_streak_pnl": -22.2
+      },
+      "WSP_M30": {
+        "max_streak": 1,
+        "max_streak_pnl": -12.45
+      },
+      "WIN_M15": {
+        "max_streak": 4,
+        "max_streak_pnl": -148.8
+      },
+      "IND_M15": {
+        "max_streak": 1,
+        "max_streak_pnl": -321.2
+      },
+      "DOL_M15": {
+        "max_streak": 2,
+        "max_streak_pnl": -12.9
+      },
+      "WSP_M5": {
+        "max_streak": 5,
+        "max_streak_pnl": -21.0
+      },
+      "WSP_M15": {
+        "max_streak": 6,
+        "max_streak_pnl": -17.45
+      },
+      "WSP_H1": {
+        "max_streak": 5,
+        "max_streak_pnl": -20.75
+      },
+      "IND_M30": {
+        "max_streak": 3,
+        "max_streak_pnl": -643.6
+      },
+      "WIN_M30": {
+        "max_streak": 6,
+        "max_streak_pnl": -184.2
+      },
+      "BIT_M30": {
+        "max_streak": 4,
+        "max_streak_pnl": -1464.8
+      },
+      "BIT_H1": {
+        "max_streak": 4,
+        "max_streak_pnl": -724.8
+      },
+      "BIT_M15": {
+        "max_streak": 4,
+        "max_streak_pnl": -2224.8
+      },
+      "WDO_M5": {
+        "max_streak": 3,
+        "max_streak_pnl": -138.6
+      },
+      "WDO_H1": {
+        "max_streak": 1,
+        "max_streak_pnl": -56.2
+      },
+      "BIT_M5": {
+        "max_streak": 2,
+        "max_streak_pnl": -902.4
+      },
+      "WDO_M30": {
+        "max_streak": 4,
+        "max_streak_pnl": -134.8
+      },
+      "WDO_M15": {
+        "max_streak": 3,
+        "max_streak_pnl": -113.6
+      },
+      "DOL_M30": {
+        "max_streak": 5,
+        "max_streak_pnl": -92.2
+      },
+      "WIN_H1": {
+        "max_streak": 1,
+        "max_streak_pnl": -25.2
+      }
+    },
+    "period_days": 7,
+    "cutoff_date": "2026-06-12"
+  },
+  "issues": [
+    {
+      "symbol": "WIN",
+      "type": "LOSS_STREAK",
+      "detail": "Sequência de 5 perdas (R$ -255.00) — elevar cooldown ou max_daily_trades",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "IND",
+      "type": "LARGE_LOSS",
+      "detail": "Pior trade: R$ -716.20 — SL muito largo ou sem proteção",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "WDO",
+      "type": "LOSS_STREAK",
+      "detail": "Sequência de 6 perdas (R$ -227.20) — elevar cooldown ou max_daily_trades",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "WDO",
+      "type": "LOSS_STREAK",
+      "detail": "Sequência de 4 perdas (R$ -149.80) — elevar cooldown ou max_daily_trades",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "WDO",
+      "type": "LOSS_STREAK",
+      "detail": "Sequência de 4 perdas (R$ -194.80) — elevar cooldown ou max_daily_trades",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "DOL",
+      "type": "LOW_WR",
+      "detail": "WR=26.7% em 30 trades — pode melhorar com filtros mais restritivos",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "DOL",
+      "type": "LOSS_STREAK",
+      "detail": "Sequência de 7 perdas (R$ -28.90) — elevar cooldown ou max_daily_trades",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "DOL",
+      "type": "LOSS_STREAK",
+      "detail": "Sequência de 9 perdas (R$ -128.10) — elevar cooldown ou max_daily_trades",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "WSP",
+      "type": "LOSS_STREAK",
+      "detail": "Sequência de 5 perdas (R$ -13.00) — elevar cooldown ou max_daily_trades",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "WSP",
+      "type": "LOSS_STREAK",
+      "detail": "Sequência de 4 perdas (R$ -15.30) — elevar cooldown ou max_daily_trades",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "WSP",
+      "type": "LOSS_STREAK",
+      "detail": "Sequência de 8 perdas (R$ -33.10) — elevar cooldown ou max_daily_trades",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "BIT",
+      "type": "LARGE_LOSS",
+      "detail": "Pior trade: R$ -981.20 — SL muito largo ou sem proteção",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "BIT",
+      "type": "LOSS_STREAK",
+      "detail": "Sequência de 4 perdas (R$ -2324.80) — elevar cooldown ou max_daily_trades",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "WIN_M5",
+      "type": "LOSS_STREAK_TF",
+      "detail": "Pior streak: 5 losses seguidas (R$ -77.00) — considerar ajustar HALT (max_consecutive_losses_by_tf)",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "DOL_M5",
+      "type": "LOSS_STREAK_TF",
+      "detail": "Pior streak: 6 losses seguidas (R$ -22.20) — considerar ajustar HALT (max_consecutive_losses_by_tf)",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "WIN_M15",
+      "type": "LOSS_STREAK_TF",
+      "detail": "Pior streak: 4 losses seguidas (R$ -148.80) — considerar ajustar HALT (max_consecutive_losses_by_tf)",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "WSP_M5",
+      "type": "LOSS_STREAK_TF",
+      "detail": "Pior streak: 5 losses seguidas (R$ -21.00) — considerar ajustar HALT (max_consecutive_losses_by_tf)",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "WSP_M15",
+      "type": "LOSS_STREAK_TF",
+      "detail": "Pior streak: 6 losses seguidas (R$ -17.45) — considerar ajustar HALT (max_consecutive_losses_by_tf)",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "WSP_H1",
+      "type": "LOSS_STREAK_TF",
+      "detail": "Pior streak: 5 losses seguidas (R$ -20.75) — considerar ajustar HALT (max_consecutive_losses_by_tf)",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "WIN_M30",
+      "type": "LOSS_STREAK_TF",
+      "detail": "Pior streak: 6 losses seguidas (R$ -184.20) — considerar ajustar HALT (max_consecutive_losses_by_tf)",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "BIT_M30",
+      "type": "LOSS_STREAK_TF",
+      "detail": "Pior streak: 4 losses seguidas (R$ -1464.80) — considerar ajustar HALT (max_consecutive_losses_by_tf)",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "BIT_H1",
+      "type": "LOSS_STREAK_TF",
+      "detail": "Pior streak: 4 losses seguidas (R$ -724.80) — considerar ajustar HALT (max_consecutive_losses_by_tf)",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "BIT_M15",
+      "type": "LOSS_STREAK_TF",
+      "detail": "Pior streak: 4 losses seguidas (R$ -2224.80) — considerar ajustar HALT (max_consecutive_losses_by_tf)",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "WDO_M30",
+      "type": "LOSS_STREAK_TF",
+      "detail": "Pior streak: 4 losses seguidas (R$ -134.80) — considerar ajustar HALT (max_consecutive_losses_by_tf)",
+      "severity": "HIGH"
+    },
+    {
+      "symbol": "DOL_M30",
+      "type": "LOSS_STREAK_TF",
+      "detail": "Pior streak: 5 losses seguidas (R$ -92.20) — considerar ajustar HALT (max_consecutive_losses_by_tf)",
+      "severity": "HIGH"
+    }
+  ],
+  "web_intel": {
+    "WIN": {
+      "symbol": "WIN",
+      "strategy": "DONCHIAN_BREAKOUT",
+      "strategy_tips": "",
+      "indicator_settings": "### Best MT5 Expert Advisors: Top EAs for Automated Trading\n# Best MT5 Expert Advisors: Top EAs for Automated Trading\n\nCompare the best MT5 expert advisors for 2026. We review top-performing EAs built for MetaTrader 5, covering gold, scalping, AI-driven, and prop firm-ready robots.\n\n## Why MT5 Expert Advisors Deserve Their Own List\n\nMetaTrader 5 isn’t just an upgrade from MT4. It’s a fundamentally different platform with a more powerful programming language, native multi-asset support, and features like the built-in economic calendar and depth of market. That means EAs designed specifically for MT5 can do things MT4 robots simply can’t.\n\nMQL5 allows object-oriented programming, ONNX neural network integration, and direct access to more order types. Developers who build exclusively for MT5 aren’t just porting code from MT4. They’re writing EAs that take full advantage of netting and hedging account modes, multi-timeframe optimization, and faster backtesting engines.\n\nIf you’ve been searching for the best MT5 expert advisors, you’ve probably noticed that most “best EA” lists lump MT4 and MT5 together. That’s a problem. An EA optimized for MQL5 from the ground up behaves differently than a ported MT4 robot. This list focuses exclusively on EAs that are either MT5-only or significantly better on MetaTrader 5.\n\nWe evaluated each EA based on verified Myfxbook track records, MQL5 Market ratings, drawdown behavior, strategy transparency, and real user reviews. Let’s get into it.\n\n##\n\n---\n\n### profitable-expert-advisor/README.md at master · zhutoutoutousan/profitable-expert-advisor\nA comprehensive collection of algorithmic trading strategies for MetaTrader 5, including production-ready Expert Advisors, machine learning models, and backtesting frameworks.\n\n* Repository Structure\n* Frontline Strategies - Production-ready EAs\n* AI & Machine Learning - ONNX models for price prediction\n* Back-Pedal Strategies - Alternative implementations\n* Backtesting - Python backtesting framework\n* Strategy Performance\n* Quick Start\n* Disclaimer\n\n```\n```\nprofitable-expert-advisor/\n├── frontline/           # Production-ready trading strategies\n│   ├── MQL5/           # MetaTrader 5 Expert Advisors\n│   └── tradingview/    # TradingView Pine Script strategies\n├── ai/                 # ONNX machine learning models\n├── back-pedal/         # Alternative/experimental strategies\n├── backtesting/        # Python backtesting framework\n│   ├── MT5/           # MT5 Python backtesting\n│   └── own/           # Custom backtesting tools\n└── paper/              # Research papers and simulations\n```\n```\n\nLocation:\n\n```\nfrontline/\n```\n\nProduction-ready Expert Advisors with comprehensive backtesting and performance reports.\n\n* RSI Scalping Strategies\n\n  + RSIScalpingXAUUSD (Gold)\n  + RSIScalpingBTCUSD (Bitcoin)\n  + RSIScalpingMSFT (Microsoft Stock)\n  + RSIScalpingTSLA (Tesla Stock)\n* Advanced Gold Strategies\n\n  + RSICrossOverReversalXAUUSD\n  + RSIMidPointHijackXAUUSD (Multi-strategy system)\n  + EMAS",
+      "sl_trail_tactics": "### ATR Stop Loss All Trades MT5 | Buy Trading Utility for MetaTrader 5\n50 USD\n\n|  |\n| --- |\n| Buy: 50 USD |\n| Free Demo Have you installed MetaTrader 5?MetaTrader 5 is required for installing **ATR Stop Loss All Trades MT5** demo |\n\nDemo downloaded:\n32\n\nPublished:\n19 September 2023\n\nCurrent version:\n1.3\n\nMore from author\n\nDidn't find a suitable robot?  \nOrder your own one  \n on Freelance\n\nGo to Freelance\n\nHow to buy а trading robot or an indicator\n\nRun your EA on\n  \nvirtual hosting\n\nTest аn indicator/trading robot before buying\n\nWant to earn in the Market?\n\nHow to present a product for a sell-through\n\n* Overview\n* Reviews\n* Comments\n* What's new\n\n# ATR Stop Loss All Trades MT5\n\n* Utilities\n* Prafull Manohar Nikam\n\n  #### Prafull Manohar Nikam\n\n  + Founder at  TickDepo\n  + India\n  + 6297\n\n  **4.5**\n  (2)\n\n  + https://www.tickdepo.com\n\n  Hello! Traders, I hope you are doing great.\n    \n  Most forex people search online for \"How to make 10 pips or more profit per day?\" They never search for \"How to make only 10 pips loss per day?\" Why?!\n\n  52 products\n* Version:\n  1.3\n* Updated:\n  13 January 2026\n* Activations:\n  5\n\n**Live testing available. Please contact.**\n\nATR Auto Stop Loss & Take Profit Manager\n\nAutomatically apply volatility-based Stop Loss and Take Profit levels to every new trade using the Average True Range (ATR).\n\nUnlike fixed-pip stop losses, ATR-based levels adapt to current market conditions. During high volatility, wider stops help prevent premature exits. During\n\n---\n\n### Adaptive ATR Trailing Stop | Free Download Trading Utility for MetaTrader 5\nFREE\n\nDownload\n\n### Have you installed MetaTrader 5?\n\nMetaTrader 5 is required for installing **Adaptive ATR Trailing Stop**\n\nPublished:\n11 October 2025\n\nCurrent version:\n1.1\n\nMore from author\n\nDidn't find a suitable robot?  \nOrder your own one  \n on Freelance\n\nGo to Freelance\n\nHow to buy а trading robot or an indicator\n\nRun your EA on\n  \nvirtual hosting\n\nTest аn indicator/trading robot before buying\n\nWant to earn in the Market?\n\nHow to present a product for a sell-through\n\n* Overview\n* Reviews\n  (2)\n* What's new\n\n# Adaptive ATR Trailing Stop\n\n4.5\n\n* Utilities\n* Seref Oliver Joisten\n\n  #### Seref Oliver Joisten\n\n  + Sweden\n  + 895\n\n  **4.5**\n  (2)\n\n  Welcome to my profile. I’m an embedded software engineer and active trader with a relentless drive to build trading tools that actually work in real-world conditions—no cheap gimmicks, no illusions.\n    \n  Every Expert Advisor I create is designed with three principles in mind:\n\n  5 products\n* Version:\n  1.1\n* Updated:\n  23 February 2026\n\n**Adaptive ATR Trailing Stop (MT5)**\n\n**Overview**\n\nAdaptive ATR Trailing Stop is a utility Expert Advisor for MetaTrader 5 that manages stop loss levels for existing open positions. It uses the Average True Range (ATR) to calculate a volatility-based trailing distance.\n\nThis EA does not open trades. It only modifies the Stop Loss (SL) of existing positions and keeps the current Take Profit (TP) unchanged.\n\n**How it",
+      "patterns": "### Mean Reversion Entry: At Open vs. Intraday Pullback vs Confirmation\nAugust 25, 2021\n\n* in\n  **Mean Reversion**\n   **,**  \n  **Research**\n   **,**  \n  **Stocks**\n   by Cesar Alvarez\n\nFor the mean reversion strategies that I have created in the past and are trading now, they typically enter at the next day’s open or wait for a further pullback intraday before entering. My current mean reversion strategy, which enters on a limit down, was doing great until a few months ago when the performance started to slip. Looking at the missed trades and the trades taken, it seemed like the best trades would have been entering at open or waiting for some intraday confirmation.\n\nWaiting for a pullback to take out the previous day’s high was very popular when I started trading. But my testing then showed that it was better to wait for a further intraday pullback to enter. Have the markets changed such that waiting for confirmation is better?\n\n# The Three Types of Entry\n\nFor a mean reversion setup, there are three popular ways to enter.\n\n## On the next open\n\nAfter the setup, the strategy enters on the next open. The advantage of this entry method is that you know that you will get into the stock. The disadvantage is the potential for gap opens.\n\n**Free PDF: Improve Your Strategy Using Stock Market Regimes**\n\nSubscribe to my newsletter to receive updates and tips on trading and get instant access to Market Regimes as I use them in my trading.\n\n## \n\n## On intraday pullback\n\nAfter the setup,\n\n---\n\n### Trading Strategies & Indicators Built by TradingView Community\nSMC Confluence + EMA 9/15 + Fib 0.5\nHello Traders and TradingView Moderators,\nWelcome to the Ultimate SMC Confluence Engine, a fully optimized open-source tool written in the latest Pine Script v6.\nThis indicator is specifically designed to bridge the gap between retail trend-following metrics and institutional Smart Money Concepts (SMC/ICT). By merging short-term exponential momentum with structural price matrices, liquidity sweeps, and fair value gaps, this script generates high-probability confluence zones.\nCore Features and Institutional Logic\n1. Trend Identification via Dual EMAs (9 and 15)\nTo filter out low-probability counter-trend setups, the script plots two ultra-responsive Exponential Moving Averages:\n- EMA 9 (Yellow Line): Represents immediate institutional momentum.\n- EMA 15 (White Line): Represents short-term structural support or resistance.\nA long setup is only valid when EMA 9 is greater than EMA 15 (Bullish Phase), and a short setup is only valid when EMA 9 is less than EMA 15 (Bearish Phase).\n2. Institutional Character Shift (CHoCH)\nThe script monitors structural pivot highs and lows using a strict lookback period.\n- CHoCH Bullish Label: Triggered when the price secures a candle close above the recent valid swing high, signaling a market structure reversal to the upside.\n- CHoCH Bearish Label: Triggered when the price secures a candle close below the recent valid swing low, signaling a shift",
+      "sources": [
+        "https://newyorkcityservers.com/blog/best-mt5-expert-advisors",
+        "https://www.fortraders.com/blog/backtest-strategy-in-mt5-advanced-guide",
+        "https://github.com/zhutoutoutousan/profitable-expert-advisor/blob/master/README.md",
+        "https://www.fortraders.com/blog/best-mt5-expert-advisors-eas-for-funded-accounts",
+        "https://www.mql5.com/en/market/product/105561",
+        "https://www.mql5.com/en/market/product/152421",
+        "https://www.eaproducer.com/post/atr-trailing-stop-hidden-ea-mt5",
+        "https://alvarezquanttrading.com/blog/mean-reversion-entry-at-open-vs-intraday-pullback-vs-confirmation/",
+        "https://www.quantifiedstrategies.com/mean-reversion-strategies/",
+        "https://www.tradingview.com/scripts/",
+        "https://www.sarwa.co/blog/successful-day-trading-strategies/"
+      ],
+      "queries_made": [
+        "expert advisor MT5 day trade mini indice B3 high win rate backtest",
+        "expert advisor MT5 mini dolar B3 high profit factor strategy",
+        "ATR stop loss 1.5 2.0 multiplier expert advisor MT5 backtest win rate",
+        "ATR trailing stop expert advisor MT5 high profit factor",
+        "Mini Índice Bovespa day trade pullback breakout mean reversion backtest strategy",
+        "WIN day trade high win rate patterns support resistance automated"
+      ],
+      "fetched_at": "2026-06-19T17:11:12.408625"
+    },
+    "IND": {
+      "symbol": "IND",
+      "strategy": "GENERAL",
+      "strategy_tips": "### Best MT5 Expert Advisors: Top EAs for Automated Trading\n# Best MT5 Expert Advisors: Top EAs for Automated Trading\n\nCompare the best MT5 expert advisors for 2026. We review top-performing EAs built for MetaTrader 5, covering gold, scalping, AI-driven, and prop firm-ready robots.\n\n## Why MT5 Expert Advisors Deserve Their Own List\n\nMetaTrader 5 isn’t just an upgrade from MT4. It’s a fundamentally different platform with a more powerful programming language, native multi-asset support, and features like the built-in economic calendar and depth of market. That means EAs designed specifically for MT5 can do things MT4 robots simply can’t.\n\nMQL5 allows object-oriented programming, ONNX neural network integration, and direct access to more order types. Developers who build exclusively for MT5 aren’t just porting code from MT4. They’re writing EAs that take full advantage of netting and hedging account modes, multi-timeframe optimization, and faster backtesting engines.\n\nIf you’ve been searching for the best MT5 expert advisors, you’ve probably noticed that most “best EA” lists lump MT4 and MT5 together. That’s a problem. An EA optimized for MQL5 from the ground up behaves differently than a ported MT4 robot. This list focuses exclusively on EAs that are either MT5-only or significantly better on MetaTrader 5.\n\nWe evaluated each EA based on verified Myfxbook track records, MQL5 Market ratings, drawdown behavior, strategy transparency, and real user reviews. Let’s get into it.\n\n##\n\n---\n\n### profitable-expert-advisor/README.md at master · zhutoutoutousan/profitable-expert-advisor\nA comprehensive collection of algorithmic trading strategies for MetaTrader 5, including production-ready Expert Advisors, machine learning models, and backtesting frameworks.\n\n* Repository Structure\n* Frontline Strategies - Production-ready EAs\n* AI & Machine Learning - ONNX models for price prediction\n* Back-Pedal Strategies - Alternative implementations\n* Backtesting - Python backtesting framework\n* Strategy Performance\n* Quick Start\n* Disclaimer\n\n```\n```\nprofitable-expert-advisor/\n├── frontline/           # Production-ready trading strategies\n│   ├── MQL5/           # MetaTrader 5 Expert Advisors\n│   └── tradingview/    # TradingView Pine Script strategies\n├── ai/                 # ONNX machine learning models\n├── back-pedal/         # Alternative/experimental strategies\n├── backtesting/        # Python backtesting framework\n│   ├── MT5/           # MT5 Python backtesting\n│   └── own/           # Custom backtesting tools\n└── paper/              # Research papers and simulations\n```\n```\n\nLocation:\n\n```\nfrontline/\n```\n\nProduction-ready Expert Advisors with comprehensive backtesting and performance reports.\n\n* RSI Scalping Strategies\n\n  + RSIScalpingXAUUSD (Gold)\n  + RSIScalpingBTCUSD (Bitcoin)\n  + RSIScalpingMSFT (Microsoft Stock)\n  + RSIScalpingTSLA (Tesla Stock)\n* Advanced Gold Strategies\n\n  + RSICrossOverReversalXAUUSD\n  + RSIMidPointHijackXAUUSD (Multi-strategy system)\n  + EMAS",
+      "indicator_settings": "### Best MT5 Expert Advisors: Top EAs for Automated Trading\n# Best MT5 Expert Advisors: Top EAs for Automated Trading\n\nCompare the best MT5 expert advisors for 2026. We review top-performing EAs built for MetaTrader 5, covering gold, scalping, AI-driven, and prop firm-ready robots.\n\n## Why MT5 Expert Advisors Deserve Their Own List\n\nMetaTrader 5 isn’t just an upgrade from MT4. It’s a fundamentally different platform with a more powerful programming language, native multi-asset support, and features like the built-in economic calendar and depth of market. That means EAs designed specifically for MT5 can do things MT4 robots simply can’t.\n\nMQL5 allows object-oriented programming, ONNX neural network integration, and direct access to more order types. Developers who build exclusively for MT5 aren’t just porting code from MT4. They’re writing EAs that take full advantage of netting and hedging account modes, multi-timeframe optimization, and faster backtesting engines.\n\nIf you’ve been searching for the best MT5 expert advisors, you’ve probably noticed that most “best EA” lists lump MT4 and MT5 together. That’s a problem. An EA optimized for MQL5 from the ground up behaves differently than a ported MT4 robot. This list focuses exclusively on EAs that are either MT5-only or significantly better on MetaTrader 5.\n\nWe evaluated each EA based on verified Myfxbook track records, MQL5 Market ratings, drawdown behavior, strategy transparency, and real user reviews. Let’s get into it.\n\n##\n\n---\n\n### profitable-expert-advisor/README.md at master · zhutoutoutousan/profitable-expert-advisor\nA comprehensive collection of algorithmic trading strategies for MetaTrader 5, including production-ready Expert Advisors, machine learning models, and backtesting frameworks.\n\n* Repository Structure\n* Frontline Strategies - Production-ready EAs\n* AI & Machine Learning - ONNX models for price prediction\n* Back-Pedal Strategies - Alternative implementations\n* Backtesting - Python backtesting framework\n* Strategy Performance\n* Quick Start\n* Disclaimer\n\n```\n```\nprofitable-expert-advisor/\n├── frontline/           # Production-ready trading strategies\n│   ├── MQL5/           # MetaTrader 5 Expert Advisors\n│   └── tradingview/    # TradingView Pine Script strategies\n├── ai/                 # ONNX machine learning models\n├── back-pedal/         # Alternative/experimental strategies\n├── backtesting/        # Python backtesting framework\n│   ├── MT5/           # MT5 Python backtesting\n│   └── own/           # Custom backtesting tools\n└── paper/              # Research papers and simulations\n```\n```\n\nLocation:\n\n```\nfrontline/\n```\n\nProduction-ready Expert Advisors with comprehensive backtesting and performance reports.\n\n* RSI Scalping Strategies\n\n  + RSIScalpingXAUUSD (Gold)\n  + RSIScalpingBTCUSD (Bitcoin)\n  + RSIScalpingMSFT (Microsoft Stock)\n  + RSIScalpingTSLA (Tesla Stock)\n* Advanced Gold Strategies\n\n  + RSICrossOverReversalXAUUSD\n  + RSIMidPointHijackXAUUSD (Multi-strategy system)\n  + EMAS",
+      "sl_trail_tactics": "### ATR Stop Loss All Trades MT5 | Buy Trading Utility for MetaTrader 5\n50 USD\n\n|  |\n| --- |\n| Buy: 50 USD |\n| Free Demo Have you installed MetaTrader 5?MetaTrader 5 is required for installing **ATR Stop Loss All Trades MT5** demo |\n\nDemo downloaded:\n32\n\nPublished:\n19 September 2023\n\nCurrent version:\n1.3\n\nMore from author\n\nDidn't find a suitable robot?  \nOrder your own one  \n on Freelance\n\nGo to Freelance\n\nHow to buy а trading robot or an indicator\n\nRun your EA on\n  \nvirtual hosting\n\nTest аn indicator/trading robot before buying\n\nWant to earn in the Market?\n\nHow to present a product for a sell-through\n\n* Overview\n* Reviews\n* Comments\n* What's new\n\n# ATR Stop Loss All Trades MT5\n\n* Utilities\n* Prafull Manohar Nikam\n\n  #### Prafull Manohar Nikam\n\n  + Founder at  TickDepo\n  + India\n  + 6297\n\n  **4.5**\n  (2)\n\n  + https://www.tickdepo.com\n\n  Hello! Traders, I hope you are doing great.\n    \n  Most forex people search online for \"How to make 10 pips or more profit per day?\" They never search for \"How to make only 10 pips loss per day?\" Why?!\n\n  52 products\n* Version:\n  1.3\n* Updated:\n  13 January 2026\n* Activations:\n  5\n\n**Live testing available. Please contact.**\n\nATR Auto Stop Loss & Take Profit Manager\n\nAutomatically apply volatility-based Stop Loss and Take Profit levels to every new trade using the Average True Range (ATR).\n\nUnlike fixed-pip stop losses, ATR-based levels adapt to current market conditions. During high volatility, wider stops help prevent premature exits. During\n\n---\n\n### Adaptive ATR Trailing Stop | Free Download Trading Utility for MetaTrader 5\nFREE\n\nDownload\n\n### Have you installed MetaTrader 5?\n\nMetaTrader 5 is required for installing **Adaptive ATR Trailing Stop**\n\nPublished:\n11 October 2025\n\nCurrent version:\n1.1\n\nMore from author\n\nDidn't find a suitable robot?  \nOrder your own one  \n on Freelance\n\nGo to Freelance\n\nHow to buy а trading robot or an indicator\n\nRun your EA on\n  \nvirtual hosting\n\nTest аn indicator/trading robot before buying\n\nWant to earn in the Market?\n\nHow to present a product for a sell-through\n\n* Overview\n* Reviews\n  (2)\n* What's new\n\n# Adaptive ATR Trailing Stop\n\n4.5\n\n* Utilities\n* Seref Oliver Joisten\n\n  #### Seref Oliver Joisten\n\n  + Sweden\n  + 895\n\n  **4.5**\n  (2)\n\n  Welcome to my profile. I’m an embedded software engineer and active trader with a relentless drive to build trading tools that actually work in real-world conditions—no cheap gimmicks, no illusions.\n    \n  Every Expert Advisor I create is designed with three principles in mind:\n\n  5 products\n* Version:\n  1.1\n* Updated:\n  23 February 2026\n\n**Adaptive ATR Trailing Stop (MT5)**\n\n**Overview**\n\nAdaptive ATR Trailing Stop is a utility Expert Advisor for MetaTrader 5 that manages stop loss levels for existing open positions. It uses the Average True Range (ATR) to calculate a volatility-based trailing distance.\n\nThis EA does not open trades. It only modifies the Stop Loss (SL) of existing positions and keeps the current Take Profit (TP) unchanged.\n\n**How it",
+      "patterns": "### Pullback Trading Strategies: Setup and Backtest Analysis - QuantifiedStrategies.com\nA ***pullback trading strategy*** is a trading strategy that involves buying a stock after it has experienced a recent decline in price. The rationale behind this strategy is that the stock is likely to rebound from its recent decline and return to its previous price level or even higher.\n\n***Pullback Trading Strategy.*** We have previously discussed and written why the 200-day moving average works: because you play defense if a severe recession hits. But can you combine a long-term defensive trend-following strategy using the 200-day moving average with a **long-term pullback trading strategy**?\n\nTable of contents:\n\n## Pullback Trading Strategies\n\nIn this article, we **backtest** a combination of **long-term trend-following** and **short-term pullback strategies** to create a **long-term pullback trading strategy** that incorporates breakout pullbacks and retracement techniques for stocks.\n\n## The 200-day moving average\n\nFirst, we recommend reading two other articles we have written about trend lines and averages, including the 200-day moving average. These articles will provide insight into pullback trading strategies and breakout pullbacks.\n\nThe 200-day moving average, along with pullback trading strategies and trend lines, works well in the stock market because it allows for breakout pullback opportunities and helps you identify major bear markets early on. The downside is that you may\n\n---\n\n### Support and Resistance Basics\nPart of the Series\n\nGuide to Technical Analysis\n\n### Key Takeaways\n\n* Technical analysts use support and resistance levels to identify price points on a chart where the probabilities indicate buyers won't continue buying or sellers won't continue selling.\n* A stock's price may maintain a support level, below which its price won't drop.\n* It may also show a resistance level at which buyers back off.\n* Traders can identify support and resistance areas on charts using trendlines and moving averages.\n\nGet personalized, AI-powered answers built on 27+ years of trusted expertise.\n\nTraders and analysts chart the movements of stock prices over time to pinpoint the support levels and resistance levels that indicate optimal times to buy and sell.\n\nSupport and resistance are two foundational concepts in technical analysis. Understanding what they are and how they work is essential to correctly reading a price chart.\n\nTechnical analysis acknowledges that all stocks rise and fall in price constantly in response to supply and demand. By zeroing in on movements within a timeframe, traders seek to identify patterns. A stock's price may maintain a support level, below which its price won't drop. It may also show a resistance level at which buyers back off.\n\nLike many concepts in technical analysis, the explanation and rationale are relatively easy, but mastering their application in trading can take years of practice.\n\nSupport and resistance are key price lev",
+      "sources": [
+        "https://newyorkcityservers.com/blog/best-mt5-expert-advisors",
+        "https://www.fortraders.com/blog/backtest-strategy-in-mt5-advanced-guide",
+        "https://github.com/zhutoutoutousan/profitable-expert-advisor/blob/master/README.md",
+        "https://www.fortraders.com/blog/best-mt5-expert-advisors-eas-for-funded-accounts",
+        "https://newyorkcityservers.com/blog/best-mt5-expert-advisors",
+        "https://www.fortraders.com/blog/backtest-strategy-in-mt5-advanced-guide",
+        "https://github.com/zhutoutoutousan/profitable-expert-advisor/blob/master/README.md",
+        "https://www.fortraders.com/blog/best-mt5-expert-advisors-eas-for-funded-accounts",
+        "https://www.mql5.com/en/market/product/105561",
+        "https://www.mql5.com/en/market/product/152421",
+        "https://www.eaproducer.com/post/atr-trailing-stop-hidden-ea-mt5",
+        "https://www.quantifiedstrategies.com/pullback-trading-strategy/",
+        "https://alvarezquanttrading.com/blog/mean-reversion-entry-at-open-vs-intraday-pullback-vs-confirmation/",
+        "https://www.investopedia.com/trading/support-and-resistance-basics/",
+        "https://www.dukascopy.com/swiss/english/marketwatch/articles/day-trading-patterns/"
+      ],
+      "queries_made": [
+        "expert advisor MT5 day trade mini indice B3 high win rate backtest",
+        "expert advisor MT5 mini dolar B3 high profit factor strategy",
+        "expert advisor MT5 day trade mini indice B3 high win rate backtest",
+        "expert advisor MT5 mini dolar B3 high profit factor strategy",
+        "ATR stop loss 1.5 2.0 multiplier expert advisor MT5 backtest win rate",
+        "ATR trailing stop expert advisor MT5 high profit factor",
+        "IND day trade pullback breakout mean reversion backtest strategy",
+        "IND day trade high win rate patterns support resistance automated"
+      ],
+      "fetched_at": "2026-06-19T17:11:12.408364"
+    },
+    "WDO": {
+      "symbol": "WDO",
+      "strategy": "EMA_PULLBACK",
+      "strategy_tips": "### Freelance service at MQL5.com: Backtest EMA 9 vs AMA 21\n* All orders\n\n* Rules\n\nWatch how to order a trading robot\n\nRead the Rules before you post an order or execute it\n\nHow to Order a Trading Robot in MQL5 and MQL4\n\nSee a sample Requirements Specification to order a robot\n\nNew orders in the category:\n\n30+ USD\n\nSweetposion hedge\n\n75+ USD\n\nSierra chart project\n\n30 - 100 USD\n\n150 - 200 USD\n\nAlphaGreen\n\n30+ USD\n\nRobot trading\n\n30 - 40 USD\n\nProp Firm EA\n\n30+ USD\n\nNoganda EA\n\n40+ USD\n\nUltraTrend EA\n\n# Backtest EMA 9 vs AMA 21\n\n2021.08.26\nMQL5\n\nExperts\n\n* Description\n\n## Specification\n\nI need to do a historical backtest with the following strategy:\n\nActivation:\n\n1) First EMA 9 must cross SMA 21\n\n2) After that, enter 50% if the price returns to EMA 9, that is, the first entry is to PULLBACK at an average of 9.\n\n3) If the price finds an average of 21, enter the rest (50%).\n\nDepartures:\n\n1) I don't have a gain objective, I would like to know if there is a way for the backtest to provide me with the best gain for this strategy\n\nStop:\n\n1) The Stop occurs when the average of 9 crosses again the average of 21 in the opposite direction, attention:\n\n2) the stop only occurs after the averages cross AND THE PRICE PULLBACKS TO THE AVERAGE OF 9 (again), in the opposite direction this time, that is, both the entry and the stop are only triggered in the pullback of the average of 9 AFTER the crossing of the averages. So, if the first time you entered long and the average crossed to sell, expe\n\n---\n\n### 9-EMA — Indicadores y estrategias — TradingView\nIndicador Pine Script®\n\n# 9-EMA\n\nMACD + EMA200 MTF - WEBHOOK FIXEDHi guys, works best with USDCHF\nDefault settings fit for me, you can tweak how much you want.\nWith default settings works well for 15min and 1min time-frame, for other time-frames, you need to tweak.\n\nEstrategia Pine Script®\n\nEMA Crossover Candle Color - 9/21A simple visual trend highlighter for intraday/day trading. This overlay indicator plots a fast 9-period EMA (orange) and a slower 21-period EMA (blue). Candles turn green on the exact bar where the 9 EMA crosses above the 21 EMA (bullish momentum shift), and red when the 9 EMA crosses below the 21 EMA (bearish shift). Otherwise, candles remain default. Great for spotting quick trend changes, momentum entries, or filtering chop on 5-min charts (or any timeframe). Pairs well with VWAP, volume, or price action for confluence.\n\nIndicador Pine Script®\n\nEMA CloudEMA Cloud\nDescription\nEMA Cloud is a clean, highly customizable indicator that visualizes the relationship between 8-period and 21-period moving averages as a dynamic cloud overlay. Perfect for identifying trends, momentum shifts, and potential entry/exit zones at a glance.\n🔑 Key Features\nDual EMA Support – Choose between EMA or SMA for both moving averages\nVisual Cloud Overlay – Shaded cloud between EMA 8 and EMA 21 with customizable colors:\n🟢 Bullish Cloud (green) when EMA 8 > EMA 21\n🔴 Bearish Cloud (red) when EMA 8 < EMA 21\nAdjustable Parameters – Cu",
+      "indicator_settings": "### Best MT5 Expert Advisors: Top EAs for Automated Trading\n# Best MT5 Expert Advisors: Top EAs for Automated Trading\n\nCompare the best MT5 expert advisors for 2026. We review top-performing EAs built for MetaTrader 5, covering gold, scalping, AI-driven, and prop firm-ready robots.\n\n## Why MT5 Expert Advisors Deserve Their Own List\n\nMetaTrader 5 isn’t just an upgrade from MT4. It’s a fundamentally different platform with a more powerful programming language, native multi-asset support, and features like the built-in economic calendar and depth of market. That means EAs designed specifically for MT5 can do things MT4 robots simply can’t.\n\nMQL5 allows object-oriented programming, ONNX neural network integration, and direct access to more order types. Developers who build exclusively for MT5 aren’t just porting code from MT4. They’re writing EAs that take full advantage of netting and hedging account modes, multi-timeframe optimization, and faster backtesting engines.\n\nIf you’ve been searching for the best MT5 expert advisors, you’ve probably noticed that most “best EA” lists lump MT4 and MT5 together. That’s a problem. An EA optimized for MQL5 from the ground up behaves differently than a ported MT4 robot. This list focuses exclusively on EAs that are either MT5-only or significantly better on MetaTrader 5.\n\nWe evaluated each EA based on verified Myfxbook track records, MQL5 Market ratings, drawdown behavior, strategy transparency, and real user reviews. Let’s get into it.\n\n##\n\n---\n\n### profitable-expert-advisor/README.md at master · zhutoutoutousan/profitable-expert-advisor\nA comprehensive collection of algorithmic trading strategies for MetaTrader 5, including production-ready Expert Advisors, machine learning models, and backtesting frameworks.\n\n* Repository Structure\n* Frontline Strategies - Production-ready EAs\n* AI & Machine Learning - ONNX models for price prediction\n* Back-Pedal Strategies - Alternative implementations\n* Backtesting - Python backtesting framework\n* Strategy Performance\n* Quick Start\n* Disclaimer\n\n```\n```\nprofitable-expert-advisor/\n├── frontline/           # Production-ready trading strategies\n│   ├── MQL5/           # MetaTrader 5 Expert Advisors\n│   └── tradingview/    # TradingView Pine Script strategies\n├── ai/                 # ONNX machine learning models\n├── back-pedal/         # Alternative/experimental strategies\n├── backtesting/        # Python backtesting framework\n│   ├── MT5/           # MT5 Python backtesting\n│   └── own/           # Custom backtesting tools\n└── paper/              # Research papers and simulations\n```\n```\n\nLocation:\n\n```\nfrontline/\n```\n\nProduction-ready Expert Advisors with comprehensive backtesting and performance reports.\n\n* RSI Scalping Strategies\n\n  + RSIScalpingXAUUSD (Gold)\n  + RSIScalpingBTCUSD (Bitcoin)\n  + RSIScalpingMSFT (Microsoft Stock)\n  + RSIScalpingTSLA (Tesla Stock)\n* Advanced Gold Strategies\n\n  + RSICrossOverReversalXAUUSD\n  + RSIMidPointHijackXAUUSD (Multi-strategy system)\n  + EMAS",
+      "sl_trail_tactics": "### ATR Stop Loss All Trades MT5 | Buy Trading Utility for MetaTrader 5\n50 USD\n\n|  |\n| --- |\n| Buy: 50 USD |\n| Free Demo Have you installed MetaTrader 5?MetaTrader 5 is required for installing **ATR Stop Loss All Trades MT5** demo |\n\nDemo downloaded:\n32\n\nPublished:\n19 September 2023\n\nCurrent version:\n1.3\n\nMore from author\n\nDidn't find a suitable robot?  \nOrder your own one  \n on Freelance\n\nGo to Freelance\n\nHow to buy а trading robot or an indicator\n\nRun your EA on\n  \nvirtual hosting\n\nTest аn indicator/trading robot before buying\n\nWant to earn in the Market?\n\nHow to present a product for a sell-through\n\n* Overview\n* Reviews\n* Comments\n* What's new\n\n# ATR Stop Loss All Trades MT5\n\n* Utilities\n* Prafull Manohar Nikam\n\n  #### Prafull Manohar Nikam\n\n  + Founder at  TickDepo\n  + India\n  + 6297\n\n  **4.5**\n  (2)\n\n  + https://www.tickdepo.com\n\n  Hello! Traders, I hope you are doing great.\n    \n  Most forex people search online for \"How to make 10 pips or more profit per day?\" They never search for \"How to make only 10 pips loss per day?\" Why?!\n\n  52 products\n* Version:\n  1.3\n* Updated:\n  13 January 2026\n* Activations:\n  5\n\n**Live testing available. Please contact.**\n\nATR Auto Stop Loss & Take Profit Manager\n\nAutomatically apply volatility-based Stop Loss and Take Profit levels to every new trade using the Average True Range (ATR).\n\nUnlike fixed-pip stop losses, ATR-based levels adapt to current market conditions. During high volatility, wider stops help prevent premature exits. During\n\n---\n\n### Adaptive ATR Trailing Stop | Free Download Trading Utility for MetaTrader 5\nFREE\n\nDownload\n\n### Have you installed MetaTrader 5?\n\nMetaTrader 5 is required for installing **Adaptive ATR Trailing Stop**\n\nPublished:\n11 October 2025\n\nCurrent version:\n1.1\n\nMore from author\n\nDidn't find a suitable robot?  \nOrder your own one  \n on Freelance\n\nGo to Freelance\n\nHow to buy а trading robot or an indicator\n\nRun your EA on\n  \nvirtual hosting\n\nTest аn indicator/trading robot before buying\n\nWant to earn in the Market?\n\nHow to present a product for a sell-through\n\n* Overview\n* Reviews\n  (2)\n* What's new\n\n# Adaptive ATR Trailing Stop\n\n4.5\n\n* Utilities\n* Seref Oliver Joisten\n\n  #### Seref Oliver Joisten\n\n  + Sweden\n  + 895\n\n  **4.5**\n  (2)\n\n  Welcome to my profile. I’m an embedded software engineer and active trader with a relentless drive to build trading tools that actually work in real-world conditions—no cheap gimmicks, no illusions.\n    \n  Every Expert Advisor I create is designed with three principles in mind:\n\n  5 products\n* Version:\n  1.1\n* Updated:\n  23 February 2026\n\n**Adaptive ATR Trailing Stop (MT5)**\n\n**Overview**\n\nAdaptive ATR Trailing Stop is a utility Expert Advisor for MetaTrader 5 that manages stop loss levels for existing open positions. It uses the Average True Range (ATR) to calculate a volatility-based trailing distance.\n\nThis EA does not open trades. It only modifies the Stop Loss (SL) of existing positions and keeps the current Take Profit (TP) unchanged.\n\n**How it",
+      "patterns": "### Mean Reversion Entry: At Open vs. Intraday Pullback vs Confirmation\nAugust 25, 2021\n\n* in\n  **Mean Reversion**\n   **,**  \n  **Research**\n   **,**  \n  **Stocks**\n   by Cesar Alvarez\n\nFor the mean reversion strategies that I have created in the past and are trading now, they typically enter at the next day’s open or wait for a further pullback intraday before entering. My current mean reversion strategy, which enters on a limit down, was doing great until a few months ago when the performance started to slip. Looking at the missed trades and the trades taken, it seemed like the best trades would have been entering at open or waiting for some intraday confirmation.\n\nWaiting for a pullback to take out the previous day’s high was very popular when I started trading. But my testing then showed that it was better to wait for a further intraday pullback to enter. Have the markets changed such that waiting for confirmation is better?\n\n# The Three Types of Entry\n\nFor a mean reversion setup, there are three popular ways to enter.\n\n## On the next open\n\nAfter the setup, the strategy enters on the next open. The advantage of this entry method is that you know that you will get into the stock. The disadvantage is the potential for gap opens.\n\nFree PDF: Mean Reversion Strategy\n\nSubscribe to my newsletter to receive regular updates and tips on trading and get instant access to the rules to a mean reversion strategy with results from 2003.\n\n## \n\n## On intraday pullback\n\nAfter the setup, th\n\n---\n\n### Support and Resistance Basics\nPart of the Series\n\nGuide to Technical Analysis\n\n### Key Takeaways\n\n* Technical analysts use support and resistance levels to identify price points on a chart where the probabilities indicate buyers won't continue buying or sellers won't continue selling.\n* A stock's price may maintain a support level, below which its price won't drop.\n* It may also show a resistance level at which buyers back off.\n* Traders can identify support and resistance areas on charts using trendlines and moving averages.\n\nGet personalized, AI-powered answers built on 27+ years of trusted expertise.\n\nTraders and analysts chart the movements of stock prices over time to pinpoint the support levels and resistance levels that indicate optimal times to buy and sell.\n\nSupport and resistance are two foundational concepts in technical analysis. Understanding what they are and how they work is essential to correctly reading a price chart.\n\nTechnical analysis acknowledges that all stocks rise and fall in price constantly in response to supply and demand. By zeroing in on movements within a timeframe, traders seek to identify patterns. A stock's price may maintain a support level, below which its price won't drop. It may also show a resistance level at which buyers back off.\n\nLike many concepts in technical analysis, the explanation and rationale are relatively easy, but mastering their application in trading can take years of practice.\n\nSupport and resistance are key price lev",
+      "sources": [
+        "https://www.mql5.com/en/job/153433",
+        "https://www.scribd.com/document/985333432/Scalping-Strategy-9EMA-21EMA",
+        "https://es.tradingview.com/scripts/9-ema/page-18/",
+        "https://chartschool.stockcharts.com/table-of-contents/trading-strategies-and-models/trading-strategies/moving-average-trading-strategies/using-the-5-8-13-ema-crossover-for-short-term-trades",
+        "https://newyorkcityservers.com/blog/best-mt5-expert-advisors",
+        "https://www.fortraders.com/blog/backtest-strategy-in-mt5-advanced-guide",
+        "https://github.com/zhutoutoutousan/profitable-expert-advisor/blob/master/README.md",
+        "https://www.fortraders.com/blog/best-mt5-expert-advisors-eas-for-funded-accounts",
+        "https://www.mql5.com/en/market/product/105561",
+        "https://www.mql5.com/en/market/product/152421",
+        "https://www.eaproducer.com/post/atr-trailing-stop-hidden-ea-mt5",
+        "https://alvarezquanttrading.com/blog/mean-reversion-entry-at-open-vs-intraday-pullback-vs-confirmation/",
+        "https://www.quantifiedstrategies.com/pullback-trading-strategy/",
+        "https://www.investopedia.com/trading/support-and-resistance-basics/",
+        "https://www.sarwa.co/blog/successful-day-trading-strategies/"
+      ],
+      "queries_made": [
+        "EMA 9 21 pullback expert advisor MT5 high win rate backtest",
+        "EMA crossover pullback ADX filter automated strategy mini indice",
+        "expert advisor MT5 day trade mini indice B3 high win rate backtest",
+        "expert advisor MT5 mini dolar B3 high profit factor strategy",
+        "ATR stop loss 1.5 2.0 multiplier expert advisor MT5 backtest win rate",
+        "ATR trailing stop expert advisor MT5 high profit factor",
+        "Mini Dólar day trade pullback breakout mean reversion backtest strategy",
+        "WDO day trade high win rate patterns support resistance automated"
+      ],
+      "fetched_at": "2026-06-19T17:11:12.408211"
+    }
+  },
+  "optimization": {
+    "IND": {
+      "current_pnl": -366.0,
+      "best_pnl": 3010.8,
+      "best_pf": 186.85,
+      "best_wr": 93.8,
+      "best_sl_atr_mult": 0.6,
+      "best_cooldown_seconds": 180,
+      "best_bb_std": null,
+      "best_rsi_ob": null,
+      "best_rsi_os": null,
+      "variants": [
+        {
+          "label": "conservador",
+          "params": {
+            "sl_atr_mult": 0.8,
+            "cooldown_seconds": 1200,
+            "max_daily_trades": 2,
+            "breakeven_minutes": 10
+          },
+          "expected_pnl": 2107.56
+        },
+        {
+          "label": "moderado",
+          "params": {
+            "sl_atr_mult": 0.6,
+            "cooldown_seconds": 180,
+            "max_daily_trades": 4,
+            "breakeven_minutes": 15
+          },
+          "expected_pnl": 3010.8
+        },
+        {
+          "label": "agressivo",
+          "params": {
+            "sl_atr_mult": 0.6,
+            "cooldown_seconds": 300,
+            "max_daily_trades": 6,
+            "breakeven_minutes": 20
+          },
+          "expected_pnl": 1505.4
+        }
+      ]
+    },
+    "WDO": {
+      "current_pnl": -734.0,
+      "best_pnl": 672.8,
+      "best_pf": 4.6,
+      "best_wr": 54.8,
+      "best_sl_atr_mult": 0.6,
+      "best_cooldown_seconds": 180,
+      "best_bb_std": null,
+      "best_rsi_ob": null,
+      "best_rsi_os": null,
+      "variants": [
+        {
+          "label": "conservador",
+          "params": {
+            "sl_atr_mult": 0.8,
+            "cooldown_seconds": 1200,
+            "max_daily_trades": 2,
+            "breakeven_minutes": 10
+          },
+          "expected_pnl": 470.9599999999999
+        },
+        {
+          "label": "moderado",
+          "params": {
+            "sl_atr_mult": 0.6,
+            "cooldown_seconds": 180,
+            "max_daily_trades": 4,
+            "breakeven_minutes": 15
+          },
+          "expected_pnl": 672.8
+        },
+        {
+          "label": "agressivo",
+          "params": {
+            "sl_atr_mult": 0.6,
+            "cooldown_seconds": 300,
+            "max_daily_trades": 6,
+            "breakeven_minutes": 20
+          },
+          "expected_pnl": 336.4
+        }
+      ]
+    },
+    "BIT": {
+      "current_pnl": 320.0,
+      "best_pnl": 10068.8,
+      "best_pf": 40.3,
+      "best_wr": 66.7,
+      "best_sl_atr_mult": 0.6,
+      "best_cooldown_seconds": 180,
+      "best_bb_std": null,
+      "best_rsi_ob": null,
+      "best_rsi_os": null,
+      "variants": [
+        {
+          "label": "conservador",
+          "params": {
+            "sl_atr_mult": 0.8,
+            "cooldown_seconds": 1200,
+            "max_daily_trades": 2,
+            "breakeven_minutes": 10
+          },
+          "expected_pnl": 7048.159999999999
+        },
+        {
+          "label": "moderado",
+          "params": {
+            "sl_atr_mult": 0.6,
+            "cooldown_seconds": 180,
+            "max_daily_trades": 4,
+            "breakeven_minutes": 15
+          },
+          "expected_pnl": 10068.8
+        },
+        {
+          "label": "agressivo",
+          "params": {
+            "sl_atr_mult": 0.6,
+            "cooldown_seconds": 300,
+            "max_daily_trades": 6,
+            "breakeven_minutes": 20
+          },
+          "expected_pnl": 5034.4
+        }
+      ]
+    },
+    "WIN": {
+      "current_pnl": -720.0,
+      "best_pnl": 269.6,
+      "best_pf": 1.37,
+      "best_wr": 35.2,
+      "best_sl_atr_mult": 0.6,
+      "best_cooldown_seconds": 180,
+      "best_bb_std": null,
+      "best_rsi_ob": null,
+      "best_rsi_os": null,
+      "variants": [
+        {
+          "label": "conservador",
+          "params": {
+            "sl_atr_mult": 0.8,
+            "cooldown_seconds": 1200,
+            "max_daily_trades": 2,
+            "breakeven_minutes": 10
+          },
+          "expected_pnl": 188.72
+        },
+        {
+          "label": "moderado",
+          "params": {
+            "sl_atr_mult": 0.6,
+            "cooldown_seconds": 180,
+            "max_daily_trades": 4,
+            "breakeven_minutes": 15
+          },
+          "expected_pnl": 269.6
+        },
+        {
+          "label": "agressivo",
+          "params": {
+            "sl_atr_mult": 0.6,
+            "cooldown_seconds": 300,
+            "max_daily_trades": 6,
+            "breakeven_minutes": 20
+          },
+          "expected_pnl": 134.8
+        }
+      ]
+    }
+  },
+  "llm_analysis": "Fallback rule-based: 13 mudanças geradas automaticamente (IND: Explorer PF=186.85; WDO: Explorer PF=4.60; BIT: Explorer PF=40.30)",
+  "changes_applied": [
+    {
+      "symbol": "IND",
+      "params": {
+        "sl_atr_mult": 0.77,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=186.85",
+      "applied": true,
+      "warnings": [
+        "IND.sl_atr_mult: mudança 0.6 muito abrupta de 1.1 (>30%), limitado para 0.77"
+      ]
+    },
+    {
+      "symbol": "WDO",
+      "params": {
+        "sl_atr_mult": 0.84,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=4.60",
+      "applied": true,
+      "warnings": [
+        "WDO.sl_atr_mult: mudança 0.6 muito abrupta de 1.2 (>30%), limitado para 0.84"
+      ]
+    },
+    {
+      "symbol": "BIT",
+      "params": {
+        "sl_atr_mult": 0.84,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=40.30",
+      "applied": true,
+      "warnings": [
+        "BIT.sl_atr_mult: mudança 0.6 muito abrupta de 1.2 (>30%), limitado para 0.84"
+      ]
+    },
+    {
+      "symbol": "WIN",
+      "params": {
+        "sl_atr_mult": 0.84,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=1.37",
+      "applied": true,
+      "warnings": [
+        "WIN.sl_atr_mult: mudança 0.6 muito abrupta de 1.2 (>30%), limitado para 0.84"
+      ]
+    },
+    {
+      "symbol": "WIN",
+      "params": {
+        "sl_atr_mult": 1.3
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "IND",
+      "params": {
+        "sl_atr_mult": 1.2
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "WDO",
+      "params": {
+        "sl_atr_mult": 1.3
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "DOL",
+      "params": {
+        "sl_atr_mult": 1.2
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "WSP",
+      "params": {
+        "sl_atr_mult": 1.3
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "BIT",
+      "params": {
+        "sl_atr_mult": 1.3
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "IND",
+      "params": {
+        "sl_atr_mult": 0.84,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=186.85",
+      "applied": true,
+      "warnings": [
+        "IND.sl_atr_mult: mudança 0.6 muito abrupta de 1.2 (>30%), limitado para 0.84"
+      ]
+    },
+    {
+      "symbol": "WDO",
+      "params": {
+        "sl_atr_mult": 0.91,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=4.60",
+      "applied": true,
+      "warnings": [
+        "WDO.sl_atr_mult: mudança 0.6 muito abrupta de 1.3 (>30%), limitado para 0.91"
+      ]
+    },
+    {
+      "symbol": "BIT",
+      "params": {
+        "sl_atr_mult": 0.91,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=40.30",
+      "applied": true,
+      "warnings": [
+        "BIT.sl_atr_mult: mudança 0.6 muito abrupta de 1.3 (>30%), limitado para 0.91"
+      ]
+    },
+    {
+      "symbol": "WIN",
+      "params": {
+        "sl_atr_mult": 0.91,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=1.37",
+      "applied": true,
+      "warnings": [
+        "WIN.sl_atr_mult: mudança 0.6 muito abrupta de 1.3 (>30%), limitado para 0.91"
+      ]
+    },
+    {
+      "symbol": "WIN",
+      "params": {
+        "sl_atr_mult": 1.4
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "IND",
+      "params": {
+        "sl_atr_mult": 1.3
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "WDO",
+      "params": {
+        "sl_atr_mult": 1.4
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "DOL",
+      "params": {
+        "sl_atr_mult": 1.3
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "WSP",
+      "params": {
+        "sl_atr_mult": 1.4
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "BIT",
+      "params": {
+        "sl_atr_mult": 1.4
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "IND",
+      "params": {
+        "sl_atr_mult": 0.91,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=186.85",
+      "applied": true,
+      "warnings": [
+        "IND.sl_atr_mult: mudança 0.6 muito abrupta de 1.3 (>30%), limitado para 0.91"
+      ]
+    },
+    {
+      "symbol": "WDO",
+      "params": {
+        "sl_atr_mult": 0.98,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=4.60",
+      "applied": true,
+      "warnings": [
+        "WDO.sl_atr_mult: mudança 0.6 muito abrupta de 1.4 (>30%), limitado para 0.98"
+      ]
+    },
+    {
+      "symbol": "BIT",
+      "params": {
+        "sl_atr_mult": 0.98,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=40.30",
+      "applied": true,
+      "warnings": [
+        "BIT.sl_atr_mult: mudança 0.6 muito abrupta de 1.4 (>30%), limitado para 0.98"
+      ]
+    },
+    {
+      "symbol": "WIN",
+      "params": {
+        "sl_atr_mult": 0.98,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=1.37",
+      "applied": true,
+      "warnings": [
+        "WIN.sl_atr_mult: mudança 0.6 muito abrupta de 1.4 (>30%), limitado para 0.98"
+      ]
+    },
+    {
+      "symbol": "WIN",
+      "params": {
+        "sl_atr_mult": 1.5
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "IND",
+      "params": {
+        "sl_atr_mult": 1.4
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "WDO",
+      "params": {
+        "sl_atr_mult": 1.5
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "DOL",
+      "params": {
+        "sl_atr_mult": 1.4
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "WSP",
+      "params": {
+        "sl_atr_mult": 1.5
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "BIT",
+      "params": {
+        "sl_atr_mult": 1.5
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "IND",
+      "params": {
+        "sl_atr_mult": 0.98,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=186.85",
+      "applied": true,
+      "warnings": [
+        "IND.sl_atr_mult: mudança 0.6 muito abrupta de 1.4 (>30%), limitado para 0.98"
+      ]
+    },
+    {
+      "symbol": "WDO",
+      "params": {
+        "sl_atr_mult": 1.05,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=4.60",
+      "applied": true,
+      "warnings": [
+        "WDO.sl_atr_mult: mudança 0.6 muito abrupta de 1.5 (>30%), limitado para 1.05"
+      ]
+    },
+    {
+      "symbol": "BIT",
+      "params": {
+        "sl_atr_mult": 1.05,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=40.30",
+      "applied": true,
+      "warnings": [
+        "BIT.sl_atr_mult: mudança 0.6 muito abrupta de 1.5 (>30%), limitado para 1.05"
+      ]
+    },
+    {
+      "symbol": "WIN",
+      "params": {
+        "sl_atr_mult": 1.05,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=1.37",
+      "applied": true,
+      "warnings": [
+        "WIN.sl_atr_mult: mudança 0.6 muito abrupta de 1.5 (>30%), limitado para 1.05"
+      ]
+    },
+    {
+      "symbol": "WIN",
+      "params": {
+        "sl_atr_mult": 1.6
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "IND",
+      "params": {
+        "sl_atr_mult": 1.5
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "WDO",
+      "params": {
+        "sl_atr_mult": 1.6
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "DOL",
+      "params": {
+        "sl_atr_mult": 1.5
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "WSP",
+      "params": {
+        "sl_atr_mult": 1.6
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "BIT",
+      "params": {
+        "sl_atr_mult": 1.6
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "IND",
+      "params": {
+        "sl_atr_mult": 1.05,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=186.85",
+      "applied": true,
+      "warnings": [
+        "IND.sl_atr_mult: mudança 0.6 muito abrupta de 1.5 (>30%), limitado para 1.05"
+      ]
+    },
+    {
+      "symbol": "WDO",
+      "params": {
+        "sl_atr_mult": 1.12,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=4.60",
+      "applied": true,
+      "warnings": [
+        "WDO.sl_atr_mult: mudança 0.6 muito abrupta de 1.6 (>30%), limitado para 1.12"
+      ]
+    },
+    {
+      "symbol": "BIT",
+      "params": {
+        "sl_atr_mult": 1.12,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=40.30",
+      "applied": true,
+      "warnings": [
+        "BIT.sl_atr_mult: mudança 0.6 muito abrupta de 1.6 (>30%), limitado para 1.12"
+      ]
+    },
+    {
+      "symbol": "WIN",
+      "params": {
+        "sl_atr_mult": 1.12,
+        "cooldown_seconds": 180
+      },
+      "reason": "Strategy Explorer PF=1.37",
+      "applied": true,
+      "warnings": [
+        "WIN.sl_atr_mult: mudança 0.6 muito abrupta de 1.6 (>30%), limitado para 1.12"
+      ]
+    },
+    {
+      "symbol": "WIN",
+      "params": {
+        "sl_atr_mult": 1.7
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "IND",
+      "params": {
+        "sl_atr_mult": 1.6
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "WDO",
+      "params": {
+        "sl_atr_mult": 1.7
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "DOL",
+      "params": {
+        "sl_atr_mult": 1.6
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "WSP",
+      "params": {
+        "sl_atr_mult": 1.7
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    },
+    {
+      "symbol": "BIT",
+      "params": {
+        "sl_atr_mult": 1.7
+      },
+      "reason": "SL_SERVIDOR 98% dos exits",
+      "applied": true,
+      "warnings": []
+    }
+  ],
+  "config_version": 743,
+  "backtest_evaluations": [
+    {
+      "iteration": 1,
+      "evaluations": {
+        "BIT_M30": {
+          "decision": "low_sample_ignore",
+          "n_trades": 0,
+          "pnl": 0.0
+        },
+        "BIT_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 9,
+          "pnl": 8328.79,
+          "wr": 88.9
+        },
+        "DOL_M15": {
+          "decision": "no_forward_eval"
+        },
+        "DOL_M30": {
+          "decision": "no_forward_eval"
+        },
+        "IND_M30": {
+          "decision": "no_forward_eval"
+        },
+        "WDO_M30": {
+          "decision": "forward_says_ok",
+          "n_trades": 3,
+          "pnl": 452.43,
+          "wr": 100.0
+        },
+        "WDO_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 10,
+          "pnl": 1010.57,
+          "wr": 100.0
+        },
+        "WIN_M30": {
+          "decision": "forward_says_ok",
+          "n_trades": 7,
+          "pnl": 811.38,
+          "wr": 71.4
+        },
+        "WIN_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 20,
+          "pnl": 429.09,
+          "wr": 70.0
+        },
+        "WSP_H1": {
+          "decision": "low_sample_ignore",
+          "n_trades": 2,
+          "pnl": 103.31
+        },
+        "WSP_M15": {
+          "decision": "forward_says_ok",
+          "n_trades": 9,
+          "pnl": 177.99,
+          "wr": 100.0
+        }
+      }
+    },
+    {
+      "iteration": 2,
+      "evaluations": {
+        "BIT_M30": {
+          "decision": "low_sample_ignore",
+          "n_trades": 0,
+          "pnl": 0.0
+        },
+        "BIT_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 9,
+          "pnl": 8328.79,
+          "wr": 88.9
+        },
+        "DOL_M15": {
+          "decision": "no_forward_eval"
+        },
+        "DOL_M30": {
+          "decision": "no_forward_eval"
+        },
+        "IND_M30": {
+          "decision": "no_forward_eval"
+        },
+        "WDO_M30": {
+          "decision": "forward_says_ok",
+          "n_trades": 3,
+          "pnl": 452.43,
+          "wr": 100.0
+        },
+        "WDO_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 10,
+          "pnl": 1010.57,
+          "wr": 100.0
+        },
+        "WIN_M30": {
+          "decision": "forward_says_ok",
+          "n_trades": 7,
+          "pnl": 793.38,
+          "wr": 71.4
+        },
+        "WIN_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 20,
+          "pnl": 474.72,
+          "wr": 75.0
+        },
+        "WSP_H1": {
+          "decision": "low_sample_ignore",
+          "n_trades": 2,
+          "pnl": 103.31
+        },
+        "WSP_M15": {
+          "decision": "forward_says_ok",
+          "n_trades": 9,
+          "pnl": 177.99,
+          "wr": 100.0
+        }
+      }
+    },
+    {
+      "iteration": 3,
+      "evaluations": {
+        "BIT_M30": {
+          "decision": "low_sample_ignore",
+          "n_trades": 0,
+          "pnl": 0.0
+        },
+        "BIT_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 9,
+          "pnl": 8328.79,
+          "wr": 88.9
+        },
+        "DOL_M15": {
+          "decision": "no_forward_eval"
+        },
+        "DOL_M30": {
+          "decision": "no_forward_eval"
+        },
+        "IND_M30": {
+          "decision": "no_forward_eval"
+        },
+        "WDO_M30": {
+          "decision": "forward_says_ok",
+          "n_trades": 3,
+          "pnl": 452.43,
+          "wr": 100.0
+        },
+        "WDO_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 10,
+          "pnl": 1010.57,
+          "wr": 100.0
+        },
+        "WIN_M30": {
+          "decision": "forward_says_ok",
+          "n_trades": 7,
+          "pnl": 775.38,
+          "wr": 71.4
+        },
+        "WIN_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 20,
+          "pnl": 452.72,
+          "wr": 75.0
+        },
+        "WSP_H1": {
+          "decision": "low_sample_ignore",
+          "n_trades": 2,
+          "pnl": 103.31
+        },
+        "WSP_M15": {
+          "decision": "forward_says_ok",
+          "n_trades": 9,
+          "pnl": 177.99,
+          "wr": 100.0
+        }
+      }
+    },
+    {
+      "iteration": 4,
+      "evaluations": {
+        "BIT_M30": {
+          "decision": "low_sample_ignore",
+          "n_trades": 0,
+          "pnl": 0.0
+        },
+        "BIT_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 9,
+          "pnl": 8328.79,
+          "wr": 88.9
+        },
+        "DOL_M15": {
+          "decision": "no_forward_eval"
+        },
+        "DOL_M30": {
+          "decision": "no_forward_eval"
+        },
+        "IND_M30": {
+          "decision": "no_forward_eval"
+        },
+        "WDO_M30": {
+          "decision": "forward_says_ok",
+          "n_trades": 3,
+          "pnl": 452.43,
+          "wr": 100.0
+        },
+        "WDO_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 10,
+          "pnl": 1010.57,
+          "wr": 100.0
+        },
+        "WIN_M30": {
+          "decision": "forward_says_ok",
+          "n_trades": 7,
+          "pnl": 756.38,
+          "wr": 71.4
+        },
+        "WIN_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 20,
+          "pnl": 432.72,
+          "wr": 75.0
+        },
+        "WSP_H1": {
+          "decision": "low_sample_ignore",
+          "n_trades": 2,
+          "pnl": 103.31
+        },
+        "WSP_M15": {
+          "decision": "forward_says_ok",
+          "n_trades": 9,
+          "pnl": 177.99,
+          "wr": 100.0
+        }
+      }
+    },
+    {
+      "iteration": 5,
+      "evaluations": {
+        "BIT_M30": {
+          "decision": "low_sample_ignore",
+          "n_trades": 0,
+          "pnl": 0.0
+        },
+        "BIT_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 9,
+          "pnl": 8328.79,
+          "wr": 88.9
+        },
+        "DOL_M15": {
+          "decision": "no_forward_eval"
+        },
+        "DOL_M30": {
+          "decision": "no_forward_eval"
+        },
+        "IND_M30": {
+          "decision": "no_forward_eval"
+        },
+        "WDO_M30": {
+          "decision": "forward_says_ok",
+          "n_trades": 3,
+          "pnl": 452.43,
+          "wr": 100.0
+        },
+        "WDO_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 10,
+          "pnl": 1010.57,
+          "wr": 100.0
+        },
+        "WIN_M30": {
+          "decision": "forward_says_ok",
+          "n_trades": 7,
+          "pnl": 743.38,
+          "wr": 71.4
+        },
+        "WIN_M5": {
+          "decision": "forward_says_ok",
+          "n_trades": 20,
+          "pnl": 411.72,
+          "wr": 75.0
+        },
+        "WSP_H1": {
+          "decision": "low_sample_ignore",
+          "n_trades": 2,
+          "pnl": 103.31
+        },
+        "WSP_M15": {
+          "decision": "forward_says_ok",
+          "n_trades": 9,
+          "pnl": 177.99,
+          "wr": 100.0
+        }
+      }
+    }
+  ]
+}

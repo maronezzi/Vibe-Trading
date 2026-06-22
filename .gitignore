@@ -92,3 +92,26 @@ wiki/alpha-library/manifest.json
 wiki/alpha-library/content/
 agent/venv/
 reports/
+
+# Backup files
+*.bak*
+*.backup_*
+vt_config.json.bak*
+
+# Database backups
+*.db.bak*
+
+# Temporary/result files
+*.xlsx
+disabled_pairs_results.json
+optimizer_results.json
+strategy_matrix_results.json
+validation_results.json
+vt_calibration_results.json
+REVIEW_FINDINGS.json
+FINAL_GUARDIAN_REPORT.md
+MONDAY_REPORT.md
+halt_cron_audit_report.md
+prompt_claude_code_fixes.md
+journal.db
+trade_log.db

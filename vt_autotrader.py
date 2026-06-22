@@ -502,8 +502,66 @@ def _check_cooldown(symbol: str, params: dict, tf: str = "", direction: str = ""
     return True
 
 
+def _symbol_root(symbol: str) -> str:
+    """Extrai o root do contrato: 'WDON26' → 'WDO', 'DOLM26' → 'DOL'."""
+    for r in ("WIN", "WDO", "BIT", "DOL", "IND", "WSP"):
+        if r in symbol:
+            return r
+    return "WIN"
+
+
+def _resolve_max_daily_trades(params: dict, symbol_root: str) -> int:
+    """
+    Limite diário de trades POR SÍMBOLO — hierarquia documentada e única:
+
+        params_by_tf[SYMBOL_TF].max_daily_trades    (mais específico)
+          ↓ (se ausente nesse TF)
+        CONFIG[symbol_root].max_daily_trades         (nível do ativo)
+          ↓ (se ausente no ativo)
+        CONFIG["max_daily_trades"]                   (raiz do config)
+          ↓ (se ausente)
+        15                                            (safety default)
+
+    `params` chega já mesclado (base ∪ params_by_tf) via _get_params_for_tf,
+    então o nível TF e o nível do ativo já estão resolvidos nele; este helper
+    apenas completa a cadeia com a raiz + default quando ambos faltam. Isto
+    resolve a redundância: antes o fallback era sempre 15 (ignorando o limite
+    do ativo e da raiz), agora a hierarquia é explícita e respeitada.
+
+    NOTA — esclarece confusão comum sobre o config (ver _doc_max_daily_trades):
+    - risk_management.daily_limits.max_daily_trades_by_symbol NÃO é consultado
+      aqui. Essa chave só é lida no log de startup (~L1907); como não existe no
+      config, sempre cai no fallback CONFIG[symbol].max_daily_trades.
+    - O teto GLOBAL (min(global_max_daily_trades, 50)) é aplicado À PARTE em
+      _check_max_trades via _global_max_daily_trades(), não por esta função.
+      Mesmo com global_max_daily_trades=999 no config, o total real é 50/dia.
+    - Exemplo WDO hoje: WDO_M5→2, WDO_M15→4, WDO_M30→4, WDO_H1→2 (todos em
+      params_by_tf), então wdo.max_daily_trades=4 e max_daily_trades=999 da
+      raiz nunca são alcançados para WDO.
+    """
+    if params.get("max_daily_trades") is not None:
+        return int(params["max_daily_trades"])
+    sym = CONFIG.get(symbol_root.lower(), {})
+    if sym.get("max_daily_trades") is not None:
+        return int(sym["max_daily_trades"])
+    if CONFIG.get("max_daily_trades") is not None:
+        return int(CONFIG["max_daily_trades"])
+    return 15
+
+
+def _global_max_daily_trades() -> int:
+    """Teto global de trades/dia. Respeita global_max_daily_trades do config,
+    mas nunca ultrapassa o backstop de segurança 50."""
+    return min(int(CONFIG.get("global_max_daily_trades", 50)), 50)
+
+
 def _check_max_trades(params: dict, symbol: str = "") -> bool:
-    """Retorna True se pode operar (limite não atingido). Conta por símbolo."""
+    """Retorna True se pode operar (limite não atingido). Conta por símbolo.
+
+    Hierarquia do limite por símbolo: ver _resolve_max_daily_trades()
+    (params_by_tf > ativo > raiz > default). Teto global: ver
+    _global_max_daily_trades() (global_max_daily_trades, backstop 50).
+    """
     # ── KILL SWITCH: Max daily loss ──
     max_daily_loss = CONFIG.get("max_daily_loss", -500)
     if state.daily_pnl <= max_daily_loss:
@@ -515,12 +573,12 @@ def _check_max_trades(params: dict, symbol: str = "") -> bool:
     if symbol in disabled:
         return False
 
-    # Limite global (segurança)
-    if state.daily_trade_count >= 50:
+    # Teto global (segurança)
+    if state.daily_trade_count >= _global_max_daily_trades():
         return False
-    # Limite por símbolo
+    # Limite por símbolo (hierarquia tf > ativo > raiz > default)
     sym_count = state.daily_trade_by_symbol.get(symbol, 0)
-    max_per_sym = params.get("max_daily_trades", 15)
+    max_per_sym = _resolve_max_daily_trades(params, _symbol_root(symbol))
     if sym_count >= max_per_sym:
         return False
     return True
@@ -1585,7 +1643,10 @@ def close_all_and_report():
     except Exception as e:
         log(f"[WARN] import_mt5_history falhou: {e}")
 
+    # Limpar positions do state para não gerar fantasmas no watchdog
+    state.positions.clear()
     state.closed = True
+    state.save()
 
     today = datetime.now().strftime("%d/%m/%Y")
     db_summary = {}
@@ -1857,6 +1918,11 @@ def run_daemon():
     for _s in CONFIG["symbols"]:
         _p = CONFIG.get(_s.lower(), {})
         log(f"{_s}: SL {_p.get('sl_atr_mult', 1.5)}x ATR | Trail {_p.get('trail_activate', 1.5)}x/{_p.get('trail_distance', 0.5)}x ATR")
+    # APENAS para o log de startup ('Max(x/dia efetivo)'). NÃO é o gate de
+    # trades: o limite real é resolvido por _resolve_max_daily_trades
+    # (params_by_tf > ativo > raiz > 15) + teto global min(global_max_daily_trades, 50).
+    # A chave risk_management sequer existe no config atual, então cai sempre no
+    # fallback CONFIG[symbol].max_daily_trades.
     rm_daily = CONFIG.get("risk_management", {}).get("daily_limits", {})
     wdo_eff = rm_daily.get("max_daily_trades_by_symbol", {}).get("WDO", CONFIG["wdo"]["max_daily_trades"])
     win_eff = rm_daily.get("max_daily_trades_by_symbol", {}).get("WIN", CONFIG["win"]["max_daily_trades"])
