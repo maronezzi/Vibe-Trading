@@ -1,7 +1,7 @@
 {
-  "_version": 783,
-  "_updated_at": "2026-06-22T17:21:55.091441",
-  "_updated_by": "agi_explorer_auto",
+  "_version": 809,
+  "_updated_at": "2026-06-22T20:00:59.919599",
+  "_updated_by": "agi_17h_param_optimization",
   "_notes": "auto-resolve vencimento: WDO: WDON26 → WDOQ26\n[2026-06-22 17:50 AGI convergence_loop_final] v770. Changes applied: WIN_H1 disabled (-493R saved); BIT tightened (cooldowns+max_daily+RSI extremes); Strategy swaps — BIT_M5→MACD_MOMENTUM (+147R gain), BIT_M15→STRONG_TREND (+190R), BIT_H1→MACD_MOMENTUM (+96R), WIN_M5→MACD_MOMENTUM (+131R), WIN_M15→KELTNER_CHANNEL (+758R), WSP_M15→MACD_MOMENTUM (+1R but 100% WR), WDO_M15→STRONG_TREND (+848R), WDO_M30→KELTNER_CHANNEL (+376R), WDO_H1 enabled (was no_trades → +1984R with EMA_PULLBACK). Final forward backtest (500 bars): +8489R / 178 trades / 80.9% WR / all 15 pairs positive. vs baseline +3852R / 118 trades / 65.3% WR = +4637R improvement (+120%).",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
@@ -55,41 +55,41 @@
     "vwap_period": 20,
     "vwap_buy_threshold": 1.002,
     "vwap_sell_threshold": 0.998,
-    "sl_atr_mult": 0.6,
-    "trail_activate": 0.8,
-    "trail_distance": 0.3,
-    "cooldown_seconds": 180,
-    "max_daily_trades": 999,
+    "sl_atr_mult": 0.55,
+    "trail_activate": 0.95,
+    "trail_distance": 0.35,
+    "cooldown_seconds": 234,
+    "max_daily_trades": 250,
     "ema_fast": 5,
     "ema_slow": 13,
     "rsi_period": 7,
-    "rsi_overbought": 75,
-    "rsi_oversold": 24,
+    "rsi_overbought": 78,
+    "rsi_oversold": 22,
     "trend_min_spread": 0,
-    "breakeven_minutes": 10,
-    "time_trail_minutes": 25,
-    "max_position_minutes": 60,
-    "pullback_pct": 0.12,
+    "breakeven_minutes": 12,
+    "time_trail_minutes": 30,
+    "max_position_minutes": 65,
+    "pullback_pct": 0.1,
     "adx_period": 14,
-    "adx_threshold": 22,
-    "hard_exit_minutes": 45,
+    "adx_threshold": 20,
+    "hard_exit_minutes": 48,
     "strategy": "VWAP"
   },
   "win": {
     "bb_period": 10,
     "bb_std": 2.0,
     "rsi_period": 21,
-    "rsi_overbought": 70,
-    "rsi_oversold": 24,
-    "sl_atr_mult": 0.6,
-    "trail_activate": 0.8,
-    "trail_distance": 0.3,
-    "cooldown_seconds": 180,
-    "max_daily_trades": 999,
-    "breakeven_minutes": 15,
-    "time_trail_minutes": 30,
-    "max_position_minutes": 90,
-    "hard_exit_minutes": 60,
+    "rsi_overbought": 78,
+    "rsi_oversold": 19,
+    "sl_atr_mult": 0.5,
+    "trail_activate": 1.0,
+    "trail_distance": 0.39,
+    "cooldown_seconds": 144,
+    "max_daily_trades": 250,
+    "breakeven_minutes": 25,
+    "time_trail_minutes": 45,
+    "max_position_minutes": 120,
+    "hard_exit_minutes": 80,
     "buy_enabled": false,
     "strategy": "BOLLINGER"
   },
@@ -160,14 +160,14 @@
     "vwap_period": 30,
     "vwap_buy_threshold": 1.01,
     "vwap_sell_threshold": 0.99,
-    "sl_atr_mult": 0.6,
-    "trail_activate": 0.507,
-    "trail_distance": 0.338,
-    "cooldown_seconds": 180,
-    "max_daily_trades": 3,
-    "breakeven_minutes": 12,
+    "sl_atr_mult": 0.55,
+    "trail_activate": 0.8,
+    "trail_distance": 0.42,
+    "cooldown_seconds": 234,
+    "max_daily_trades": 2,
+    "breakeven_minutes": 10,
     "time_trail_minutes": 35,
-    "max_position_minutes": 55,
+    "max_position_minutes": 40,
     "rsi_period": 7,
     "rsi_overbought": 82,
     "rsi_oversold": 18,
@@ -176,7 +176,7 @@
     "adx_period": 14,
     "adx_threshold": 22,
     "pullback_pct": 0.1,
-    "hard_exit_minutes": 55,
+    "hard_exit_minutes": 40,
     "M15": {
       "sl_atr_mult": 1.0,
       "cooldown_seconds": 1800,
@@ -219,24 +219,28 @@
     "macd_fast": 9,
     "macd_slow": 21,
     "macd_signal": 12,
-    "sl_atr_mult": 1.2,
+    "sl_atr_mult": 1.15,
     "trail_activate": 0.8,
     "trail_distance": 0.3,
-    "cooldown_seconds": 1200,
-    "max_daily_trades": 999,
-    "breakeven_minutes": 12,
-    "time_trail_minutes": 30,
+    "cooldown_seconds": 2160,
+    "max_daily_trades": 500,
+    "breakeven_minutes": 10,
+    "time_trail_minutes": 36,
     "max_position_minutes": 65,
     "pullback_pct": 0.1,
     "vwap_period": 10,
     "vwap_buy_threshold": 1.003,
     "vwap_sell_threshold": 0.997,
-    "hard_exit_minutes": 45,
+    "hard_exit_minutes": 52,
     "strategy": "RSI_REVERSION"
   },
-  "disabled_symbols": [],
+  "disabled_symbols": [
+    "WSP",
+    "DOL"
+  ],
   "disabled_timeframes": [
-    "WIN_H1"
+    "WIN_H1",
+    "BIT_M30"
   ],
   "max_daily_loss": -999999,
   "global_max_daily_trades": 999,
@@ -436,13 +440,13 @@
     "max_pnl": 0
   },
   "bit_m30": {
-    "rsi_overbought": 80,
-    "rsi_oversold": 20,
-    "cooldown_seconds": 1800,
-    "sl_atr_mult": 0.9,
+    "rsi_overbought": 72,
+    "rsi_oversold": 24,
+    "cooldown_seconds": 2160,
+    "sl_atr_mult": 1.1,
     "rsi_period": 7,
     "strategy": "EMA_PULLBACK",
-    "max_daily_trades": 3
+    "max_daily_trades": 2
   },
   "wdo_m5": {
     "sl_atr_mult": 0.588,
@@ -463,10 +467,11 @@
     "cooldown_seconds": 900
   },
   "bit_m5": {
-    "sl_atr_mult": 1.2,
-    "cooldown_seconds": 1200,
-    "rsi_oversold": 18,
-    "rsi_overbought": 82
+    "sl_atr_mult": 1.15,
+    "cooldown_seconds": 1080,
+    "rsi_oversold": 20,
+    "rsi_overbought": 75,
+    "max_daily_trades": 3
   },
   "wsp_m5": {
     "sl_atr_mult": 1.2,
@@ -498,19 +503,25 @@
     "rsi_oversold": 20
   },
   "dol": {
-    "cooldown_seconds": 2400,
-    "sl_atr_mult": 1.2,
-    "max_daily_trades": 999,
-    "breakeven_minutes": 12
+    "cooldown_seconds": 3600,
+    "sl_atr_mult": 1.4,
+    "max_daily_trades": 500,
+    "breakeven_minutes": 8,
+    "rsi_period": 7,
+    "rsi_overbought": 75,
+    "rsi_oversold": 25,
+    "max_position_minutes": 35
   },
   "ind": {
     "breakeven_minutes": 15,
-    "time_trail_minutes": 40,
+    "time_trail_minutes": 45,
     "buy_enabled": false,
-    "max_daily_trades": 999,
-    "sl_atr_mult": 1.0,
-    "cooldown_seconds": 600,
-    "rsi_oversold": 28
+    "max_daily_trades": 500,
+    "sl_atr_mult": 1.1,
+    "cooldown_seconds": 900,
+    "rsi_oversold": 22,
+    "rsi_overbought": 75,
+    "max_position_minutes": 70
   },
   "per_symbol_timeframes": {
     "WIN": [
@@ -536,5 +547,27 @@
       "M30",
       "H1"
     ]
+  },
+  "wsp_m30": {
+    "sl_atr_mult": 0.92,
+    "cooldown_seconds": 216,
+    "max_daily_trades": 12,
+    "rsi_period": 7,
+    "rsi_overbought": 72,
+    "rsi_oversold": 28
+  },
+  "wdo_m15": {
+    "sl_atr_mult": 1.15,
+    "cooldown_seconds": 720,
+    "max_daily_trades": 4,
+    "ema_fast": 9,
+    "ema_slow": 21,
+    "adx_threshold": 22,
+    "pullback_pct": 0.12
+  },
+  "wdo_m30": {
+    "sl_atr_mult": 0.72,
+    "cooldown_seconds": 720,
+    "max_daily_trades": 8
   }
 }
