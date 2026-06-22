@@ -3,44 +3,65 @@ agent/.venv/
 __pycache__/
 .pytest_cache/
 *.pyc
+.ruff_cache/
 
 # Coverage reports
 .coverage
 coverage.xml
 
-# Node dependencies (root level)
+# Node dependencies
 node_modules/
 
 # Backtest output artifacts
 results/
 
+# Environment files
 .env
 agent/.env
 
+# IDE
 .claude/*
 !.claude/hooks.json
 CLAUDE.md
 .vscode/
+
+# External repos
 learn-claude-code-main/
+
+# Agent runtime
 agent/sessions/
 agent/runs/
 agent/.ui_runtime/
 agent/.tasks/
 agent/uploads/
 agent/tests/*_result.json
-.ruff_cache/
+agent/.pytest_tmp/
+agent/vibe_trading.egg-info/
+agent/vibe_trading_ai.egg-info/
+agent/tests/e2e_backtest/
+agent/tests/e2e_*.py
+agent/tests/test_e2e_*.py
+agent/venv/
+
+# Frontend
 frontend/dist/
 frontend/tsconfig.tsbuildinfo
+
+# Wiki
 wiki/node_modules/
 wiki/dist/
 wiki/.astro/
 wiki/.vite/
 wiki/.wrangler/
-.wrangler/
 wiki/.cache/
+
+# Build artifacts
+dist/
+build/
+.wrangler/
+.cache/
 .vibe-dev/
 .vibe-record/
-.cache/
 .remotion/
 
 # DuckDB data cache
@@ -49,69 +70,46 @@ data/*.duckdb.wal
 data/.duckdb_tmp/
 data/parquet/
 data/backup/
-
-# Internal docs (plans, specs)
-docs/
-!wiki/docs/
-!wiki/docs/**
-docs/screenshots/agent-run.png
-docs/screenshots/boot.png
 data/minutes/
 data/overnight*.log
 data/*.log
 data/test_write.txt
-agent/.pytest_tmp/
-agent/vibe_trading.egg-info/
-agent/vibe_trading_ai.egg-info/
-agent/tests/e2e_backtest/
-dist/
-build/
 
-# Local demo videos (too large for git; link to external host instead)
+# Internal docs
+docs/
+!wiki/docs/
+!wiki/docs/**
+
+# Local demo videos
 assets/*.mp4
 
-# Local demo / promo production workspace
+# Local demo workspace
 demo/
 
-# Manual E2E smoke tests — require live API keys (OpenRouter / yfinance),
-# would break CI if committed. Kept local; run explicitly when validating
-# a release.
-agent/tests/e2e_*.py
-agent/tests/test_e2e_*.py
-
-# Local working notes
+# Working notes
 NOTES.md
-
-# Agent tool aliases (auto-generated mirror of CLAUDE.md)
 AGENTS.md
 
+# macOS
 .DS_Store
 
-# Alpha Zoo wiki artifacts (generated, not source)
+# Alpha Zoo wiki
 wiki/alpha-library/manifest.json
 wiki/alpha-library/content/
-agent/venv/
+
+# Reports (generated, not source)
 reports/
 
-# Backup files
+# Backups
 *.bak*
 *.backup_*
 vt_config.json.bak*
-
-# Database backups
 *.db.bak*
 
 # Temporary/result files
 *.xlsx
-disabled_pairs_results.json
-optimizer_results.json
-strategy_matrix_results.json
-validation_results.json
-vt_calibration_results.json
-REVIEW_FINDINGS.json
-FINAL_GUARDIAN_REPORT.md
-MONDAY_REPORT.md
-halt_cron_audit_report.md
-prompt_claude_code_fixes.md
+
+# Database (runtime data, not source)
+vt_trades.db
 journal.db
 trade_log.db
