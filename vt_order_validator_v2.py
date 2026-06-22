@@ -17,6 +17,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -85,37 +86,89 @@ def _cache_put(key: str, response: str):
     _llm_cache[key] = {"response": response, "ts": datetime.now()}
 
 
-def _ask_llm(prompt: str, timeout: int = 30) -> Optional[str]:
-    """Consulta LLM (com fallback). Timeout reduzido para 30s."""
+# Provedores LLM em ordem de prioridade: primário → fallback.
+# Nomes de provider conforme ~/.hermes/config.yaml e `hermes fallback list`.
+#   - minimax  → MiniMax-M3  (primário; OAuth via api.minimax.io/anthropic)
+#   - xiaomi   → mimo-v2.5-pro (fallback; token-plan-sgp.xiaomimimo.com)
+# Nota: o hermes também tem fallback chain interno, mas o subprocess timeout
+# abaixo é o que realmente limita cada provedor (gateway_timeout interno = 7200s).
+_LLM_PROVIDERS = [
+    {"provider": "minimax", "model": "MiniMax-M3",   "timeout": 10},   # fail-fast: se não responde em 10s, não vai responder em 20
+    {"provider": "xiaomi",  "model": "mimo-v2.5-pro", "timeout": 25},   # mais budget pro fallback (provou funcionar)
+]
+MAX_TOTAL_LLM_TIMEOUT = 38  # hard cap: 10+25=35 + margem
+
+
+def _ask_llm_provider(prompt: str, provider: str, model: str, timeout: int) -> Optional[str]:
+    """Tenta um único provedor LLM via hermes CLI. Retorna resposta ou None.
+
+    Logs de timing para diagnóstico de qual provedor respondeu.
+    """
     from vt_hermes_helper import find_hermes
     hermes_bin = find_hermes()
     if not hermes_bin:
+        _log(f"[LLM] {model}: hermes não encontrado no PATH")
         return None
 
-    models = [
-        ("MiniMax-M3", "minimax-oauth"),
-        ("glm-5.2", "zai"),
-    ]
+    t0 = time.time()
+    try:
+        result = subprocess.run(
+            [hermes_bin, "-z", prompt, "-m", model, "--provider", provider],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        elapsed = time.time() - t0
+        if result.returncode == 0 and result.stdout.strip():
+            resp = result.stdout.strip()
+            _log(f"[LLM] {model} OK ({elapsed:.1f}s, {len(resp)} chars)")
+            return resp
+        _log(f"[LLM] {model} falhou em {elapsed:.1f}s rc={result.returncode} "
+             f"stderr={result.stderr[:200]}")
+        return None
+    except subprocess.TimeoutExpired:
+        _log(f"[LLM] {model} timeout após {timeout}s")
+        return None
+    except Exception as e:
+        _log(f"[LLM] {model} erro: {e}")
+        return None
 
-    for model, provider in models:
-        try:
-            result = subprocess.run(
-                [hermes_bin, "-z", prompt, "-m", model, "--provider", provider],
-                capture_output=True, text=True, timeout=timeout
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                resp = result.stdout.strip()
-                _log(f"[LLM] {model} respondeu ({len(resp)} chars)")
-                return resp
-            else:
-                _log(f"[WARN] {model} returncode={result.returncode}, stderr={result.stderr[:200]}")
-        except subprocess.TimeoutExpired:
-            _log(f"[WARN] {model}: timeout após {timeout}s")
-        except Exception as e:
-            _log(f"[WARN] {model}: {e}")
 
-    _log("[ERROR] Todos os modelos falharam")
+def _ask_llm_with_fallback(prompt: str, timeout: int = 35) -> Optional[str]:
+    """Tenta MiniMax-M3; se falhar/timeout, tenta MiMo v2.5 pro.
+
+    Timeout total limitado a MAX_TOTAL_LLM_TIMEOUT (40s). Cada provedor tem seu
+    próprio timeout (20s primário, 15s fallback); o deadline global garante que
+    a soma nunca ultrapasse o limite aceitável para validação de trade.
+    """
+    from vt_hermes_helper import find_hermes
+    if not find_hermes():
+        _log("[LLM] hermes não encontrado no PATH — pulando validação LLM")
+        return None
+
+    deadline = time.time() + min(timeout, MAX_TOTAL_LLM_TIMEOUT)
+
+    for idx, prov in enumerate(_LLM_PROVIDERS):
+        remaining = deadline - time.time()
+        if remaining <= 2:
+            _log(f"[LLM] sem tempo restante para tentar {prov['model']}")
+            break
+        # timeout do provedor, porém nunca além do deadline global
+        per_timeout = min(prov["timeout"], int(remaining))
+
+        resp = _ask_llm_provider(prompt, prov["provider"], prov["model"], per_timeout)
+        if resp:
+            return resp
+
+        next_prov = _LLM_PROVIDERS[idx + 1] if idx + 1 < len(_LLM_PROVIDERS) else None
+        if next_prov:
+            _log(f"[LLM] {prov['model']} falhou, tentando {next_prov['model']}...")
+
+    _log("[LLM] Ambos os provedores falharam")
     return None
+
+
+def _ask_llm(prompt: str, timeout: int = 35) -> Optional[str]:
+    """Consulta LLM com fallback entre provedores (MiniMax-M3 → MiMo v2.5 pro)."""
+    return _ask_llm_with_fallback(prompt, timeout=timeout)
 
 
 def get_daily_pnl() -> float:
