@@ -113,3 +113,10 @@ vt_config.json.bak*
 vt_trades.db
 journal.db
 trade_log.db
+
+# Archive project venvs/node_modules (large, not source)
+archive/agent_project/venv/
+archive/prediction_project/.venv/
+archive/prediction_project/saved_models/
+archive/prediction_project/results/
+archive/frontend_project/node_modules/
