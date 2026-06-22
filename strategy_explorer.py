@@ -14,6 +14,7 @@ depois otimiza parâmetros dentro dela.
 """
 import sqlite3
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 from pathlib import Path
@@ -24,34 +25,27 @@ log = logging.getLogger("strategy_explorer")
 DB_PATH = Path(__file__).parent / "vt_trades.db"
 CONFIG_PATH = Path(__file__).parent / "vt_config.json"
 
-# ── All available strategies (from vt_config.json + known strategies) ────────
-ALL_STRATEGIES = [
-    "RSI_REVERSION",
-    "KELTNER_CHANNEL",
-    "MACD_MOMENTUM",
-    "DONCHIAN_BREAKOUT",
-    "VWAP",
-    "EMA_PULLBACK",
-    "BOLLINGER",
-    "STRONG_TREND",
-    "ADX_TREND",
-    "EMA_CROSSOVER",
-    "RANGE_TRADING",
-    "PIVOT_POINTS",
-    "SUPERTREND",
-    "STOCHASTIC",
-    "CANDLE_PATTERNS",
-    "ICHIMOKU",
-    "MOMENTUM_BREAKOUT",
-    "MEAN_REVERSION_ZSCORE",
-    "TRIPLE_EMA",
-    "VOLATILITY_BREAKOUT",
-    "HEIKIN_ASHI",
-    "FIBONACCI_RETRACEMENT",
-    "DIVERGENCE_RSI",
-    "SMART_EMA",
-    "WIN_REVERSION",
-]
+# ── Dynamic strategy discovery — scans strategies/ directory ────────────────
+def discover_strategies() -> list[str]:
+    """Scan strategies/ directory for all available strategies.
+    Reads STRATEGY_NAME from each .py file without importing (fast).
+    """
+    strategies = []
+    strategies_dir = Path(__file__).parent / "strategies"
+    for py_file in sorted(strategies_dir.glob("*.py")):
+        if py_file.name.startswith("_"):
+            continue
+        try:
+            content = py_file.read_text()
+            match = re.search(r'STRATEGY_NAME\s*=\s*["\']([^"\']+)["\']', content)
+            if match:
+                strategies.append(match.group(1))
+        except Exception:
+            continue
+    return strategies
+
+ALL_STRATEGIES = discover_strategies()
+log.info(f"Discovered {len(ALL_STRATEGIES)} strategies: {ALL_STRATEGIES}")
 
 
 def load_config() -> dict:

@@ -2367,8 +2367,11 @@ def main():
     # 4.5. Strategy Explorer — busca configs lucrativas no histórico
     optimization = {}
     try:
-        from strategy_explorer import generate_optimization_report, IMPERATIVE_RULE
+        from strategy_explorer import generate_optimization_report, IMPERATIVE_RULE, ALL_STRATEGIES as SE_STRATEGIES
+        notify_telegram("🔬 Rodando Strategy Explorer...")
         log.info("🔬 Rodando Strategy Explorer (busca configs lucrativas)...")
+        n_strategies = len(SE_STRATEGIES)
+        notify_telegram(f"📊 Comparando {n_strategies} estratégias para cada SYM_TF...")
         full_report = generate_optimization_report()
         for sym, data in full_report.get("by_symbol", {}).items():
             best = data.get("optimization", {}).get("best_config")
@@ -2396,6 +2399,7 @@ def main():
     # 5. LLM (se habilitado)
     llm_result = None
     if not args.no_llm:
+        notify_telegram("🧠 Enviando análise ao LLM...")
         log.info("Consultando LLM ativo do Hermes...")
         prompt = build_llm_prompt(perf, issues, config, web_intel=web_intel, optimization=optimization)
         response = ask_llm(prompt, timeout=args.timeout)
@@ -2453,6 +2457,7 @@ def main():
         # 6. Aplicar mudanças desta iteração
         iter_applied = []
         if llm_result and llm_result.get("changes"):
+            notify_telegram("✏️ Aplicando mudanças...")
             if args.dry_run:
                 iter_applied = apply_changes(llm_result, config, dry_run=True)
             else:
@@ -2696,6 +2701,9 @@ def main():
 
     log.info(f"🤖 AGI 17H concluído — {len(iteration_history)} iteração(ões) | "
              f"convergiu: {converged}")
+    total_pnl_final = sum(d.get("total_pnl", 0) for d in perf.get("by_symbol", {}).values())
+    notify_telegram(f"✅ AGI concluído — resumo: {len(applied)} mudanças, PnL R${total_pnl_final:+.2f}, "
+                    f"{len(iteration_history)} iteração(ões), convergiu={converged}")
 
     # ─── SHADOW MODE — run optimization on snapshot, compare, log ───
     if not args.dry_run and not args.no_shadow:
