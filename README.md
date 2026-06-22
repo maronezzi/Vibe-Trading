@@ -362,6 +362,10 @@ PYTHONPATH=./agent ./agent/venv/bin/python backtest/backtest_agi_v11.py
 | **16:50** | Relatório Diário | Fecha posições, gera relatório, envia Telegram |
 | **17:10** | AGI Otimizador | Otimização completa (pode trocar estratégias) |
 
+### Regras Imperativas do AGI
+
+**REGRA IMPERATIVA — MULTI-ESTRATÉGIA:** Antes de otimizar parâmetros de uma estratégia, testar TODAS as estratégias disponíveis para cada símbolo/timeframe. Se uma estratégia alternativa tiver resultados positivos (PnL > 0, WR > 40%, PF > 1.2), trocar para ela. Só depois otimizar parâmetros dentro da estratégia escolhida.
+
 ## Gestão de Risco
 
 ### Camadas de proteção

@@ -1113,7 +1113,59 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
         prompt += "O sistema testou 100+ combinações de parâmetros no histórico de 30 dias.\n"
         prompt += "Símbolos com configs lucrativas encontradas (PF>1 e PnL>0):\n\n"
 
+        # ── Multi-strategy comparison section (FIRST — strategy before params) ──
+        strategy_switches = optimization.get("_strategy_switches", [])
+        strategy_comparison = optimization.get("_strategy_comparison", {})
+
+        if strategy_switches or strategy_comparison:
+            prompt += "### 🔄 COMPARAÇÃO MULTI-ESTRATÉGIA (PRIORIDADE MÁXIMA)\n"
+            prompt += "Antes de otimizar parâmetros, verifique se a ESTRATÉGIA atual é a melhor.\n\n"
+
+        if strategy_switches:
+            prompt += "**TROCAS DE ESTRATÉGIA RECOMENDADAS:**\n"
+            for sw in strategy_switches:
+                bs = sw.get("best_stats", {})
+                prompt += (
+                    f"- **{sw['pair']}**: trocar de `{sw['from']}` → `{sw['to']}` "
+                    f"(PnL R${bs.get('pnl', 0):+.2f}, WR {bs.get('wr', 0)}%, PF {bs.get('profit_factor', 0)})\n"
+                    f"  Razão: {sw['reason']}\n"
+                    f"  Ação: `{{\"symbol\": \"{sw['pair'].split('_')[0]}\", \"params\": {{\"strategy\": \"{sw['to']}\"}}}}`\n"
+                )
+            prompt += "\n"
+
+        # Show per-pair strategy stats
+        by_sym = strategy_comparison.get("by_symbol", {})
+        if by_sym:
+            for sym_name, sym_data in sorted(by_sym.items()):
+                if not isinstance(sym_data, dict):
+                    continue
+                for tf, tf_data in sorted(sym_data.items()):
+                    if not isinstance(tf_data, dict) or not tf_data.get("strategy_stats"):
+                        continue
+                    current = tf_data.get("current_strategy", "?")
+                    best_strat = tf_data.get("best_strategy", "?")
+                    ranked = tf_data.get("ranked_strategies", [])
+                    n = tf_data.get("n_trades", 0)
+                    if not ranked:
+                        continue
+                    line = f"  {sym_name}_{tf} (atual={current}): "
+                    parts = []
+                    for strat_name in ranked[:4]:
+                        st = tf_data["strategy_stats"].get(strat_name, {})
+                        marker = "⭐" if strat_name == best_strat else ""
+                        parts.append(
+                            f"{marker}{strat_name}: {st.get('n', 0)}t WR {st.get('wr', 0)}% PnL R${st.get('pnl', 0):+.0f}"
+                        )
+                    untested = tf_data.get("untested_strategies", [])
+                    if untested:
+                        parts.append(f"+ {len(untested)} não testadas")
+                    line += " | ".join(parts) + "\n"
+                    prompt += line
+            prompt += "\n"
+
         for sym, opt in optimization.items():
+            if sym.startswith("_"):
+                continue  # Skip internal keys
             cur_pnl = opt.get("current_pnl", 0)
             best_pnl = opt.get("best_pnl", 0)
             improvement = best_pnl - cur_pnl
@@ -1201,7 +1253,8 @@ NÃO duvide dos resultados do Explorer — eles são baseados em dados reais.
 11. Se a web indica RSI ideal = 7 ao invés de 14, considerar usar rsi_period=7
 12. LEMBRE-SE: o Explorer testou 100+ combinações — se ele disse "esta config dá lucro", CONFIE NELE
 13. O objetivo é LUCRAR, não sobreviver. Se o Explorer achou config lucrativa, USE-A agressivamente.
-14. **TROCA DE ESTRATÉGIA** (CRÍTICO): se um par SYM_TF continua não-lucrativo APÓS 2+ iterações de ajuste de parâmetros (PnL ≤ 0 com 8+ trades), TROQUE A ESTRATÉGIA via `params: {"strategy": "NOVA_ESTRATÉGIA"}`. Estratégias válidas: BOLLINGER, RSI_REVERSION, EMA_PULLBACK, VWAP, MACD_MOMENTUM, BREAKOUT, MEAN_REVERSION, MOMENTUM, TREND_FOLLOWING, DONCHIAN_BREAKOUT, ICHIMOKU, SUPERTREND, KELTNER_CHANNEL, STOCHASTIC, PARABOLIC_SAR, ATR_BREAKOUT. Teste no Explorer ANTES de aplicar. NÃO troque se o par está lucrativo.
+14. **TROCA DE ESTRATÉGIA** (CRÍTICO): se um par SYM_TF continua não-lucrativo APÓS 2+ iterações de ajuste de parâmetros (PnL ≤ 0 com 8+ trades), TROQUE A ESTRATÉGIA via `params: {{"strategy": "NOVA_ESTRATÉGIA"}}`. Estratégias válidas: BOLLINGER, RSI_REVERSION, EMA_PULLBACK, VWAP, MACD_MOMENTUM, BREAKOUT, MEAN_REVERSION, MOMENTUM, TREND_FOLLOWING, DONCHIAN_BREAKOUT, ICHIMOKU, SUPERTREND, KELTNER_CHANNEL, STOCHASTIC, PARABOLIC_SAR, ATR_BREAKOUT. Teste no Explorer ANTES de aplicar. NÃO troque se o par está lucrativo.
+14b. **REGRA IMPERATIVA — MULTI-ESTRATÉGIA**: Antes de otimizar parâmetros de uma estratégia, testar TODAS as estratégias disponíveis para cada símbolo/timeframe. Se uma estratégia alternativa tiver resultados positivos (PnL > 0, WR > 40%, PF > 1.2), trocar para ela. Só depois otimizar parâmetros dentro da estratégia escolhida. Os dados de comparação multi-estratégia estão na seção "COMPARAÇÃO MULTI-ESTRATÉGIA" acima — USE-OS.
 15. **MAXIMIZAÇÃO DE LUCRO** (CRÍTICO): objetivo é MAXIMIZAR LUCRO, não sobreviver. Trade-offs a considerar:
     a) **ENTRAR CEDO**: sinais mais sensíveis = `bb_std` mais baixo (1.5-2.0), `rsi_overbought/oversold` mais largo (75/25), `pullback_pct` menor (0.05-0.10), `adx_threshold` menor (15-20). Pegar o início do movimento.
     b) **SAIR TARDE**: `breakeven_minutes` MAIOR (10-20), `time_trail_minutes` MAIOR (20-30), `max_position_minutes` MAIOR (60-120), `hard_exit_minutes` MAIOR (60-90). Deixar o lucro correr.
@@ -1616,7 +1669,19 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
     # Strategy Explorer
     if optimization:
         print(f"\n🔬 STRATEGY EXPLORER (configs lucrativas encontradas):")
+
+        # Show strategy switches first
+        strategy_switches = optimization.get("_strategy_switches", [])
+        if strategy_switches:
+            print(f"\n  🔄 TROCAS DE ESTRATÉGIA RECOMENDADAS:")
+            for sw in strategy_switches:
+                bs = sw.get("best_stats", {})
+                print(f"    📊 {sw['pair']}: {sw['from']} → {sw['to']}")
+                print(f"       PnL R${bs.get('pnl', 0):+.2f} | WR {bs.get('wr', 0)}% | PF {bs.get('profit_factor', 0)}")
+
         for sym, opt in optimization.items():
+            if sym.startswith("_"):
+                continue
             cur_pnl = opt.get("current_pnl", 0)
             best_pnl = opt.get("best_pnl", 0)
             delta = best_pnl - cur_pnl
@@ -2302,7 +2367,7 @@ def main():
     # 4.5. Strategy Explorer — busca configs lucrativas no histórico
     optimization = {}
     try:
-        from strategy_explorer import generate_optimization_report
+        from strategy_explorer import generate_optimization_report, IMPERATIVE_RULE
         log.info("🔬 Rodando Strategy Explorer (busca configs lucrativas)...")
         full_report = generate_optimization_report()
         for sym, data in full_report.get("by_symbol", {}).items():
@@ -2319,7 +2384,11 @@ def main():
                     "best_rsi_ob": best.get("rsi_overbought"),
                     "best_rsi_os": best.get("rsi_oversold"),
                     "variants": data.get("variants_to_test", []),
+                    "strategy_comparison": data.get("strategy_comparison", {}),
                 }
+        # Multi-strategy data: switches + untested
+        optimization["_strategy_switches"] = full_report.get("strategy_switches", [])
+        optimization["_strategy_comparison"] = full_report.get("strategy_comparison", {})
         log.info(f"🔬 Optimization encontrada para {len(optimization)} símbolos com PF>1")
     except Exception as e:
         log.warning(f"Strategy Explorer falhou: {e}")
