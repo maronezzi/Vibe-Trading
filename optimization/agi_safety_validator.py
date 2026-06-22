@@ -154,7 +154,7 @@ PARAM_HARD_BOUNDS = {
     "rsi_period": (5, 50),
     "rsi_overbought": (60, 90),
     "rsi_oversold": (10, 40),
-    "sl_atr_mult": (0.8, 5.0),  # was (0.3, 5.0) — 0.3 results in noise-level stops
+    "sl_atr_mult": (1.0, 3.0),  # aligned with PARAM_BOUNDS in agi_tuning_17h (floor was 0.8→1.0)
     "trail_activate": (0.3, 5.0),
     "trail_distance": (0.1, 3.0),
     "cooldown_seconds": (60, 7200),
