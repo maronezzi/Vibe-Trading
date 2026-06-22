@@ -480,7 +480,7 @@ def check_intraday_stats() -> dict:
     conn = sqlite3.connect(str(DB_PATH))
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Realizado: trades fechados hoje
+    # Realizado: trades fechados hoje (exclui stale_close — contratos antigos limpos manualmente)
     closed = conn.execute("""
         SELECT COUNT(*) ops,
                SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) wins,
@@ -489,6 +489,7 @@ def check_intraday_stats() -> dict:
         FROM trades
         WHERE exit_time IS NOT NULL
           AND date(exit_time) = ?
+          AND exit_reason != 'stale_close'
     """, (today,)).fetchone()
 
     # Série temporal ordenada
@@ -497,6 +498,7 @@ def check_intraday_stats() -> dict:
         FROM trades
         WHERE exit_time IS NOT NULL
           AND date(exit_time) = ?
+          AND exit_reason != 'stale_close'
         ORDER BY exit_time
     """, (today,)).fetchall()
     conn.close()
