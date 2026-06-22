@@ -2284,8 +2284,8 @@ def main():
     parser.add_argument("--no-web", action="store_true", help="Não usar tinyfish para web intel")
     parser.add_argument("--timeout", type=int, default=120, help="Timeout LLM em segundos")
     parser.add_argument("--web-timeout", type=int, default=60, help="Timeout tinyfish em segundos (total)")
-    parser.add_argument("--max-iterations", type=int, default=1,
-                        help="Máximo de iterações do loop de convergência (1-5, default: 1 — single-shot)")
+    parser.add_argument("--max-iterations", type=int, default=5,
+                        help="Máximo de iterações do loop de convergência (1-5, default: 5 — sempre convergir)")
     parser.add_argument("--pause-failing", action="store_true",
                         help="Fallback final: auto-pausar pares SYM_TF com PnL≤0 após max-iterations")
     parser.add_argument("--convergence-mode", choices=["delta", "absolute"], default="delta",
@@ -2305,6 +2305,15 @@ def main():
 
     log.info(f"🤖 AGI 17H iniciado — janela: {args.days} dias | dry-run: {args.dry_run} | "
              f"llm: {not args.no_llm} | web: {not args.no_web}")
+
+    # 0. Sync resolved_symbols no config (garante contratos atualizados)
+    try:
+        import subprocess as _sp
+        _sp.run([sys.executable, str(PROJECT_DIR / "vt_resolve_symbols.py"), "--apply"],
+                capture_output=True, timeout=30)
+        log.info("🔄 vt_resolve_symbols.py executado — config sincronizado")
+    except Exception as e:
+        log.warning(f"vt_resolve_symbols.py falhou (non-fatal): {e}")
 
     # 1. Carregar config
     config = load_config(force=True)
@@ -2396,6 +2405,57 @@ def main():
     except Exception as e:
         log.warning(f"Strategy Explorer falhou: {e}")
 
+    # 4.6. AUTO-APPLY Explorer results (não depender do LLM pra configs lucrativas)
+    # Regra: se Explorer achou config com PF>1.2 E melhoria >10%, auto-aplica
+    explorer_applied = []
+    if optimization:
+        from vt_config_loader import save_params as _save_params
+        for sym, data in optimization.items():
+            if sym.startswith("_"):
+                continue
+            best_pf = data.get("best_pf", 0)
+            best_pnl = data.get("best_pnl", 0)
+            current_pnl = data.get("current_pnl", 0)
+            pnl_improvement = best_pnl - current_pnl
+            improvement_pct = (pnl_improvement / abs(current_pnl) * 100) if current_pnl != 0 else 0
+
+            # Só auto-aplica se: PF>1.2 E (melhoria>10% OU PnL negativo→positivo)
+            should_auto_apply = (
+                best_pf > 1.2 and (
+                    improvement_pct > 10 or
+                    (current_pnl <= 0 and best_pnl > 0)
+                )
+            )
+            if not should_auto_apply:
+                continue
+
+            params_to_apply = {}
+            if data.get("best_sl_atr_mult") is not None:
+                params_to_apply["sl_atr_mult"] = data["best_sl_atr_mult"]
+            if data.get("best_cooldown_seconds") is not None:
+                params_to_apply["cooldown_seconds"] = data["best_cooldown_seconds"]
+            if data.get("best_bb_std") is not None:
+                params_to_apply["bb_std"] = data["best_bb_std"]
+            if data.get("best_rsi_ob") is not None:
+                params_to_apply["rsi_overbought"] = data["best_rsi_ob"]
+            if data.get("best_rsi_os") is not None:
+                params_to_apply["rsi_oversold"] = data["best_rsi_os"]
+
+            if params_to_apply:
+                sym_lower = sym.lower()
+                ok = _save_params(sym_lower, params_to_apply, updated_by="agi_explorer_auto")
+                explorer_applied.append({
+                    "symbol": sym, "params": params_to_apply, "applied": ok,
+                    "reason": f"Explorer auto: PF={best_pf:.2f} ΔPnL=R${pnl_improvement:+.0f} ({improvement_pct:+.0f}%)",
+                    "warnings": [],
+                })
+                log.info(f"🔬 AUTO-APPLY {sym}: {params_to_apply} (PF={best_pf:.2f}, Δ={improvement_pct:+.0f}%)")
+                notify_telegram(f"🔬 Auto-apply Explorer: {sym} → {params_to_apply} (PF={best_pf:.2f})")
+
+        if explorer_applied:
+            log.info(f"🔬 Explorer auto-aplicou {len(explorer_applied)} mudanças antes do LLM")
+            config = load_config(force=True)
+
     # 5. LLM (se habilitado)
     llm_result = None
     if not args.no_llm:
@@ -2418,7 +2478,7 @@ def main():
     all_backtest_evals = []  # forward backtest evaluations por iteração
     converged = False
     final_paused = {"paused": [], "skipped": []}
-    applied = []
+    applied = list(explorer_applied)  # inclui auto-apply do Explorer
 
     # Captura snapshot ANTES do loop (baseline imutável pra convergence por delta)
     baseline_snapshot = snapshot_performance(perf) if args.convergence_mode == "delta" else {}
