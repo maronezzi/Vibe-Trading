@@ -1,8 +1,8 @@
 {
-  "_version": 842,
-  "_updated_at": "2026-06-22T21:26:06.618401",
-  "_updated_by": "manual_sl_floor_enforcement",
-  "_notes": "auto-resolve vencimento: WDO: WDON26 → WDOQ26\n[2026-06-22 17:50 AGI convergence_loop_final] v770. Changes applied: WIN_H1 disabled (-493R saved); BIT tightened (cooldowns+max_daily+RSI extremes); Strategy swaps — BIT_M5→MACD_MOMENTUM (+147R gain), BIT_M15→STRONG_TREND (+190R), BIT_H1→MACD_MOMENTUM (+96R), WIN_M5→MACD_MOMENTUM (+131R), WIN_M15→KELTNER_CHANNEL (+758R), WSP_M15→MACD_MOMENTUM (+1R but 100% WR), WDO_M15→STRONG_TREND (+848R), WDO_M30→KELTNER_CHANNEL (+376R), WDO_H1 enabled (was no_trades → +1984R with EMA_PULLBACK). Final forward backtest (500 bars): +8489R / 178 trades / 80.9% WR / all 15 pairs positive. vs baseline +3852R / 118 trades / 65.3% WR = +4637R improvement (+120%).",
+  "_version": 843,
+  "_updated_at": "2026-06-22T21:34:27.574616",
+  "_updated_by": "exhaustive_strategy_search",
+  "_notes": "Exhaustive 16×28 strategy search. Active: 16, Disabled: 0, Total PnL: 8718R. WIN_M5→STRONG_TREND(656R/24t/62%WR); WIN_M15→STRONG_TREND(711R/13t/62%WR); WIN_M30→MACD_MOMENTUM(1348R/6t/100%WR); WIN_H1→PIVOT_POINTS(691R/5t/80%WR); BIT_M5→MACD_MOMENTUM(131R/8t/100%WR); BIT_M15→DONCHIAN_BREAKOUT(125R/10t/100%WR); BIT_M30→PIVOT_POINTS(364R/9t/100%WR); BIT_H1→PIVOT_POINTS(167R/3t/100%WR); WSP_M5→PIVOT_POINTS(58R/22t/77%WR); WSP_M15→CANDLE_PATTERNS(102R/8t/88%WR); WSP_M30→PIVOT_POINTS(135R/7t/100%WR); WSP_H1→SUPERTREND(66R/2t/100%WR); WDO_M5→TRIPLE_EMA(1197R/12t/100%WR); WDO_M15→ENHANCED_MACD_MOMENTUM(724R/4t/100%WR); WDO_M30→MOMENTUM_BREAKOUT(1276R/6t/100%WR); WDO_H1→STRONG_TREND(967R/3t/100%WR)",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
   "start_minute": 5,
@@ -115,22 +115,22 @@
   "winddown_minutes": 15,
   "validate_with_llm": true,
   "strategy_by_tf": {
-    "WIN_M5": "MACD_MOMENTUM",
-    "WIN_M15": "KELTNER_CHANNEL",
-    "WIN_M30": "DONCHIAN_BREAKOUT",
-    "WIN_H1": "RSI_REVERSION",
+    "WIN_M5": "STRONG_TREND",
+    "WIN_M15": "STRONG_TREND",
+    "WIN_M30": "MACD_MOMENTUM",
+    "WIN_H1": "PIVOT_POINTS",
     "BIT_M5": "MACD_MOMENTUM",
-    "BIT_M15": "STRONG_TREND",
-    "BIT_M30": "RSI_REVERSION",
-    "BIT_H1": "MACD_MOMENTUM",
-    "WSP_M5": "RSI_REVERSION",
-    "WSP_M15": "MACD_MOMENTUM",
-    "WSP_M30": "DONCHIAN_BREAKOUT",
-    "WSP_H1": "KELTNER_CHANNEL",
-    "WDO_M5": "DONCHIAN_BREAKOUT",
-    "WDO_M15": "STRONG_TREND",
-    "WDO_M30": "KELTNER_CHANNEL",
-    "WDO_H1": "EMA_PULLBACK"
+    "BIT_M15": "DONCHIAN_BREAKOUT",
+    "BIT_M30": "PIVOT_POINTS",
+    "BIT_H1": "PIVOT_POINTS",
+    "WSP_M5": "PIVOT_POINTS",
+    "WSP_M15": "CANDLE_PATTERNS",
+    "WSP_M30": "PIVOT_POINTS",
+    "WSP_H1": "SUPERTREND",
+    "WDO_M5": "TRIPLE_EMA",
+    "WDO_M15": "ENHANCED_MACD_MOMENTUM",
+    "WDO_M30": "MOMENTUM_BREAKOUT",
+    "WDO_H1": "STRONG_TREND"
   },
   "contract_specs": {
     "WIN$": {
@@ -239,16 +239,7 @@
     "strategy": "RSI_REVERSION"
   },
   "disabled_symbols": [],
-  "disabled_timeframes": [
-    "WIN_H1",
-    "BIT_M30",
-    "WDO_H1",
-    "WDO_M5",
-    "WIN_M5",
-    "BIT_M15",
-    "BIT_M5",
-    "WDO_M15"
-  ],
+  "disabled_timeframes": [],
   "max_daily_loss": -999999,
   "global_max_daily_trades": 999,
   "params_by_tf": {
