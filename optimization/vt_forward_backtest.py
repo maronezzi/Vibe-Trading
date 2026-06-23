@@ -97,6 +97,8 @@ def discover_pairs(config: dict) -> list:
     strategy_by_tf = config.get("strategy_by_tf", {})
     disabled = set(config.get("disabled_timeframes", []) or [])
 
+    params_by_tf = config.get("params_by_tf", {})
+
     for sym in symbols:
         if sym not in strategy_map:
             continue
@@ -113,7 +115,8 @@ def discover_pairs(config: dict) -> list:
             # Per-TF strategy override takes priority
             strategy = strategy_by_tf.get(pair_key, default_strategy)
             tf_override = sym_params_base.get(tf, {})
-            merged = {**sym_params_base, **tf_override}
+            # Merge: base symbol params < TF-specific within symbol < params_by_tf (highest priority)
+            merged = {**sym_params_base, **tf_override, **params_by_tf.get(pair_key, {})}
             pairs.append((sym, tf, strategy, merged))
 
     return pairs
@@ -604,12 +607,16 @@ def run_mini_backtest_pair_with_strategy(
 def _resolve_pair_params(config: dict, sym: str, tf: str) -> dict:
     """Resolve params for a (sym, tf) pair from config.
 
-    Reads config[symbol.lower()] as base, then merges config[symbol.lower()][tf]
-    if present (per-TF override).
+    Priority (highest wins):
+      1. config["params_by_tf"][SYM_TF]   — per-pair optimized params
+      2. config[symbol.lower()][tf]        — per-TF override within symbol
+      3. config[symbol.lower()]            — base symbol params
     """
     sym_params_base = config.get(sym.lower(), {})
     tf_override = sym_params_base.get(tf, {})
-    return {**sym_params_base, **tf_override}
+    pair_key = f"{sym}_{tf}"
+    params_by_tf = config.get("params_by_tf", {}).get(pair_key, {})
+    return {**sym_params_base, **tf_override, **params_by_tf}
 
 
 def _run_single_pair(args: tuple) -> dict:
