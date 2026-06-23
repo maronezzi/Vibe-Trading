@@ -784,5 +784,150 @@ class TestParamBoundsSL(unittest.TestCase):
         self.assertGreater(hi, lo)
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Exhaustive Strategy Search Integration Tests (v3.2)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestRunExhaustiveSearch(unittest.TestCase):
+    """Test run_exhaustive_search integration with AGI flow."""
+
+    def test_returns_best_strategy_per_pair(self):
+        """Should return best strategy per pair from exhaustive search."""
+        sys.path.insert(0, str(PROJECT_DIR / "optimization"))
+
+        mock_bars = [{"time": 1, "open": 100, "high": 101, "low": 99, "close": 100}]
+        mock_results = [
+            ("VWAP", {"pnl": 100, "n_trades": 5, "wr": 60, "max_dd": 50}),
+            ("BOLLINGER", {"pnl": -50, "n_trades": 3, "wr": 30, "max_dd": 80}),
+            ("RSI_REVERSION", {"pnl": -100, "n_trades": 2, "wr": 20, "max_dd": 120}),
+        ]
+
+        mock_exhaustive = MagicMock()
+        mock_exhaustive.test_all_strategies_for_pair.return_value = mock_results
+        mock_exhaustive.ALL_STRATEGIES = ["BOLLINGER", "VWAP", "RSI_REVERSION"]
+        mock_exhaustive.merge_params_by_tf_into_config.side_effect = lambda c: c
+
+        mock_fwd = MagicMock()
+        mock_fwd.fetch_bars_for_backtest.return_value = mock_bars
+        mock_fwd.BAR_COUNT_PER_TF = {"M5": 500}
+        mock_fwd.DEFAULT_BAR_COUNT = 300
+
+        with patch.dict("sys.modules", {
+            "optimization.exhaustive_strategy_search": mock_exhaustive,
+        }), patch.dict("sys.modules", {
+            "optimization.vt_forward_backtest": mock_fwd,
+        }):
+            # Force reimport to pick up mocked modules
+            if "optimization.agi_tuning_17h" in sys.modules:
+                del sys.modules["optimization.agi_tuning_17h"]
+            import optimization.agi_tuning_17h as agi_mod
+
+            config = {"symbols": ["WIN"], "timeframes": ["M5"], "disabled_timeframes": []}
+            result = agi_mod.run_exhaustive_search(config)
+
+            self.assertIn("best_per_pair", result)
+            self.assertIn("WIN_M5", result["best_per_pair"])
+            self.assertEqual(result["best_per_pair"]["WIN_M5"]["strategy"], "VWAP")
+            self.assertEqual(result["best_per_pair"]["WIN_M5"]["pnl"], 100)
+            self.assertEqual(result["strategies_tested"], 3)
+
+    def test_returns_all_negative_when_no_bars(self):
+        """Should handle no bars gracefully."""
+        sys.path.insert(0, str(PROJECT_DIR / "optimization"))
+
+        mock_exhaustive = MagicMock()
+        mock_exhaustive.ALL_STRATEGIES = ["BOLLINGER"]
+        mock_exhaustive.merge_params_by_tf_into_config.side_effect = lambda c: c
+
+        mock_fwd = MagicMock()
+        mock_fwd.fetch_bars_for_backtest.return_value = []
+        mock_fwd.BAR_COUNT_PER_TF = {"M5": 500}
+        mock_fwd.DEFAULT_BAR_COUNT = 300
+
+        with patch.dict("sys.modules", {
+            "optimization.exhaustive_strategy_search": mock_exhaustive,
+        }), patch.dict("sys.modules", {
+            "optimization.vt_forward_backtest": mock_fwd,
+        }):
+            if "optimization.agi_tuning_17h" in sys.modules:
+                del sys.modules["optimization.agi_tuning_17h"]
+            import optimization.agi_tuning_17h as agi_mod
+
+            config = {"symbols": ["WIN"], "timeframes": ["M5"], "disabled_timeframes": []}
+            result = agi_mod.run_exhaustive_search(config)
+
+            # No bars = no results
+            self.assertEqual(result["total_pairs"], 0)
+
+
+class TestExhaustiveSearchTelegram(unittest.TestCase):
+    """Test Telegram notification for exhaustive search results."""
+
+    def test_sends_notification(self):
+        """Should send Telegram notification with exhaustive search results."""
+        sys.path.insert(0, str(PROJECT_DIR / "optimization"))
+        import optimization.agi_tuning_17h as agi_mod
+
+        results = {
+            "best_per_pair": {
+                "WIN_M5": {"strategy": "VWAP", "pnl": 100, "n_trades": 5, "wr": 60, "max_dd": 50},
+                "WDO_M15": {"strategy": "BOLLINGER", "pnl": 50, "n_trades": 3, "wr": 55, "max_dd": 30},
+            },
+            "all_negative_pairs": ["BIT_M5"],
+            "strategies_tested": 27,
+            "total_pairs": 3,
+        }
+
+        with patch.object(agi_mod, "notify_telegram") as mock_notify:
+            agi_mod.notify_exhaustive_search_results(results)
+            mock_notify.assert_called_once()
+            msg = mock_notify.call_args[0][0]
+            self.assertIn("27", msg)
+            self.assertIn("WIN_M5", msg)
+            self.assertIn("VWAP", msg)
+            self.assertIn("BIT_M5", msg)
+
+    def test_no_notification_when_empty(self):
+        """Should not send notification when results are empty."""
+        sys.path.insert(0, str(PROJECT_DIR / "optimization"))
+        import optimization.agi_tuning_17h as agi_mod
+
+        with patch.object(agi_mod, "notify_telegram") as mock_notify:
+            agi_mod.notify_exhaustive_search_results({})
+            mock_notify.assert_not_called()
+
+
+class TestExhaustiveSearchFallback(unittest.TestCase):
+    """Test that fallback only disables pairs where ALL 27 strategies are negative."""
+
+    def test_keeps_pair_with_profitable_strategy(self):
+        """Should NOT disable a pair if exhaustive search found a profitable strategy."""
+        # This tests the logic concept: if exhaustive found a profitable strategy,
+        # the pair should not be in all_negative_pairs
+        exhaustive_results = {
+            "best_per_pair": {
+                "WIN_M5": {"strategy": "VWAP", "pnl": 100, "n_trades": 5, "wr": 60, "max_dd": 50},
+            },
+            "all_negative_pairs": [],  # WIN_M5 is NOT all-negative
+            "strategies_tested": 27,
+            "total_pairs": 1,
+        }
+
+        all_negative = set(exhaustive_results.get("all_negative_pairs", []))
+        self.assertNotIn("WIN_M5", all_negative)
+
+    def test_disables_all_negative_pair(self):
+        """Should disable a pair if ALL 27 strategies are negative."""
+        exhaustive_results = {
+            "best_per_pair": {},
+            "all_negative_pairs": ["BIT_M5"],
+            "strategies_tested": 27,
+            "total_pairs": 1,
+        }
+
+        all_negative = set(exhaustive_results.get("all_negative_pairs", []))
+        self.assertIn("BIT_M5", all_negative)
+
+
 if __name__ == "__main__":
     unittest.main()

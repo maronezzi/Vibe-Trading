@@ -1657,7 +1657,8 @@ def notify_telegram(msg: str):
 def print_report(perf: dict, issues: list, llm_result: dict | None,
                  applied: list, config: dict, dry_run: bool, web_intel: dict = None,
                  optimization: dict = None, iterations: list = None,
-                 converged: bool = False, paused: dict = None):
+                 converged: bool = False, paused: dict = None,
+                 exhaustive_results: dict = None):
     """Imprime relatório consolidado."""
     web_intel = web_intel or {}
     optimization = optimization or {}
@@ -1782,6 +1783,24 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
             icon = "🟢" if data["total_pnl"] > 0 else "🔴"
             print(f"  {icon} {key} ({data['strategy']}): "
                   f"WR {data['win_rate']}% | PnL R${data['total_pnl']:+.2f}{paused_flag}")
+
+    # Exhaustive search results
+    if exhaustive_results:
+        n_strats = exhaustive_results.get("strategies_tested", 0)
+        n_total = exhaustive_results.get("total_pairs", 0)
+        best = exhaustive_results.get("best_per_pair", {})
+        all_neg = exhaustive_results.get("all_negative_pairs", [])
+        print(f"\n🔍 BUSCA EXAUSTIVA ({n_strats} estratégias × {n_total} pares):")
+        print(f"  ✅ {len(best)} pares com estratégia lucrativa")
+        print(f"  ❌ {len(all_neg)} pares com TODAS as {n_strats} estratégias negativas")
+        for pair_key, info in sorted(best.items()):
+            print(f"    ✅ {pair_key}: {info['strategy']} "
+                  f"pnl=R${info['pnl']:+.2f} trades={info['n_trades']} "
+                  f"wr={info['wr']:.0f}%")
+        if all_neg:
+            print(f"  ❌ Pares onde TODAS as {n_strats} estratégias foram negativas:")
+            for pair_key in all_neg:
+                print(f"    ❌ {pair_key}")
 
     # Config version
     print(f"\n📌 Config atual: v{config.get('_version', '?')} by {config.get('_updated_by', '?')}")
@@ -2262,6 +2281,145 @@ def check_forward_convergence(
         log.info(f"  ⚪ No signal: {no_signal}")
 
     return (converged, failing, bt_results)
+
+
+def run_exhaustive_search(config: dict, days: int = 7) -> dict:
+    """Run exhaustive strategy search: test ALL 27 strategies for every pair.
+
+    This function tests every strategy in exhaustive_strategy_search.ALL_STRATEGIES
+    for each active (sym, tf) pair using simulate_forward() on real MT5 bars.
+    It returns the best strategy per pair and identifies pairs where ALL 27
+    strategies are negative (safe to disable).
+
+    Args:
+        config: vt_config dict (merged with params_by_tf)
+        days: not used directly (bar count is per-TF from BAR_COUNT_PER_TF)
+
+    Returns:
+        Dict with keys:
+        - best_per_pair: {pair_key: {strategy, pnl, n_trades, wr, max_dd}}
+        - all_results: {pair_key: [(strat_name, result_dict), ...]}
+        - all_negative_pairs: list of pair_keys where all 27 strategies have PnL <= 0
+        - total_pairs: int
+        - strategies_tested: int (len of ALL_STRATEGIES)
+    """
+    from optimization.exhaustive_strategy_search import (
+        test_all_strategies_for_pair, ALL_STRATEGIES,
+        merge_params_by_tf_into_config,
+    )
+    from optimization.vt_forward_backtest import (
+        fetch_bars_for_backtest, BAR_COUNT_PER_TF, DEFAULT_BAR_COUNT,
+    )
+
+    test_config = merge_params_by_tf_into_config(config)
+    symbols = config.get("symbols", [])
+    timeframes = config.get("timeframes", [])
+    disabled = set(config.get("disabled_timeframes", []) or [])
+
+    all_results = {}
+    best_per_pair = {}
+    all_negative_pairs = []
+
+    log.info(f"🔍 Exhaustive search: {len(symbols)} syms × {len(timeframes)} tfs × "
+             f"{len(ALL_STRATEGIES)} strategies")
+
+    for sym in symbols:
+        for tf in timeframes:
+            pair_key = f"{sym}_{tf}"
+            if pair_key in disabled:
+                continue
+
+            full_symbol = f"{sym}$"
+            bar_count = BAR_COUNT_PER_TF.get(tf, DEFAULT_BAR_COUNT)
+            bars = fetch_bars_for_backtest(full_symbol, tf, count=bar_count)
+
+            if not bars:
+                all_results[pair_key] = []
+                continue
+
+            results = test_all_strategies_for_pair(sym, tf, bars, test_config)
+            all_results[pair_key] = results
+
+            # Find best strategy with PnL > 0 and trades >= 1
+            best_strat = None
+            best_result = None
+            for strat, res in results:
+                if res.get("pnl", 0) > 0 and res.get("n_trades", 0) >= 1:
+                    best_strat = strat
+                    best_result = res
+                    break
+
+            if best_strat and best_result:
+                best_per_pair[pair_key] = {
+                    "strategy": best_strat,
+                    "pnl": best_result["pnl"],
+                    "n_trades": best_result["n_trades"],
+                    "wr": best_result.get("wr", 0),
+                    "max_dd": best_result.get("max_dd", 0),
+                }
+                log.info(f"  ✅ {pair_key}: best={best_strat} "
+                         f"pnl=R${best_result['pnl']:+.2f} "
+                         f"trades={best_result['n_trades']} "
+                         f"wr={best_result.get('wr', 0):.0f}%")
+            else:
+                all_negative_pairs.append(pair_key)
+                # Log top 3 least-bad strategies for debugging
+                for i, (strat, res) in enumerate(results[:3]):
+                    log.info(f"  🔴 {pair_key} #{i+1}: {strat} "
+                             f"pnl=R${res.get('pnl', 0):+.2f} "
+                             f"trades={res.get('n_trades', 0)}")
+
+    n_positive = len(best_per_pair)
+    n_negative = len(all_negative_pairs)
+    n_total = n_positive + n_negative
+    log.info(f"🔍 Exhaustive search complete: {n_positive}/{n_total} pairs "
+             f"have profitable strategies, {n_negative} all-negative")
+
+    return {
+        "best_per_pair": best_per_pair,
+        "all_results": all_results,
+        "all_negative_pairs": all_negative_pairs,
+        "total_pairs": n_total,
+        "strategies_tested": len(ALL_STRATEGIES),
+    }
+
+
+def notify_exhaustive_search_results(exhaustive_results: dict):
+    """Send exhaustive search results summary to Telegram.
+    
+    Shows which strategies were tested per pair, why a specific strategy was chosen,
+    and if a pair is disabled, shows that all 27 strategies were tested.
+    """
+    if not exhaustive_results:
+        return
+    
+    best = exhaustive_results.get("best_per_pair", {})
+    all_neg = exhaustive_results.get("all_negative_pairs", [])
+    n_strats = exhaustive_results.get("strategies_tested", 0)
+    total = exhaustive_results.get("total_pairs", 0)
+    
+    lines = [
+        f"🔍 Busca Exaustiva: {n_strats} estratégias × {total} pares",
+        f"✅ {len(best)} pares com estratégia lucrativa",
+        f"❌ {len(all_neg)} pares com TODAS as {n_strats} estratégias negativas",
+        "",
+    ]
+    
+    # Show best strategy per pair
+    for pair_key, info in sorted(best.items()):
+        lines.append(
+            f"  ✅ {pair_key}: {info['strategy']} "
+            f"(R${info['pnl']:+.0f}, {info['n_trades']}t, WR {info['wr']:.0f}%)"
+        )
+    
+    # Show all-negative pairs (all 27 tested)
+    if all_neg:
+        lines.append("")
+        lines.append(f"❌ Pares onde TODAS as {n_strats} estratégias foram negativas:")
+        for pair_key in all_neg:
+            lines.append(f"  ❌ {pair_key}")
+    
+    notify_telegram("\n".join(lines))
 
 
 def explore_all_strategies_forward(
@@ -3076,6 +3234,40 @@ def main():
         log.warning("🧬 Bayesian optimizer solicitado mas optuna não instalado — usando grid")
 
     # ═══════════════════════════════════════════════════════════════
+    # STAGE 3.5 — Exhaustive Strategy Search (test ALL 27 strategies)
+    # Runs BEFORE iteration loop. For each pair, finds the best strategy
+    # among all 27. Only pairs where ALL 27 strategies are negative can
+    # be safely disabled.
+    # ═══════════════════════════════════════════════════════════════
+    exhaustive_results = {}
+    if not args.dry_run:
+        try:
+            notify_telegram("🔍 Busca exaustiva: testando 27 estratégias × todos os pares...")
+            log.info("🔍 Running exhaustive strategy search (ALL 27 strategies per pair)...")
+            exhaustive_results = run_exhaustive_search(config, days=analysis_days)
+            notify_exhaustive_search_results(exhaustive_results)
+
+            # Apply best strategy from exhaustive search for pairs that have one
+            best_per_pair = exhaustive_results.get("best_per_pair", {})
+            strategy_changes = 0
+            for pair_key, info in best_per_pair.items():
+                current_strat = config.get("strategy_by_tf", {}).get(pair_key)
+                if current_strat != info["strategy"]:
+                    config.setdefault("strategy_by_tf", {})[pair_key] = info["strategy"]
+                    strategy_changes += 1
+                    log.info(f"  🔄 {pair_key}: {current_strat} → {info['strategy']} "
+                             f"(exhaustive: pnl=R${info['pnl']:+.2f})")
+
+            if strategy_changes > 0:
+                save_full_config(config, updated_by="agi_exhaustive_search")
+                config = load_config(force=True)
+                log.info(f"🔍 Exhaustive search applied {strategy_changes} strategy changes")
+        except Exception as e:
+            log.warning(f"Exhaustive search erro (non-fatal): {e}")
+    else:
+        log.info("🔍 [DRY-RUN] Skipping exhaustive search")
+
+    # ═══════════════════════════════════════════════════════════════
     # STAGE 5 — Safety Validation Gate (v3.0)
     # Applied to all LLM output before changes
     # ═══════════════════════════════════════════════════════════════
@@ -3223,26 +3415,63 @@ def main():
             break
 
     # 8. FALLBACK — Auto-disable pairs that can't be made profitable
-    # Strategy: run final forward backtest, disable pairs still negative
+    # Only disable pairs where ALL 27 strategies were negative in exhaustive search
     if not converged and not args.dry_run:
         log.info("⚠️ FALLBACK: Final forward backtest after all iterations...")
         final_converged, final_failing, final_bt = check_forward_convergence(
             config, days=args.days, max_workers=args.max_workers,
         )
 
-        # Also collect zero-trade pairs from final backtest
+        # Use exhaustive search to determine safe-to-disable pairs
+        # A pair can ONLY be disabled if ALL 27 strategies were negative
+        all_negative_from_exhaustive = set(
+            exhaustive_results.get("all_negative_pairs", [])
+        ) if exhaustive_results else set()
+
+        pairs_to_disable = []
+        for pair_key in set(final_failing):
+            if pair_key in all_negative_from_exhaustive:
+                # ALL 27 strategies were negative — safe to disable
+                pairs_to_disable.append(pair_key)
+                log.info(f"  🛑 {pair_key}: ALL {exhaustive_results.get('strategies_tested', '?')} "
+                         f"strategies negative — disabling")
+            else:
+                # Exhaustive search found a profitable strategy — DON'T disable
+                best = exhaustive_results.get("best_per_pair", {}).get(pair_key)
+                if best:
+                    log.info(f"  ✅ {pair_key}: keeping — exhaustive search found "
+                             f"{best['strategy']} (pnl=R${best['pnl']:+.2f})")
+                else:
+                    # No exhaustive results (bars unavailable) — try forward backtest
+                    pairs_to_disable.append(pair_key)
+                    log.info(f"  ⚠️ {pair_key}: no exhaustive results — disabling")
+
+        # Also collect zero-trade pairs that had no profitable strategy in exhaustive search
         zero_trade_pairs = [k for k, v in final_bt.items()
                            if v.get("n_trades", 0) == 0
                            and k not in set(config.get("disabled_timeframes", []) or [])]
+        for pair_key in zero_trade_pairs:
+            if pair_key not in pairs_to_disable:
+                if pair_key in all_negative_from_exhaustive:
+                    pairs_to_disable.append(pair_key)
+                    log.info(f"  🛑 {pair_key}: 0 trades AND all 27 strategies negative — disabling")
+                elif exhaustive_results and pair_key in exhaustive_results.get("best_per_pair", {}):
+                    best = exhaustive_results["best_per_pair"][pair_key]
+                    log.info(f"  ✅ {pair_key}: 0 trades but exhaustive found "
+                             f"{best['strategy']} — keeping")
+                else:
+                    pairs_to_disable.append(pair_key)
 
-        pairs_to_disable = list(set(final_failing + zero_trade_pairs))
+        pairs_to_disable = list(set(pairs_to_disable))
 
         if pairs_to_disable:
-            log.warning(f"🛑 Disabling {len(pairs_to_disable)} pairs that couldn't be made profitable: {pairs_to_disable}")
+            n_strats = exhaustive_results.get("strategies_tested", "?") if exhaustive_results else "?"
+            log.warning(f"🛑 Disabling {len(pairs_to_disable)} pairs where ALL {n_strats} "
+                        f"strategies were negative: {pairs_to_disable}")
             final_paused = _pause_failing_pairs(pairs_to_disable, config, dry_run=False)
             config = load_config(force=True)
         else:
-            log.info("✅ All pairs profitable — no disabling needed")
+            log.info("✅ All pairs profitable or have profitable strategy from exhaustive search — no disabling needed")
     elif not converged and args.dry_run:
         log.info("🔍 [DRY-RUN] Would disable failing pairs")
 
@@ -3263,7 +3492,8 @@ def main():
     # 9. Relatório final (consolidado com histórico de iterações)
     print_report(perf, issues, llm_result, applied, config, args.dry_run,
                  web_intel, optimization, iterations=iteration_history,
-                 converged=converged, paused=final_paused)
+                 converged=converged, paused=final_paused,
+                 exhaustive_results=exhaustive_results)
 
     # 10. Notificação Telegram (resumo)
     if applied or final_paused["paused"]:
@@ -3286,6 +3516,16 @@ def main():
             summary_lines.append(
                 f"🧬 Discovery: {d_summary.get('pairs_approved', 0)} approved, "
                 f"{d_summary.get('pairs_eliminated', 0)} eliminated"
+            )
+        if exhaustive_results:
+            n_strats = exhaustive_results.get("strategies_tested", 0)
+            n_best = len(exhaustive_results.get("best_per_pair", {}))
+            n_neg = len(exhaustive_results.get("all_negative_pairs", []))
+            summary_lines.append(
+                f"🔍 Busca exaustiva: {n_strats} estratégias × "
+                f"{exhaustive_results.get('total_pairs', 0)} pares | "
+                f"✅ {n_best} com estratégia lucrativa | "
+                f"❌ {n_neg} todas negativas"
             )
         if applied:
             summary_lines.append(f"✏️ {len(applied)} mudanças aplicadas no total")
@@ -3335,6 +3575,12 @@ def main():
             "logic_errors_count": len(trade_analysis.get("logic_errors", [])),
         },
         "v3_sl_analysis": perf.get("sl_analysis", {}),
+        "exhaustive_search": {
+            "strategies_tested": exhaustive_results.get("strategies_tested", 0) if exhaustive_results else 0,
+            "total_pairs": exhaustive_results.get("total_pairs", 0) if exhaustive_results else 0,
+            "best_per_pair": exhaustive_results.get("best_per_pair", {}) if exhaustive_results else {},
+            "all_negative_pairs": exhaustive_results.get("all_negative_pairs", []) if exhaustive_results else [],
+        } if exhaustive_results else {},
     }
     audit_file = Path("/tmp/vt_agi_audit.json")
     try:
