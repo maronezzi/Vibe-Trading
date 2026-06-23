@@ -12,6 +12,7 @@ import json
 import sys
 import os
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -163,6 +164,19 @@ STRATEGY_PARAM_GRIDS = {
 MAX_COMBOS_PER_STRATEGY = 30
 
 
+def _test_pair_worker(args):
+    """Top-level worker function for multiprocessing (must be picklable).
+
+    Args: (pair_key, sym, tf, bars, config)
+    Returns: (pair_key, results_list)
+    """
+    pair_key, sym, tf, bars, config = args
+    if not bars:
+        return (pair_key, [])
+    results = test_all_strategies_for_pair(sym, tf, bars, config)
+    return (pair_key, results)
+
+
 def _generate_param_combos(strat_name: str) -> list:
     """Generate param combos for a strategy: universal + strategy-specific.
     Returns list of dicts. Caps at MAX_COMBOS_PER_STRATEGY.
@@ -310,24 +324,41 @@ def main():
             bars_cache[pair_key] = bars
             print(f"{'✅ ' + str(len(bars)) + ' bars' if bars else '❌ NO DATA'}")
 
-    # Phase 2: Test all strategies with param optimization for each pair
+    # Phase 2: Test all strategies with param optimization for each pair (PARALLEL)
+    num_workers = min(8, os.cpu_count() or 1)
     print(f"\n🔬 Phase 2: Testing all {len(ALL_STRATEGIES)} strategies with param optimization per pair...")
-    all_results = {}  # {pair_key: [(strat, result, best_params), ...]}
-    pair_count = 0
+    print(f"  Using {num_workers} parallel workers across {num_workers} CPU cores")
+
+    # Prepare work items for all pairs
+    work_items = []
     for sym in ALL_SYMBOLS:
         for tf in ALL_TIMEFRAMES:
             pair_key = f"{sym}_{tf}"
-            pair_count += 1
             bars = bars_cache[pair_key]
-            if not bars:
-                print(f"\n  [{pair_count}/16] {pair_key}: ❌ No bars available, skipping")
+            work_items.append((pair_key, sym, tf, bars, test_config))
+
+    # Execute in parallel using ProcessPoolExecutor
+    all_results = {}
+    completed = 0
+    total_pairs = len(work_items)
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        futures = {executor.submit(_test_pair_worker, item): item[0] for item in work_items}
+        for future in as_completed(futures):
+            pair_key = futures[future]
+            completed += 1
+            try:
+                _, results = future.result()
+                all_results[pair_key] = results
+            except Exception as e:
+                print(f"\n  [{completed}/{total_pairs}] {pair_key}: ❌ Error: {e}")
                 all_results[pair_key] = []
                 continue
 
-            print(f"\n  [{pair_count}/16] {pair_key}: testing {len(ALL_STRATEGIES)} strategies with param optimization...", flush=True)
-            results = test_all_strategies_for_pair(sym, tf, bars, test_config)
-            all_results[pair_key] = results
+            if not results:
+                print(f"\n  [{completed}/{total_pairs}] {pair_key}: ❌ No bars available, skipped")
+                continue
 
+            print(f"\n  [{completed}/{total_pairs}] {pair_key}: ✅ tested {len(ALL_STRATEGIES)} strategies (done)")
             # Show top 3
             for i, (strat, res, params) in enumerate(results[:3]):
                 emoji = "🟢" if res["pnl"] > 0 else "🔴"
