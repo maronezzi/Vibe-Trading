@@ -242,7 +242,7 @@ TELEGRAM_TARGET = "telegram:-1004284773048"
 
 def notify_telegram(msg: str):
     try:
-        from vt_hermes_helper import hermes_send
+        from core.vt_hermes_helper import hermes_send
         ok = hermes_send(TELEGRAM_TARGET, msg)
         if not ok:
             log(f"[NOTIFY FAIL] hermes_send retornou False")
@@ -427,17 +427,36 @@ def _get_strategy_for_tf(symbol_root: str, tf: str) -> str:
 def _get_params_for_tf(symbol_root: str, tf: str) -> dict:
     """Retorna parâmetros para o símbolo+TF.
     Prioridade: params_by_tf["symbol_tf"] > params[symbol] > {}
+
+    Mantém o merge base ∪ params_by_tf porque os exit/risk params
+    (breakeven_minutes, max_position_minutes, hard_exit_minutes, trail_*, ...)
+    vivem na base do símbolo (ex.: CONFIG["win"]) e NÃO em params_by_tf — eles
+    são lidos por manage_position(). Retornar só params_by_tf quebraria as saídas.
+
+    SANITIZAÇÃO: a base carrega chaves legadas `strategy` (ex.: "BOLLINGER") e
+    `buy_enabled` (ex.: false) que NÃO devem chegar aos plugins:
+      - a estratégia real vem de strategy_by_tf (variável `strategy` em
+        check_and_trade → get_strategy_func), NÃO de params['strategy'];
+      - buy_enabled não é lido em nenhum lugar do path live (core/+strategies/).
+    Removemos as duas chaves do resultado para que nenhum plugin (presente ou
+    futuro) leia params['strategy'] errado nem seja bloqueado por buy_enabled.
     """
     key = f"{symbol_root}_{tf}"
     by_tf = CONFIG.get("params_by_tf", {})
     base = CONFIG.get(symbol_root.lower(), {})
     # Tentar match case-insensitive
     if key in by_tf:
-        return {**base, **by_tf[key]}
-    key_lower = key.lower()
-    if key_lower in by_tf:
-        return {**base, **by_tf[key_lower]}
-    return base
+        merged = {**base, **by_tf[key]}
+    else:
+        key_lower = key.lower()
+        if key_lower in by_tf:
+            merged = {**base, **by_tf[key_lower]}
+        else:
+            merged = dict(base)  # cópia: nunca mutar CONFIG
+    # Chaves legadas que conflitam com strategy_by_tf — remover sempre
+    merged.pop("strategy", None)
+    merged.pop("buy_enabled", None)
+    return merged
 
 
 def _get_params(symbol_root: str) -> dict:
@@ -606,7 +625,7 @@ def _check_consecutive_losses(symbol: str) -> bool:
 
 
 def check_and_trade():
-    from vt_analyst import fetch_snapshot, save_snapshot, detect_anomalies, log_anomaly, notify as analyst_notify
+    from monitoring.vt_analyst import fetch_snapshot, save_snapshot, detect_anomalies, log_anomaly, notify as analyst_notify
 
     _reset_daily_counter()  # ← sempre resetar no início do ciclo
 
