@@ -22,7 +22,7 @@ from typing import Optional, Union
 
 PROJECT = Path("/home/bruno/Projects/Vibe-Trading")
 WINE_PYTHON = os.path.expanduser("~/.wine/drive_c/Python311/python.exe")
-EXECUTOR_WIN = "Z:\\home\\bruno\\Projects\\Vibe-Trading\\mt5_executor.py"
+EXECUTOR_WIN = "Z:\\home\\bruno\\Projects\\Vibe-Trading\\mt5\\mt5_executor.py"
 RESOLVE_WIN = "Z:\\home\\bruno\\Projects\\Vibe-Trading\\mt5_resolve.py"
 
 
