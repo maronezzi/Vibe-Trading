@@ -608,15 +608,19 @@ def _resolve_pair_params(config: dict, sym: str, tf: str) -> dict:
     """Resolve params for a (sym, tf) pair from config.
 
     Priority (highest wins):
-      1. config["params_by_tf"][SYM_TF]   — per-pair optimized params
+      1. config["params_by_tf"][SYM_TF]   — per-pair optimized params (EXCLUSIVE when present)
       2. config[symbol.lower()][tf]        — per-TF override within symbol
       3. config[symbol.lower()]            — base symbol params
     """
-    sym_params_base = config.get(sym.lower(), {})
-    tf_override = sym_params_base.get(tf, {})
     pair_key = f"{sym}_{tf}"
     params_by_tf = config.get("params_by_tf", {}).get(pair_key, {})
-    return {**sym_params_base, **tf_override, **params_by_tf}
+    if params_by_tf:
+        # Exhaustive search found optimized params for this pair — use ONLY those
+        # (base symbol params may contain conflicting keys like buy_enabled, strategy, etc.)
+        return dict(params_by_tf)
+    sym_params_base = config.get(sym.lower(), {})
+    tf_override = sym_params_base.get(tf, {})
+    return {**sym_params_base, **tf_override}
 
 
 def _run_single_pair(args: tuple) -> dict:
