@@ -21,6 +21,7 @@ from datetime import datetime, date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "core"))  # noqa: E402 — fixa ModuleNotFoundError para `from vt_hermes_helper import hermes_send` (linha 252)
 
 from mt5.mt5_orchestrator import status, close_all
 
