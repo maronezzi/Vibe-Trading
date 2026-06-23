@@ -1,7 +1,7 @@
 {
-  "_version": 838,
-  "_updated_at": "2026-06-22T20:40:16.406189",
-  "_updated_by": "manual_bruno",
+  "_version": 842,
+  "_updated_at": "2026-06-22T21:26:06.618401",
+  "_updated_by": "manual_sl_floor_enforcement",
   "_notes": "auto-resolve vencimento: WDO: WDON26 → WDOQ26\n[2026-06-22 17:50 AGI convergence_loop_final] v770. Changes applied: WIN_H1 disabled (-493R saved); BIT tightened (cooldowns+max_daily+RSI extremes); Strategy swaps — BIT_M5→MACD_MOMENTUM (+147R gain), BIT_M15→STRONG_TREND (+190R), BIT_H1→MACD_MOMENTUM (+96R), WIN_M5→MACD_MOMENTUM (+131R), WIN_M15→KELTNER_CHANNEL (+758R), WSP_M15→MACD_MOMENTUM (+1R but 100% WR), WDO_M15→STRONG_TREND (+848R), WDO_M30→KELTNER_CHANNEL (+376R), WDO_H1 enabled (was no_trades → +1984R with EMA_PULLBACK). Final forward backtest (500 bars): +8489R / 178 trades / 80.9% WR / all 15 pairs positive. vs baseline +3852R / 118 trades / 65.3% WR = +4637R improvement (+120%).",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
@@ -58,7 +58,7 @@
     "sl_atr_mult": 1.0,
     "trail_activate": 1.0,
     "trail_distance": 0.4,
-    "cooldown_seconds": 600,
+    "cooldown_seconds": 180,
     "max_daily_trades": 62,
     "ema_fast": 5,
     "ema_slow": 13,
@@ -84,7 +84,7 @@
     "sl_atr_mult": 1.0,
     "trail_activate": 1.2,
     "trail_distance": 0.5,
-    "cooldown_seconds": 600,
+    "cooldown_seconds": 180,
     "max_daily_trades": 62,
     "breakeven_minutes": 25,
     "time_trail_minutes": 40,
@@ -165,7 +165,7 @@
     "sl_atr_mult": 1.0,
     "trail_activate": 0.8,
     "trail_distance": 0.4,
-    "cooldown_seconds": 600,
+    "cooldown_seconds": 180,
     "max_daily_trades": 2,
     "breakeven_minutes": 8,
     "time_trail_minutes": 30,
@@ -274,7 +274,7 @@
       "rsi_oversold": 25
     },
     "WIN_M30": {
-      "sl_atr_mult": 0.8,
+      "sl_atr_mult": 1.0,
       "rsi_period": 14,
       "rsi_overbought": 75,
       "rsi_oversold": 25,
@@ -284,7 +284,7 @@
       "max_daily_trades": 4
     },
     "WIN_H1": {
-      "sl_atr_mult": 0.8,
+      "sl_atr_mult": 1.0,
       "bb_period": 10,
       "bb_std": 1.5,
       "rsi_period": 14,
@@ -321,7 +321,7 @@
       "max_daily_trades": 3
     },
     "BIT_H1": {
-      "sl_atr_mult": 0.8,
+      "sl_atr_mult": 1.0,
       "cooldown_seconds": 900,
       "max_daily_trades": 4,
       "macd_fast": 8,
@@ -351,12 +351,12 @@
       "rsi_oversold": 25
     },
     "WSP_M30": {
-      "sl_atr_mult": 0.8,
+      "sl_atr_mult": 1.0,
       "cooldown_seconds": 180,
       "max_daily_trades": 999
     },
     "WSP_H1": {
-      "sl_atr_mult": 0.8,
+      "sl_atr_mult": 1.0,
       "vwap_period": 10,
       "vwap_buy_threshold": 1.003,
       "vwap_sell_threshold": 0.997
@@ -381,7 +381,7 @@
       "pullback_pct": 0.1
     },
     "WDO_M30": {
-      "sl_atr_mult": 0.8,
+      "sl_atr_mult": 1.0,
       "cooldown_seconds": 600,
       "max_daily_trades": 6,
       "keltner_period": 20,
@@ -391,7 +391,7 @@
       "rsi_oversold": 20
     },
     "WDO_H1": {
-      "sl_atr_mult": 0.8,
+      "sl_atr_mult": 1.0,
       "ema_fast": 5,
       "ema_slow": 21,
       "adx_period": 14,

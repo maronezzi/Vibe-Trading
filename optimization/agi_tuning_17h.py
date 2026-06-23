@@ -2120,7 +2120,7 @@ def evaluate_forward_backtest(config: dict, days: int, max_workers: int) -> dict
         (campos: decision, pnl, n_trades, etc).
     """
     # Import local pra evitar circular import e cold-start cost
-    from vt_forward_backtest import run_all_pairs_parallel
+    from optimization.vt_forward_backtest import run_all_pairs_parallel
 
     log.info(f"🔬 Forward backtest: {len(config.get('symbols', []))} símbolos × "
              f"{len(config.get('timeframes', []))} TFs, days={days}, workers={max_workers}")
@@ -2281,7 +2281,7 @@ def explore_all_strategies_forward(
         log.warning("Cannot import ALL_STRATEGIES from strategy_explorer")
         return []
 
-    from vt_forward_backtest import run_mini_backtest_pair_with_strategy
+    from optimization.vt_forward_backtest import run_mini_backtest_pair_with_strategy
 
     results = []
     pair_key = f"{sym}_{tf}"
@@ -2968,6 +2968,17 @@ def main():
                 params_to_apply["rsi_overbought"] = data["best_rsi_ob"]
             if data.get("best_rsi_os") is not None:
                 params_to_apply["rsi_oversold"] = data["best_rsi_os"]
+
+            # Enforce PARAM_BOUNDS on Explorer params (prevent floor violations)
+            for param_name, param_val in list(params_to_apply.items()):
+                if param_name in PARAM_BOUNDS:
+                    lo, hi = PARAM_BOUNDS[param_name]
+                    if param_val < lo:
+                        log.info(f"🔬 Explorer {sym}.{param_name}={param_val} < floor {lo}, clamping")
+                        params_to_apply[param_name] = lo
+                    elif param_val > hi:
+                        log.info(f"🔬 Explorer {sym}.{param_name}={param_val} > ceiling {hi}, clamping")
+                        params_to_apply[param_name] = hi
 
             if params_to_apply:
                 sym_lower = sym.lower()
