@@ -1,7 +1,7 @@
 {
-  "_version": 845,
-  "_updated_at": "2026-06-22T22:52:38.681049",
-  "_updated_by": "exhaustive_strategy_search_v2",
+  "_version": 849,
+  "_updated_at": "2026-06-23T11:05:13.417149",
+  "_updated_by": "inteligencia_11h_param_fix_v2",
   "_notes": "Exhaustive 16×27 strategy+param search. Active: 16, Disabled: 0, Total PnL: 32634R. WIN_M5→PIVOT_POINTS(3122R/160t/75%WR)[cooldown_seconds=120 pivot_timeframe=H1 sl_atr_mult=2.5]; WIN_M15→PIVOT_POINTS(4094R/94t/63%WR)[cooldown_seconds=120 pivot_timeframe=H1 sl_atr_mult=2.0]; WIN_M30→PIVOT_POINTS(5354R/56t/70%WR)[cooldown_seconds=120 pivot_timeframe=H1 sl_atr_mult=1.5]; WIN_H1→RSI_REVERSION(3809R/27t/67%WR)[cooldown_seconds=120 rsi_overbought=80 rsi_oversold=25 rsi_period=7 sl_atr_mult=2.5]; BIT_M5→STRONG_TREND(305R/33t/91%WR)[adx_period=20 adx_threshold=25 cooldown_seconds=600 sl_atr_mult=1.5]; BIT_M15→STRONG_TREND(433R/43t/86%WR)[adx_period=10 adx_threshold=30 cooldown_seconds=120 sl_atr_mult=2.0]; BIT_M30→MOMENTUM_BREAKOUT(628R/18t/100%WR)[adx_period=10 adx_threshold=15 cooldown_seconds=120 sl_atr_mult=1.0]; BIT_H1→STRONG_TREND(562R/14t/100%WR)[adx_period=10 adx_threshold=15 cooldown_seconds=120 sl_atr_mult=1.0]; WSP_M5→ADX_TREND(203R/64t/59%WR)[adx_period=10 adx_threshold=15 cooldown_seconds=120 sl_atr_mult=1.0]; WSP_M15→RSI_REVERSION(261R/33t/100%WR)[cooldown_seconds=120 rsi_overbought=80 rsi_oversold=30 rsi_period=7 sl_atr_mult=1.5]; WSP_M30→STRONG_TREND(178R/17t/100%WR)[adx_period=10 adx_threshold=15 cooldown_seconds=120 sl_atr_mult=1.0]; WSP_H1→PIVOT_POINTS(183R/10t/100%WR)[cooldown_seconds=120 pivot_timeframe=H1 sl_atr_mult=1.0]; WDO_M5→MACD_MOMENTUM(3276R/51t/100%WR)[cooldown_seconds=600 macd_fast=8 macd_signal=9 macd_slow=26 sl_atr_mult=1.5]; WDO_M15→PIVOT_POINTS(4239R/31t/100%WR)[cooldown_seconds=120 pivot_timeframe=H1 sl_atr_mult=1.0]; WDO_M30→PIVOT_POINTS(3307R/20t/100%WR)[cooldown_seconds=120 pivot_timeframe=H1 sl_atr_mult=1.0]; WDO_H1→RSI_REVERSION(2681R/12t/100%WR)[cooldown_seconds=120 rsi_overbought=80 rsi_oversold=20 rsi_period=10 sl_atr_mult=1.0]",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
@@ -244,9 +244,9 @@
   "global_max_daily_trades": 999,
   "params_by_tf": {
     "WIN_M5": {
-      "sl_atr_mult": 2.5,
-      "cooldown_seconds": 120,
-      "max_daily_trades": 999,
+      "sl_atr_mult": 3.0,
+      "cooldown_seconds": 600,
+      "max_daily_trades": 8,
       "macd_fast": 12,
       "macd_slow": 26,
       "macd_signal": 9,
@@ -344,8 +344,8 @@
     },
     "WSP_M5": {
       "sl_atr_mult": 1.0,
-      "cooldown_seconds": 120,
-      "max_daily_trades": 999,
+      "cooldown_seconds": 300,
+      "max_daily_trades": 8,
       "rsi_period": 7,
       "rsi_overbought": 72,
       "rsi_oversold": 20,
@@ -408,8 +408,8 @@
       "pivot_timeframe": "H1"
     },
     "WDO_M30": {
-      "sl_atr_mult": 1.0,
-      "cooldown_seconds": 120,
+      "sl_atr_mult": 1.5,
+      "cooldown_seconds": 300,
       "max_daily_trades": 6,
       "keltner_period": 20,
       "keltner_atr_mult": 1.5,
@@ -498,11 +498,6 @@
     "trail_distance": 0.3,
     "max_daily_trades": 2
   },
-  "win_m5": {
-    "sl_atr_mult": 1.4,
-    "cooldown_seconds": 480,
-    "bb_std": 1.7
-  },
   "win_m15": {
     "sl_atr_mult": 1.0,
     "cooldown_seconds": 600,
@@ -516,11 +511,6 @@
     "rsi_oversold": 20,
     "rsi_overbought": 75,
     "max_daily_trades": 3
-  },
-  "wsp_m5": {
-    "sl_atr_mult": 1.2,
-    "cooldown_seconds": 1800,
-    "strategy": "RSI_REVERSION"
   },
   "bit_m15": {
     "sl_atr_mult": 1.0,
@@ -587,12 +577,6 @@
     "ema_slow": 21,
     "adx_threshold": 22,
     "pullback_pct": 0.12
-  },
-  "wdo_m30": {
-    "sl_atr_mult": 0.936,
-    "cooldown_seconds": 600,
-    "max_daily_trades": 8,
-    "strategy": "VWAP"
   },
   "params_by_tf.win_m30": {
     "sl_atr_mult": 1.0,
