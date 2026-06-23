@@ -797,9 +797,9 @@ class TestRunExhaustiveSearch(unittest.TestCase):
 
         mock_bars = [{"time": 1, "open": 100, "high": 101, "low": 99, "close": 100}]
         mock_results = [
-            ("VWAP", {"pnl": 100, "n_trades": 5, "wr": 60, "max_dd": 50}),
-            ("BOLLINGER", {"pnl": -50, "n_trades": 3, "wr": 30, "max_dd": 80}),
-            ("RSI_REVERSION", {"pnl": -100, "n_trades": 2, "wr": 20, "max_dd": 120}),
+            ("VWAP", {"pnl": 100, "n_trades": 5, "wr": 60, "max_dd": 50}, {"sl_atr_mult": 2.0}),
+            ("BOLLINGER", {"pnl": -50, "n_trades": 3, "wr": 30, "max_dd": 80}, {"bb_std": 2.0}),
+            ("RSI_REVERSION", {"pnl": -100, "n_trades": 2, "wr": 20, "max_dd": 120}, {"rsi_period": 14}),
         ]
 
         mock_exhaustive = MagicMock()

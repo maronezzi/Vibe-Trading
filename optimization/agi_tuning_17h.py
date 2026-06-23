@@ -2343,19 +2343,22 @@ def run_exhaustive_search(config: dict, days: int = 7) -> dict:
             # Find best strategy with PnL > 0 and trades >= 1
             best_strat = None
             best_result = None
-            for strat, res in results:
+            best_params = {}
+            for strat, res, params in results:
                 if res.get("pnl", 0) > 0 and res.get("n_trades", 0) >= 1:
                     best_strat = strat
                     best_result = res
+                    best_params = params
                     break
 
-            if best_strat and best_result:
+            if best_strat and best_result is not None:
                 best_per_pair[pair_key] = {
                     "strategy": best_strat,
                     "pnl": best_result["pnl"],
                     "n_trades": best_result["n_trades"],
                     "wr": best_result.get("wr", 0),
                     "max_dd": best_result.get("max_dd", 0),
+                    "params": best_params if best_params else {},
                 }
                 log.info(f"  ✅ {pair_key}: best={best_strat} "
                          f"pnl=R${best_result['pnl']:+.2f} "
@@ -2364,7 +2367,7 @@ def run_exhaustive_search(config: dict, days: int = 7) -> dict:
             else:
                 all_negative_pairs.append(pair_key)
                 # Log top 3 least-bad strategies for debugging
-                for i, (strat, res) in enumerate(results[:3]):
+                for i, (strat, res, params) in enumerate(results[:3]):
                     log.info(f"  🔴 {pair_key} #{i+1}: {strat} "
                              f"pnl=R${res.get('pnl', 0):+.2f} "
                              f"trades={res.get('n_trades', 0)}")
