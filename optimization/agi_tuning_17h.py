@@ -1744,7 +1744,7 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
     if applied:
         print(f"\n✏️ MUDANÇAS {'APLICADAS' if not dry_run else 'SUGERIDAS (DRY-RUN)'}:")
         for a in applied:
-            status = "✅" if a["applied"] else "❌"
+            status = "✅" if a.get("applied", False) else "❌"
             print(f"  {status} {a['symbol']}: {list(a['params'].keys())}")
             print(f"     {a['reason']}")
             for k, v in a["params"].items():
@@ -3308,6 +3308,13 @@ def main():
 
                 log.info(f"LLM retornou: {len(llm_result.get('changes', []))} mudanças sugeridas")
                 log.info(f"Análise LLM: {llm_result.get('analysis', 'N/A')[:200]}")
+
+                # Aplica mudanças sugeridas pelo LLM (v3.0 — write to disk quando dry_run=False)
+                llm_applied = apply_changes(llm_result, config, dry_run=args.dry_run)
+                if llm_applied:
+                    log.info(f"🤖 LLM: {len(llm_applied)} mudanças {'aplicadas' if not args.dry_run else 'sugeridas'}")
+                    for ch in llm_applied:
+                        log.info(f"   {ch.get('symbol')}: {list(ch.get('params', {}).keys())} — {ch.get('reason', 'N/A')[:80]}")
             else:
                 log.warning("LLM respondeu mas JSON não pôde ser parseado")
         else:
