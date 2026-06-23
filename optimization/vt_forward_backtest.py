@@ -64,12 +64,12 @@ SIM_WINDDOWN_MINUTES = 15    # minutes before close to skip (matches bot winddow
 SIM_MARKET_OPEN_HOUR = 9     # market open hour (BRT)
 SIM_MARKET_OPEN_MINUTE = 5   # market open minute (BRT) — matches bot start_hour/start_minute
 
-# Bar count per timeframe (7-day forward backtest coverage)
+# Bar count per timeframe (30-day forward backtest coverage)
 BAR_COUNT_PER_TF = {
-    "M5":  500,   # ~7 days of 5-min bars
-    "M15": 300,   # ~7 days of 15-min bars
-    "M30": 200,   # ~7 days of 30-min bars
-    "H1":  100,   # ~4-7 days of hourly bars
+    "M5":  2200,  # ~30 days of 5-min bars (72 bars/day × 30)
+    "M15": 1040,  # ~30 days of 15-min bars (34.7 bars/day × 30)
+    "M30": 520,   # ~30 days of 30-min bars (17.3 bars/day × 30)
+    "H1":  260,   # ~30 days of hourly bars (8.7 bars/day × 30)
 }
 DEFAULT_BAR_COUNT = 300      # fallback for unknown TFs
 

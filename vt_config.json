@@ -1,8 +1,8 @@
 {
-  "_version": 843,
-  "_updated_at": "2026-06-22T21:34:27.574616",
-  "_updated_by": "exhaustive_strategy_search",
-  "_notes": "Exhaustive 16×28 strategy search. Active: 16, Disabled: 0, Total PnL: 8718R. WIN_M5→STRONG_TREND(656R/24t/62%WR); WIN_M15→STRONG_TREND(711R/13t/62%WR); WIN_M30→MACD_MOMENTUM(1348R/6t/100%WR); WIN_H1→PIVOT_POINTS(691R/5t/80%WR); BIT_M5→MACD_MOMENTUM(131R/8t/100%WR); BIT_M15→DONCHIAN_BREAKOUT(125R/10t/100%WR); BIT_M30→PIVOT_POINTS(364R/9t/100%WR); BIT_H1→PIVOT_POINTS(167R/3t/100%WR); WSP_M5→PIVOT_POINTS(58R/22t/77%WR); WSP_M15→CANDLE_PATTERNS(102R/8t/88%WR); WSP_M30→PIVOT_POINTS(135R/7t/100%WR); WSP_H1→SUPERTREND(66R/2t/100%WR); WDO_M5→TRIPLE_EMA(1197R/12t/100%WR); WDO_M15→ENHANCED_MACD_MOMENTUM(724R/4t/100%WR); WDO_M30→MOMENTUM_BREAKOUT(1276R/6t/100%WR); WDO_H1→STRONG_TREND(967R/3t/100%WR)",
+  "_version": 845,
+  "_updated_at": "2026-06-22T22:52:38.681049",
+  "_updated_by": "exhaustive_strategy_search_v2",
+  "_notes": "Exhaustive 16×27 strategy+param search. Active: 16, Disabled: 0, Total PnL: 32634R. WIN_M5→PIVOT_POINTS(3122R/160t/75%WR)[cooldown_seconds=120 pivot_timeframe=H1 sl_atr_mult=2.5]; WIN_M15→PIVOT_POINTS(4094R/94t/63%WR)[cooldown_seconds=120 pivot_timeframe=H1 sl_atr_mult=2.0]; WIN_M30→PIVOT_POINTS(5354R/56t/70%WR)[cooldown_seconds=120 pivot_timeframe=H1 sl_atr_mult=1.5]; WIN_H1→RSI_REVERSION(3809R/27t/67%WR)[cooldown_seconds=120 rsi_overbought=80 rsi_oversold=25 rsi_period=7 sl_atr_mult=2.5]; BIT_M5→STRONG_TREND(305R/33t/91%WR)[adx_period=20 adx_threshold=25 cooldown_seconds=600 sl_atr_mult=1.5]; BIT_M15→STRONG_TREND(433R/43t/86%WR)[adx_period=10 adx_threshold=30 cooldown_seconds=120 sl_atr_mult=2.0]; BIT_M30→MOMENTUM_BREAKOUT(628R/18t/100%WR)[adx_period=10 adx_threshold=15 cooldown_seconds=120 sl_atr_mult=1.0]; BIT_H1→STRONG_TREND(562R/14t/100%WR)[adx_period=10 adx_threshold=15 cooldown_seconds=120 sl_atr_mult=1.0]; WSP_M5→ADX_TREND(203R/64t/59%WR)[adx_period=10 adx_threshold=15 cooldown_seconds=120 sl_atr_mult=1.0]; WSP_M15→RSI_REVERSION(261R/33t/100%WR)[cooldown_seconds=120 rsi_overbought=80 rsi_oversold=30 rsi_period=7 sl_atr_mult=1.5]; WSP_M30→STRONG_TREND(178R/17t/100%WR)[adx_period=10 adx_threshold=15 cooldown_seconds=120 sl_atr_mult=1.0]; WSP_H1→PIVOT_POINTS(183R/10t/100%WR)[cooldown_seconds=120 pivot_timeframe=H1 sl_atr_mult=1.0]; WDO_M5→MACD_MOMENTUM(3276R/51t/100%WR)[cooldown_seconds=600 macd_fast=8 macd_signal=9 macd_slow=26 sl_atr_mult=1.5]; WDO_M15→PIVOT_POINTS(4239R/31t/100%WR)[cooldown_seconds=120 pivot_timeframe=H1 sl_atr_mult=1.0]; WDO_M30→PIVOT_POINTS(3307R/20t/100%WR)[cooldown_seconds=120 pivot_timeframe=H1 sl_atr_mult=1.0]; WDO_H1→RSI_REVERSION(2681R/12t/100%WR)[cooldown_seconds=120 rsi_overbought=80 rsi_oversold=20 rsi_period=10 sl_atr_mult=1.0]",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
   "start_minute": 5,
@@ -115,22 +115,22 @@
   "winddown_minutes": 15,
   "validate_with_llm": true,
   "strategy_by_tf": {
-    "WIN_M5": "STRONG_TREND",
-    "WIN_M15": "STRONG_TREND",
-    "WIN_M30": "MACD_MOMENTUM",
-    "WIN_H1": "PIVOT_POINTS",
-    "BIT_M5": "MACD_MOMENTUM",
-    "BIT_M15": "DONCHIAN_BREAKOUT",
-    "BIT_M30": "PIVOT_POINTS",
-    "BIT_H1": "PIVOT_POINTS",
-    "WSP_M5": "PIVOT_POINTS",
-    "WSP_M15": "CANDLE_PATTERNS",
-    "WSP_M30": "PIVOT_POINTS",
-    "WSP_H1": "SUPERTREND",
-    "WDO_M5": "TRIPLE_EMA",
-    "WDO_M15": "ENHANCED_MACD_MOMENTUM",
-    "WDO_M30": "MOMENTUM_BREAKOUT",
-    "WDO_H1": "STRONG_TREND"
+    "WIN_M5": "PIVOT_POINTS",
+    "WIN_M15": "PIVOT_POINTS",
+    "WIN_M30": "PIVOT_POINTS",
+    "WIN_H1": "RSI_REVERSION",
+    "BIT_M5": "STRONG_TREND",
+    "BIT_M15": "STRONG_TREND",
+    "BIT_M30": "MOMENTUM_BREAKOUT",
+    "BIT_H1": "STRONG_TREND",
+    "WSP_M5": "ADX_TREND",
+    "WSP_M15": "RSI_REVERSION",
+    "WSP_M30": "STRONG_TREND",
+    "WSP_H1": "PIVOT_POINTS",
+    "WDO_M5": "MACD_MOMENTUM",
+    "WDO_M15": "PIVOT_POINTS",
+    "WDO_M30": "PIVOT_POINTS",
+    "WDO_H1": "RSI_REVERSION"
   },
   "contract_specs": {
     "WIN$": {
@@ -244,46 +244,56 @@
   "global_max_daily_trades": 999,
   "params_by_tf": {
     "WIN_M5": {
-      "sl_atr_mult": 1.5,
-      "cooldown_seconds": 300,
+      "sl_atr_mult": 2.5,
+      "cooldown_seconds": 120,
       "max_daily_trades": 999,
       "macd_fast": 12,
       "macd_slow": 26,
       "macd_signal": 9,
       "rsi_period": 7,
       "rsi_overbought": 72,
-      "rsi_oversold": 25
+      "rsi_oversold": 25,
+      "adx_period": 10,
+      "adx_threshold": 20,
+      "pivot_timeframe": "H1"
     },
     "WIN_M15": {
-      "sl_atr_mult": 1.0,
-      "cooldown_seconds": 600,
+      "sl_atr_mult": 2.0,
+      "cooldown_seconds": 120,
       "max_daily_trades": 4,
       "keltner_period": 20,
       "keltner_atr_mult": 1.5,
       "rsi_period": 14,
       "rsi_overbought": 70,
-      "rsi_oversold": 25
+      "rsi_oversold": 25,
+      "adx_period": 10,
+      "adx_threshold": 20,
+      "pivot_timeframe": "H1"
     },
     "WIN_M30": {
-      "sl_atr_mult": 1.0,
+      "sl_atr_mult": 1.5,
       "rsi_period": 14,
       "rsi_overbought": 75,
       "rsi_oversold": 25,
-      "cooldown_seconds": 900,
+      "cooldown_seconds": 120,
       "macd_fast": 8,
       "macd_signal": 7,
-      "max_daily_trades": 4
+      "max_daily_trades": 4,
+      "adx_period": 14,
+      "adx_threshold": 15,
+      "pivot_timeframe": "H1"
     },
     "WIN_H1": {
-      "sl_atr_mult": 1.0,
+      "sl_atr_mult": 2.5,
       "bb_period": 10,
       "bb_std": 1.5,
-      "rsi_period": 14,
-      "rsi_overbought": 75,
-      "rsi_oversold": 25
+      "rsi_period": 7,
+      "rsi_overbought": 80,
+      "rsi_oversold": 25,
+      "cooldown_seconds": 120
     },
     "BIT_M5": {
-      "sl_atr_mult": 1.0,
+      "sl_atr_mult": 1.5,
       "cooldown_seconds": 600,
       "max_daily_trades": 6,
       "macd_fast": 8,
@@ -291,95 +301,124 @@
       "macd_signal": 9,
       "rsi_period": 14,
       "rsi_overbought": 82,
-      "rsi_oversold": 18
+      "rsi_oversold": 18,
+      "adx_period": 20,
+      "adx_threshold": 25
     },
     "BIT_M15": {
-      "sl_atr_mult": 1.0,
-      "cooldown_seconds": 600,
+      "sl_atr_mult": 2.0,
+      "cooldown_seconds": 120,
       "max_daily_trades": 6,
       "ema_fast": 9,
       "ema_slow": 21,
-      "adx_period": 14,
-      "adx_threshold": 20,
-      "pullback_pct": 0.1
+      "adx_period": 10,
+      "adx_threshold": 30,
+      "pullback_pct": 0.1,
+      "macd_fast": 10,
+      "macd_signal": 9,
+      "macd_slow": 24
     },
     "BIT_M30": {
       "sl_atr_mult": 1.0,
       "rsi_period": 7,
       "rsi_overbought": 78,
       "rsi_oversold": 22,
-      "cooldown_seconds": 1800,
-      "max_daily_trades": 3
+      "cooldown_seconds": 120,
+      "max_daily_trades": 3,
+      "pivot_timeframe": "H1",
+      "adx_period": 10,
+      "adx_threshold": 15
     },
     "BIT_H1": {
       "sl_atr_mult": 1.0,
-      "cooldown_seconds": 900,
+      "cooldown_seconds": 120,
       "max_daily_trades": 4,
       "macd_fast": 8,
       "macd_slow": 21,
       "macd_signal": 9,
-      "rsi_period": 14,
-      "rsi_overbought": 80,
-      "rsi_oversold": 30
+      "rsi_period": 10,
+      "rsi_overbought": 75,
+      "rsi_oversold": 30,
+      "adx_period": 10,
+      "adx_threshold": 15
     },
     "WSP_M5": {
-      "sl_atr_mult": 1.2,
-      "cooldown_seconds": 900,
+      "sl_atr_mult": 1.0,
+      "cooldown_seconds": 120,
       "max_daily_trades": 999,
       "rsi_period": 7,
       "rsi_overbought": 72,
-      "rsi_oversold": 20
+      "rsi_oversold": 20,
+      "bb_period": 14,
+      "bb_std": 1.5,
+      "adx_period": 10,
+      "adx_threshold": 15
     },
     "WSP_M15": {
-      "sl_atr_mult": 1.0,
-      "cooldown_seconds": 600,
+      "sl_atr_mult": 1.5,
+      "cooldown_seconds": 120,
       "max_daily_trades": 6,
       "macd_fast": 8,
-      "macd_slow": 21,
-      "macd_signal": 9,
-      "rsi_period": 14,
-      "rsi_overbought": 75,
-      "rsi_oversold": 25
+      "macd_slow": 26,
+      "macd_signal": 7,
+      "rsi_period": 7,
+      "rsi_overbought": 80,
+      "rsi_oversold": 30
     },
     "WSP_M30": {
       "sl_atr_mult": 1.0,
-      "cooldown_seconds": 180,
-      "max_daily_trades": 999
+      "cooldown_seconds": 120,
+      "max_daily_trades": 999,
+      "donchian_period": 14,
+      "adx_period": 10,
+      "adx_threshold": 15
     },
     "WSP_H1": {
       "sl_atr_mult": 1.0,
       "vwap_period": 10,
       "vwap_buy_threshold": 1.003,
-      "vwap_sell_threshold": 0.997
+      "vwap_sell_threshold": 0.997,
+      "adx_period": 10,
+      "adx_threshold": 15,
+      "cooldown_seconds": 120,
+      "pivot_timeframe": "H1"
     },
     "WDO_M5": {
-      "sl_atr_mult": 1.2,
-      "cooldown_seconds": 180,
+      "sl_atr_mult": 1.5,
+      "cooldown_seconds": 600,
       "max_daily_trades": 999,
       "rsi_period": 14,
       "rsi_overbought": 70,
       "rsi_oversold": 25,
-      "macd_fast": 8
+      "macd_fast": 8,
+      "ema_fast": 8,
+      "ema_slow": 30,
+      "macd_signal": 9,
+      "macd_slow": 26
     },
     "WDO_M15": {
       "sl_atr_mult": 1.0,
-      "cooldown_seconds": 600,
+      "cooldown_seconds": 120,
       "max_daily_trades": 6,
       "ema_fast": 9,
       "ema_slow": 21,
       "adx_period": 14,
-      "adx_threshold": 20,
-      "pullback_pct": 0.1
+      "adx_threshold": 25,
+      "pullback_pct": 0.1,
+      "pivot_timeframe": "H1"
     },
     "WDO_M30": {
       "sl_atr_mult": 1.0,
-      "cooldown_seconds": 600,
+      "cooldown_seconds": 120,
       "max_daily_trades": 6,
       "keltner_period": 20,
       "keltner_atr_mult": 1.5,
       "rsi_period": 7,
       "rsi_overbought": 80,
-      "rsi_oversold": 20
+      "rsi_oversold": 20,
+      "adx_period": 10,
+      "adx_threshold": 15,
+      "pivot_timeframe": "H1"
     },
     "WDO_H1": {
       "sl_atr_mult": 1.0,
@@ -388,7 +427,11 @@
       "adx_period": 14,
       "adx_threshold": 20,
       "pullback_pct": 0.1,
-      "max_daily_trades": 999
+      "max_daily_trades": 999,
+      "cooldown_seconds": 120,
+      "rsi_overbought": 80,
+      "rsi_oversold": 20,
+      "rsi_period": 10
     }
   },
   "max_daily_trades": 999,
