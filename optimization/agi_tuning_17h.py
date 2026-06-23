@@ -2204,6 +2204,191 @@ def merge_backtest_with_convergence(perf: dict, baseline: dict,
     return (converged, failing, evals)
 
 
+# ═══════════════════════════════════════════════════════════════════
+# FORWARD BACKTEST CONVERGENCE GATE (v3.1 — the REAL convergence)
+# ═══════════════════════════════════════════════════════════════════
+
+def check_forward_convergence(
+    config: dict, days: int = 7, max_workers: int = 0,
+) -> tuple[bool, list[str], dict]:
+    """Run forward backtest on ALL active pairs and check convergence.
+
+    This is the TRUE convergence gate — it simulates bar-by-bar with the
+    CURRENT config, unlike the legacy DB-based check which reads historical
+    trades made with OLD params.
+
+    Returns:
+        (converged, failing_pairs, bt_results)
+        converged: True if ALL active pairs have positive PnL in forward backtest
+        failing_pairs: list of "SYM_TF" with negative PnL or zero trades
+        bt_results: raw forward backtest results dict
+    """
+    bt_results = evaluate_forward_backtest(config, days=days, max_workers=max_workers)
+
+    if not bt_results:
+        log.warning("⚠️ Forward backtest returned no results — cannot check convergence")
+        return (False, [], {})
+
+    failing = []
+    no_signal = []
+    for pair_key in sorted(bt_results.keys()):
+        r = bt_results[pair_key]
+        pnl = r.get("pnl", 0.0)
+        n_trades = r.get("n_trades", 0)
+        decision = r.get("decision", "unknown")
+
+        if decision in ("no_data", "strategy_load_failed", "utils_load_failed", "timeout", "error"):
+            # Can't evaluate — treat as no signal (not failing)
+            no_signal.append(pair_key)
+            continue
+
+        if n_trades == 0:
+            # No signals generated — might need strategy change
+            no_signal.append(pair_key)
+            continue
+
+        if pnl <= 0:
+            failing.append(pair_key)
+
+    converged = len(failing) == 0
+    log.info(f"🔬 Forward convergence: {len(bt_results)} pairs | "
+             f"failing={len(failing)} | no_signal={len(no_signal)} | "
+             f"converged={'YES ✅' if converged else 'NO ❌'}")
+    if failing:
+        for p in failing:
+            r = bt_results[p]
+            log.info(f"  ❌ {p}: pnl=R${r.get('pnl', 0):+.2f} trades={r.get('n_trades', 0)} wr={r.get('wr', 0):.0f}%")
+    if no_signal:
+        log.info(f"  ⚪ No signal: {no_signal}")
+
+    return (converged, failing, bt_results)
+
+
+def explore_all_strategies_forward(
+    sym: str, tf: str, config: dict, days: int = 7,
+) -> list[dict]:
+    """Test ALL available strategies for a (sym, tf) pair using forward backtest.
+
+    For each strategy in the strategies/ directory, runs a forward backtest
+    on real MT5 bars and collects PnL/trades/WR. Returns strategies ranked
+    by PnL (descending), filtering out those with 0 trades.
+
+    Returns: list of dicts with keys: strategy, pnl, n_trades, wr, max_dd, decision.
+    """
+    try:
+        from strategy_explorer import ALL_STRATEGIES
+    except ImportError:
+        log.warning("Cannot import ALL_STRATEGIES from strategy_explorer")
+        return []
+
+    from vt_forward_backtest import run_mini_backtest_pair_with_strategy
+
+    results = []
+    pair_key = f"{sym}_{tf}"
+    current_strategy = config.get("strategy_by_tf", {}).get(
+        pair_key, config.get("strategy", {}).get(sym, "UNKNOWN")
+    )
+
+    for strat in ALL_STRATEGIES:
+        try:
+            r = run_mini_backtest_pair_with_strategy(sym, tf, strat, config, days=days)
+            r["strategy"] = strat
+            r["is_current"] = (strat == current_strategy)
+            results.append(r)
+        except Exception as e:
+            log.debug(f"  {pair_key}/{strat}: error — {e}")
+
+    # Sort by PnL descending, then by n_trades descending
+    results.sort(key=lambda x: (x.get("pnl", 0), x.get("n_trades", 0)), reverse=True)
+
+    # Log top 5
+    log.info(f"  📊 {pair_key}: tested {len(results)} strategies")
+    for i, r in enumerate(results[:5]):
+        marker = "📌" if r.get("is_current") else "  "
+        log.info(f"    {marker} {r['strategy']}: pnl=R${r.get('pnl', 0):+.2f} "
+                 f"trades={r.get('n_trades', 0)} wr={r.get('wr', 0):.0f}%")
+
+    return results
+
+
+def optimize_failing_pairs_forward(
+    failing_pairs: list[str], bt_results: dict, config: dict,
+    days: int = 7,
+) -> tuple[dict, list[dict], list[str]]:
+    """For each failing pair, find the best strategy via forward backtest.
+
+    Tests all 28 strategies for each failing pair. If a profitable strategy
+    is found, updates config's strategy_by_tf. If no strategy works,
+    the pair is flagged for disabling.
+
+    Args:
+        failing_pairs: list of "SYM_TF" pairs with negative PnL
+        bt_results: current forward backtest results
+        config: vt_config dict (will be modified in-place for strategy_by_tf)
+        days: backtest window in days
+
+    Returns:
+        (config, changes_list, still_failing) — modified config, list of changes applied, and pairs that still fail
+    """
+    changes = []
+    still_failing = []
+
+    for pair_key in failing_pairs:
+        parts = pair_key.split("_", 1)
+        if len(parts) != 2:
+            still_failing.append(pair_key)
+            continue
+        sym, tf = parts
+
+        current_strat = config.get("strategy_by_tf", {}).get(
+            pair_key, config.get("strategy", {}).get(sym, "UNKNOWN")
+        )
+        current_pnl = bt_results.get(pair_key, {}).get("pnl", 0)
+
+        log.info(f"🔍 Exploring strategies for {pair_key} (current: {current_strat}, pnl=R${current_pnl:+.2f})...")
+        ranked = explore_all_strategies_forward(sym, tf, config, days=days)
+
+        # Find best profitable strategy (with at least 3 trades)
+        best = None
+        for r in ranked:
+            if r.get("pnl", 0) > 0 and r.get("n_trades", 0) >= 3 and r.get("strategy") != current_strat:
+                best = r
+                break
+
+        # If no strategy with 3+ trades, try with 1+ trades
+        if best is None:
+            for r in ranked:
+                if r.get("pnl", 0) > 0 and r.get("n_trades", 0) >= 1 and r.get("strategy") != current_strat:
+                    best = r
+                    break
+
+        if best:
+            new_strat = best["strategy"]
+            log.info(f"  ✅ {pair_key}: {current_strat} → {new_strat} "
+                     f"(pnl=R${best['pnl']:+.2f}, trades={best['n_trades']}, wr={best.get('wr', 0):.0f}%)")
+            if "strategy_by_tf" not in config:
+                config["strategy_by_tf"] = {}
+            config["strategy_by_tf"][pair_key] = new_strat
+            changes.append({
+                "symbol": pair_key,
+                "params": {"strategy": new_strat},
+                "reason": f"Forward backtest: {current_strat}→{new_strat} "
+                          f"(pnl=R${best['pnl']:+.2f}, trades={best['n_trades']})",
+            })
+        else:
+            # Check if current strategy at least generates trades
+            current_result = next((r for r in ranked if r.get("is_current")), None)
+            if current_result and current_result.get("n_trades", 0) > 0:
+                still_failing.append(pair_key)
+                log.info(f"  ❌ {pair_key}: no profitable strategy found (current: pnl=R${current_pnl:+.2f})")
+            else:
+                # No strategy generates trades at all → flag for disabling
+                still_failing.append(pair_key)
+                log.info(f"  ⚪ {pair_key}: no strategy generates trades → flag for disable")
+
+    return config, changes, still_failing
+
+
 def snapshot_live_config(config_path: Path) -> Path:
     """Copy vt_config.json to a timestamped snapshot in /tmp/.
 
@@ -2922,228 +3107,147 @@ def main():
         else:
             log.warning("LLM não respondeu — usando apenas diagnóstico local")
 
-    # 6-7. LOOP DE ITERAÇÕES (convergência: todos SYM_TF com PnL > 0)
+    # 6-7. LOOP DE ITERAÇÕES (convergência: forward backtest com todos SYM_TF com PnL > 0)
     iteration_history = []  # histórico de cada iteração
     all_backtest_evals = []  # forward backtest evaluations por iteração
     converged = False
     final_paused = {"paused": [], "skipped": []}
     applied = list(explorer_applied)  # inclui auto-apply do Explorer
 
-    # Captura snapshot ANTES do loop (baseline imutável pra convergence por delta)
-    baseline_snapshot = snapshot_performance(perf) if args.convergence_mode == "delta" else {}
-    log.info(f"📸 Baseline snapshot: {len(baseline_snapshot)} pares (modo={args.convergence_mode})")
-
     # Guardar perf ORIGINAL (antes de qualquer iteração) para o summary Telegram
-    # Bruno 17/06: precisa ver evolução (PnL antes/depois + delta + %)
     perf_original = perf
 
     for it_num in range(1, args.max_iterations + 1):
         log.info(f"{'='*60}\n🔄 ITERAÇÃO {it_num}/{args.max_iterations}\n{'='*60}")
 
-        # Recarregar perf fresca (do DB) a cada iteração, exceto na 1ª
+        # Recarregar config (já com mudanças da iteração anterior aplicadas)
         if it_num > 1:
-            perf = collect_performance(days=args.days)
-            issues = diagnose_issues(perf)
-            # Recarregar config (já com mudanças da iteração anterior aplicadas)
             config = load_config(force=True)
 
-        # 5. LLM (se habilitado) — reconstrói prompt a cada iteração
-        llm_result = None
-        if not args.no_llm:
-            log.info(f"Consultando LLM (iteração {it_num})...")
-            prompt = build_llm_prompt(perf, issues, config, web_intel=web_intel,
-                                       optimization=optimization)
-            response = ask_llm(prompt, timeout=args.timeout)
-            if response:
-                llm_result = parse_llm_response(response)
-                if llm_result:
-                    log.info(f"LLM iteração {it_num}: {len(llm_result.get('changes', []))} mudanças")
-                else:
-                    log.warning(f"LLM it {it_num} respondeu mas JSON inválido")
-            else:
-                log.warning(f"LLM it {it_num} sem resposta")
+        # 7a. Forward backtest convergence — the REAL gate
+        log.info("🔬 Forward backtest convergence gate (simulating bar-by-bar)...")
+        converged, failing_pairs, bt_results = check_forward_convergence(
+            config, days=args.days, max_workers=args.max_workers,
+        )
+        all_backtest_evals.append({"iteration": it_num, "bt_results": bt_results})
 
-        # 6. Aplicar mudanças desta iteração
-        iter_applied = []
-        if llm_result and llm_result.get("changes"):
-            notify_telegram("✏️ Aplicando mudanças...")
-            if args.dry_run:
-                iter_applied = apply_changes(llm_result, config, dry_run=True)
-            else:
-                iter_applied = apply_changes(llm_result, config, dry_run=False)
-                config = load_config(force=True)
-        applied.extend(iter_applied)
+        log.info(f"📈 Convergência it {it_num}: {'SIM ✅' if converged else 'NÃO ❌'} "
+                 f"({len(failing_pairs)} pares falhando: {failing_pairs})")
 
-        # 7. Validar convergência (só faz sentido se não dry-run, pq dry-run não muda o DB)
-        iter_paused = {"paused": [], "skipped": []}
-        if not args.dry_run:
-            # Re-ler perf atualizada (após mudanças)
-            perf_after = collect_performance(days=args.days)
-            if args.use_backtest_convergence:
-                # Roda forward backtest em paralelo como sombra-de-verdade
-                log.info("🔬 --use-backtest-convergence: rodando forward backtest shadow-of-truth...")
-                bt_results = evaluate_forward_backtest(config, days=args.days,
-                                                       max_workers=args.max_workers)
-                converged, failing_pairs, bt_evals = merge_backtest_with_convergence(
-                    perf_after, baseline_snapshot, bt_results, mode=args.convergence_mode
-                )
-                all_backtest_evals.append({"iteration": it_num, "evaluations": bt_evals})
-            else:
-                converged, failing_pairs = check_convergence(
-                    perf_after, baseline_snapshot, mode=args.convergence_mode
-                )
-            log.info(f"📈 Convergência it {it_num}: {'SIM ✅' if converged else 'NÃO ❌'} "
-                     f"({len(failing_pairs)} pares falhando: {failing_pairs})")
-            perf = perf_after  # usa essa pra relatório
-
-            # Registrar no histórico (helper testável — #4)
+        if converged:
+            log.info(f"🎯 CONVERGÊNCIA atingida na iteração {it_num}!")
             iteration_history.append(
-                build_iteration_history_entry(
-                    it_num, iter_applied, failing_pairs, converged
-                )
+                build_iteration_history_entry(it_num, [], failing_pairs, True)
             )
-
-            if converged:
-                log.info(f"🎯 CONVERGÊNCIA atingida na iteração {it_num}!")
-                break
-        else:
-            # dry-run: converged=None, failing=[]
-            iteration_history.append(
-                build_iteration_history_entry(it_num, iter_applied, [], None)
-            )
-            # Em dry-run, single-shot é suficiente — sem iteração real
             break
 
-    # 8. FALLBACK — Auto-pausar pares não-convergentes
-    # Regra Bruno 17/06: ANTES de desativar, testar outras estratégias + web intel
-    if not converged and args.pause_failing and not args.dry_run:
-        # Pegar pares que falharam na última iteração
-        last_iter = iteration_history[-1] if iteration_history else {}
-        failing = last_iter.get("failing_pairs", [])
-        if failing:
-            log.warning(f"⚠️ FALLBACK ATIVADO: {len(failing)} pares não-convergentes")
+        # 7b. For failing pairs: explore ALL 28 strategies via forward backtest
+        iter_changes = []
+        if failing_pairs and not args.dry_run:
+            notify_telegram(f"🔍 {len(failing_pairs)} pares negativos — testando todas estratégias...")
+            log.info(f"🔍 Testing all strategies for {len(failing_pairs)} failing pairs...")
 
-            # ── EXPERIMENT: testar estratégias alternativas antes de desativar ──
-            from experiment_runner import run_strategy_swap_experiment, should_pause_pair, apply_swap_to_config
+            config, strat_changes, still_failing = optimize_failing_pairs_forward(
+                failing_pairs, bt_results, config, days=args.days,
+            )
+            iter_changes.extend(strat_changes)
 
-            still_failing = []
-            swapped = []
-            experiment_results = []
-
-            for pair in failing:
-                parts = pair.split("_", 1)
-                if len(parts) != 2:
-                    still_failing.append(pair)
-                    continue
-                sym, tf = parts
-                exp_result = run_strategy_swap_experiment(sym, tf, config, days=args.days)
-                experiment_results.append(exp_result)
-
-                if should_pause_pair(exp_result):
-                    still_failing.append(pair)
-                    log.info(f"  🛑 {pair}: experimento não encontrou alternativa viável → pausando")
-                else:
-                    # Winner encontrado — aplica swap (não desativa)
-                    config = apply_swap_to_config(config, exp_result)
-                    winner = exp_result["winner"]
-                    swapped.append({
-                        "pair": pair,
-                        "old": exp_result["original_strategy"],
-                        "new": winner["strategy"],
-                        "pnl": winner["pnl"],
-                        "n_trades": winner["n_trades"],
-                        "wr": winner["wr"],
-                    })
-                    log.info(f"  🔄 {pair}: {exp_result['original_strategy']} → {winner['strategy']} "
-                             f"(pnl=R$ {winner['pnl']:+.2f}, n={winner['n_trades']}, wr={winner['wr']:.0f}%)")
-
-            if swapped:
-                save_full_config(config, updated_by="agi_17h_experiment_swap")
+            if strat_changes:
+                # Save strategy changes to config
+                save_full_config(config, updated_by=f"agi_forward_it{it_num}")
                 config = load_config(force=True)
-                log.info(f"🔄 SWAP: {len(swapped)} pares tiveram estratégia trocada (não desativados)")
+                log.info(f"🔄 Applied {len(strat_changes)} strategy changes")
 
-            # Apenas os que realmente falharam no experimento são pausados
-            final_paused = _pause_failing_pairs(still_failing, config, dry_run=False)
-            config = load_config(force=True)
+                # Re-run forward backtest to verify
+                log.info("🔬 Re-running forward backtest after strategy changes...")
+                converged, failing_pairs, bt_results = check_forward_convergence(
+                    config, days=args.days, max_workers=args.max_workers,
+                )
+                log.info(f"📈 Post-swap convergence: {'SIM ✅' if converged else 'NÃO ❌'} "
+                         f"({len(failing_pairs)} pares falhando)")
 
-            # Salvar resultados do experimento no audit
-            if experiment_results:
-                audit_path = Path(f"/tmp/vt_agi_experiment_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-                import json as _json
-                with open(audit_path, "w") as f:
-                    _json.dump({
-                        "timestamp": datetime.now().isoformat(),
-                        "swapped": swapped,
-                        "still_failing": still_failing,
-                        "experiment_results": experiment_results,
-                    }, f, indent=2, default=str)
-                log.info(f"📋 Experiment audit: {audit_path}")
-        else:
-            log.info("✅ Nenhum par falhando — fallback não necessário")
+        # 7c. Handle zero-trade pairs — try strategies, disable if nothing works
+        if not args.dry_run:
+            zero_pairs = [k for k, v in bt_results.items()
+                         if v.get("n_trades", 0) == 0 and v.get("decision") not in
+                         ("no_data", "strategy_load_failed", "utils_load_failed", "timeout")]
+            if zero_pairs:
+                log.info(f"⚪ {len(zero_pairs)} pairs with 0 trades: {zero_pairs}")
+                for pair_key in zero_pairs:
+                    parts = pair_key.split("_", 1)
+                    if len(parts) != 2:
+                        continue
+                    sym, tf = parts
+                    log.info(f"  🔍 Testing strategies for {pair_key} (0 trades)...")
+                    ranked = explore_all_strategies_forward(sym, tf, config, days=args.days)
+                    best = next((r for r in ranked if r.get("pnl", 0) > 0 and r.get("n_trades", 0) >= 1), None)
+                    if best and best.get("strategy"):
+                        new_strat = best["strategy"]
+                        log.info(f"  ✅ {pair_key}: switching to {new_strat} "
+                                 f"(pnl=R${best['pnl']:+.2f}, trades={best['n_trades']})")
+                        config.setdefault("strategy_by_tf", {})[pair_key] = new_strat
+                        iter_changes.append({
+                            "symbol": pair_key,
+                            "params": {"strategy": new_strat},
+                            "reason": f"Zero-trade fix: →{new_strat} (pnl=R${best['pnl']:+.2f})",
+                        })
+                    else:
+                        log.info(f"  ⚠️ {pair_key}: no strategy generates trades — will disable")
 
-    # 8.5 OTIMIZAÇÃO DE PARÂMETROS — Grid search paralelo para todos os pares ativos
-    # Bruno 17/06: além de trocar estratégias, otimizar parâmetros de cada par
-    # Bruno 17/06: paralelizar backtests em múltiplas CPUs (LLM stays sequential)
-    if not args.dry_run:
-        log.info("🔧 ETAPA 8.5: Otimização de parâmetros via grid search PARALELO")
-        from agi_parallel import parallel_optimize_all_pairs
-        from experiment_runner import PARAM_GRID
+                if iter_changes:
+                    save_full_config(config, updated_by=f"agi_forward_zero_fix_it{it_num}")
+                    config = load_config(force=True)
 
-        param_results = parallel_optimize_all_pairs(
-            config, PARAM_GRID, days=args.days
+        applied.extend(iter_changes)
+
+        iteration_history.append(
+            build_iteration_history_entry(it_num, iter_changes, failing_pairs, converged)
         )
 
-        optimized_count = 0
-        total_delta = 0
-        param_changes = []
+        if converged:
+            log.info(f"🎯 CONVERGÊNCIA atingida na iteração {it_num}!")
+            break
 
-        for result in param_results:
-            if result["delta"] > 50:  # Só aplica se delta > R$ 50
-                pair = result["pair"]
-                config.setdefault("params_by_tf", {}).setdefault(pair, {}).update(
-                    result["best_params"]
-                )
-                optimized_count += 1
-                total_delta += result["delta"]
-                param_changes.append({
-                    "pair": pair,
-                    "strategy": result["strategy"],
-                    "params": result["best_params"],
-                    "delta": result["delta"],
-                })
-                log.info(
-                    f"  ✅ {pair} ({result['strategy']}): +R$ {result['delta']:.2f} "
-                    f"com {result['best_params']}"
-                )
+        if args.dry_run:
+            break
 
-        if optimized_count > 0:
-            save_full_config(config, updated_by="agi_17h_param_optimization")
+    # 8. FALLBACK — Auto-disable pairs that can't be made profitable
+    # Strategy: run final forward backtest, disable pairs still negative
+    if not converged and not args.dry_run:
+        log.info("⚠️ FALLBACK: Final forward backtest after all iterations...")
+        final_converged, final_failing, final_bt = check_forward_convergence(
+            config, days=args.days, max_workers=args.max_workers,
+        )
+
+        # Also collect zero-trade pairs from final backtest
+        zero_trade_pairs = [k for k, v in final_bt.items()
+                           if v.get("n_trades", 0) == 0
+                           and k not in set(config.get("disabled_timeframes", []) or [])]
+
+        pairs_to_disable = list(set(final_failing + zero_trade_pairs))
+
+        if pairs_to_disable:
+            log.warning(f"🛑 Disabling {len(pairs_to_disable)} pairs that couldn't be made profitable: {pairs_to_disable}")
+            final_paused = _pause_failing_pairs(pairs_to_disable, config, dry_run=False)
             config = load_config(force=True)
-            log.info(
-                f"🔧 Otimização: {optimized_count} pares melhorados, "
-                f"delta total R$ {total_delta:+.2f}"
-            )
-
-            # Save audit
-            audit_path = Path(
-                f"/tmp/vt_agi_param_opt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            )
-            import json as _json
-            with open(audit_path, "w") as f:
-                _json.dump(
-                    {
-                        "timestamp": datetime.now().isoformat(),
-                        "optimized_count": optimized_count,
-                        "total_delta": total_delta,
-                        "changes": param_changes,
-                    },
-                    f,
-                    indent=2,
-                    default=str,
-                )
-            log.info(f"📋 Param optimization audit: {audit_path}")
         else:
-            log.info("🔧 Nenhum parâmetro otimizado (delta < R$ 50)")
+            log.info("✅ All pairs profitable — no disabling needed")
+    elif not converged and args.dry_run:
+        log.info("🔍 [DRY-RUN] Would disable failing pairs")
+
+    # 8.5 FORWARD BACKTEST VERIFICATION — verify all pairs after all changes
+    if not args.dry_run:
+        log.info("🔬 ETAPA 8.5: Final forward backtest verification...")
+        verify_converged, verify_failing, verify_bt = check_forward_convergence(
+            config, days=args.days, max_workers=args.max_workers,
+        )
+        for pair_key in sorted(verify_bt.keys()):
+            r = verify_bt[pair_key]
+            pnl = r.get("pnl", 0)
+            n_trades = r.get("n_trades", 0)
+            wr = r.get("wr", 0)
+            status = "✅" if pnl > 0 else ("⚪" if n_trades == 0 else "❌")
+            log.info(f"  {status} {pair_key}: pnl=R${pnl:+.2f} trades={n_trades} wr={wr:.0f}%")
 
     # 9. Relatório final (consolidado com histórico de iterações)
     print_report(perf, issues, llm_result, applied, config, args.dry_run,

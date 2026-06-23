@@ -83,6 +83,10 @@ def discover_pairs(config: dict) -> list:
     Reads dynamically from vt_config.json. No hardcode.
     Adding a new symbol to config["symbols"] auto-discovers it.
 
+    Strategy resolution priority:
+      1. config["strategy_by_tf"][SYM_TF]  (per-timeframe, most specific)
+      2. config["strategy"][SYM]            (per-symbol fallback)
+
     Returns: list of (sym_root, tf, strategy_name, params_dict) tuples.
     """
     pairs = []
@@ -90,17 +94,24 @@ def discover_pairs(config: dict) -> list:
     default_tfs = config.get("timeframes", [])
     per_sym_tfs = config.get("per_symbol_timeframes", {})
     strategy_map = config.get("strategy", {})
+    strategy_by_tf = config.get("strategy_by_tf", {})
+    disabled = set(config.get("disabled_timeframes", []) or [])
 
     for sym in symbols:
-        # Skip symbols without strategy assignment
         if sym not in strategy_map:
             continue
-        strategy = strategy_map[sym]
+        default_strategy = strategy_map[sym]
         # Resolve TFs: per-symbol override OR global default
         tfs = per_sym_tfs.get(sym, default_tfs)
         # Resolve params: merge base + per-TF override ({}, base) == (base, {})
         sym_params_base = config.get(sym.lower(), {})
         for tf in tfs:
+            pair_key = f"{sym}_{tf}"
+            # Skip disabled pairs
+            if pair_key in disabled:
+                continue
+            # Per-TF strategy override takes priority
+            strategy = strategy_by_tf.get(pair_key, default_strategy)
             tf_override = sym_params_base.get(tf, {})
             merged = {**sym_params_base, **tf_override}
             pairs.append((sym, tf, strategy, merged))
@@ -540,8 +551,10 @@ def run_mini_backtest_pair(sym: str, tf: str, config: dict, days: int = 7) -> di
     if not sym or not tf or not isinstance(config, dict):
         return empty
 
-    # Find strategy + params
-    strategy_name = config.get("strategy", {}).get(sym)
+    # Find strategy + params — per-TF override takes priority
+    strategy_by_tf = config.get("strategy_by_tf", {})
+    pair_key = f"{sym}_{tf}"
+    strategy_name = strategy_by_tf.get(pair_key) or config.get("strategy", {}).get(sym)
     if not strategy_name:
         empty["decision"] = "strategy_not_in_config"
         return empty
@@ -556,6 +569,35 @@ def run_mini_backtest_pair(sym: str, tf: str, config: dict, days: int = 7) -> di
         return empty
 
     # Simulate
+    return simulate_forward(sym, tf, bars, strategy_name, params, config=config)
+
+
+def run_mini_backtest_pair_with_strategy(
+    sym: str, tf: str, strategy_name: str, config: dict, days: int = 7,
+) -> dict:
+    """Forward backtest for one SYM_TF with an explicit strategy override.
+
+    Like run_mini_backtest_pair but forces a specific strategy instead of
+    looking it up from config. Used by AGI convergence loop to explore
+    all 28 strategies for failing pairs.
+
+    Returns dict with: pnl, n_trades, wr, max_dd, decision.
+    """
+    empty = {
+        "pnl": 0.0, "n_trades": 0, "wr": 0.0, "max_dd": 0.0,
+        "decision": "no_data",
+    }
+    if not sym or not tf or not isinstance(config, dict):
+        return empty
+
+    params = _resolve_pair_params(config, sym, tf)
+
+    full_symbol = f"{sym}$"
+    bar_count = BAR_COUNT_PER_TF.get(tf, DEFAULT_BAR_COUNT)
+    bars = fetch_bars_for_backtest(full_symbol, tf, count=bar_count)
+    if not bars:
+        return empty
+
     return simulate_forward(sym, tf, bars, strategy_name, params, config=config)
 
 
