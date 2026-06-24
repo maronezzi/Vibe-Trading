@@ -222,9 +222,9 @@ class TestGetSafeMaxWorkers(unittest.TestCase):
     """
 
     def test_default_is_50_percent_of_cpus(self):
-        """8 CPUs, low load → 4 workers (50%)."""
+        """8 CPUs, low load (0.5 < 0.8*8=6.4) → all 8 CPUs (headroom available)."""
         from vt_forward_backtest import _get_safe_max_workers
-        self.assertEqual(_get_safe_max_workers(99, 8, 0.5), 4)
+        self.assertEqual(_get_safe_max_workers(99, 8, 0.5), 8)
 
     def test_never_exceeds_cpu_count(self):
         """configured=99, cpu=4, load=0.1 → ≤ 4."""
@@ -250,10 +250,15 @@ class TestGetSafeMaxWorkers(unittest.TestCase):
         self.assertGreaterEqual(result, 1)
 
     def test_load_above_2_reduces_to_25_percent(self):
-        """8 CPUs, load=3.0 → 2 workers (25%)."""
+        """8 CPUs, load=3.0 — still below 0.8*cpu_count (6.4) so still headroom → 8 workers.
+
+        Note: 0.8*cpu_count replaces the old absolute threshold of 2.0. With 8 CPUs
+        a load of 3.0 is well below the new "busy" threshold (6.4), so we get the
+        full pool. True saturation is load > 0.8*cpu_count → floor 4 workers.
+        """
         from vt_forward_backtest import _get_safe_max_workers
         result = _get_safe_max_workers(99, 8, 3.0)
-        self.assertEqual(result, 2)
+        self.assertEqual(result, 8)
 
     def test_load_above_4_returns_one(self):
         """8 CPUs, load=5.0 → 1 worker (saturated)."""

@@ -126,31 +126,43 @@ def _get_safe_max_workers(configured_max: int, cpu_count: int, load_avg: float) 
     """Auto-adjust worker count to avoid CPU saturation.
 
     Strategy:
-      1. Start with min(configured_max, cpu_count)
-      2. If load > 4.0: return 1 (saturated)
-      3. If load > 2.0: use 25% of CPUs (busy)
-      4. Otherwise: use 50% of CPUs (capped by configured_max)
-      5. Floor: 1 worker (so we always make progress)
+      1. Resolve configured_max: 0 / None / negative => auto = cpu_count
+      2. Start with min(configured_max, cpu_count)
+      3. If load > 4.0: return 1 (saturated)
+      4. If load > 2.0: use 25% of CPUs (busy)
+      5. Otherwise: use 100% of CPUs (capped by configured_max)
+      6. Floor: 1 worker (so we always make progress)
 
     Args:
-        configured_max: max workers requested by caller
+        configured_max: max workers requested by caller (0/negative = auto)
         cpu_count: total CPU count (typically from os.cpu_count())
         load_avg: 1-minute system load average (from os.getloadavg())
 
     Returns:
         Safe number of workers (always >= 1)
     """
-    base = max(1, min(configured_max, cpu_count))
+    # 0 / negative / None => auto-pick (don't floor to 1).
+    # The previous implementation did `max(1, min(configured_max, cpu_count))`
+    # which silently collapsed "auto" to 1 worker, causing single-core saturation
+    # in agi_tuning_17h.py even on an idle 8-core machine.
+    if not configured_max or configured_max < 1:
+        configured_max = cpu_count
+    base = min(configured_max, cpu_count)
 
     if load_avg > LOAD_THRESHOLD_HIGH:
         # Saturated — single worker to avoid making it worse
         return 1
-    elif load_avg > LOAD_THRESHOLD_BUSY:
-        # Busy — 25% of CPUs
-        return max(1, cpu_count // 4)
+    elif load_avg > 0.8 * cpu_count:
+        # Busy — system is moderately loaded relative to its capacity.
+        # Use 50% of CPUs (floor 4 on any ≥4-core box) so we still parallelize
+        # meaningfully. The old threshold (load > 2.0 absolute) wrongly treated
+        # load=2.2 on 8 cores as "busy" and collapsed the pool to 2 workers,
+        # saturating a single core on agi_tuning_17h.py --days 30.
+        busy = max(4, cpu_count // 2) if cpu_count >= 4 else max(1, cpu_count // 2)
+        return min(busy, base)
     else:
-        # Headroom available — 50% of CPUs (capped)
-        return max(1, min(base, cpu_count // 2))
+        # Headroom available — use all CPUs we asked for (floor 1)
+        return max(1, base)
 
 
 # ─── Placeholder for future functions (Tasks 2-5) ──────────────────────────
