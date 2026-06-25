@@ -22,7 +22,6 @@ import logging
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Optional
 
 log = logging.getLogger("agi_parallel")
 
@@ -33,7 +32,10 @@ log = logging.getLogger("agi_parallel")
 
 # Workers baseado em CPUs disponíveis
 CPU_COUNT = os.cpu_count() or 4
-MAX_WORKERS = min(CPU_COUNT - 1, 6)  # Deixa 1 CPU livre para o sistema
+# Usa TODAS as CPUs: o AGI roda às 17:10 (mercado fechado, autotrader idle),
+# não há competição por CPU. A guarda de load em get_safe_workers() reduz
+# automaticamente para CPU//2 se a máquina ficar saturada (load > 0.8*CPU_COUNT).
+MAX_WORKERS = CPU_COUNT
 MIN_WORKERS = 2
 
 # Timeout por backtest individual (segundos)
@@ -357,8 +359,6 @@ def parallel_strategy_swap(
     Returns:
         lista de dicts com resultados do experimento
     """
-    workers = get_safe_workers(max_workers)
-
     # Parse pairs
     pair_tuples = []
     for pair in pairs:

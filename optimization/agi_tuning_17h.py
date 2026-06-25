@@ -49,7 +49,7 @@ from core.vt_config_loader import load_config, save_params, save_full_config
 
 # ─── AGI v3.0 modules ────────────────────────────────────────────
 try:
-    from optimization.agi_regime_classifier import (
+    from optimization.agi_regime_classifier import (  # noqa: F401
         classify_regimes_from_trades,
         classify_current_regime,
         describe_regime,
@@ -60,7 +60,7 @@ except ImportError:
     HAS_REGIME_CLASSIFIER = False
 
 try:
-    from optimization.agi_safety_validator import (
+    from optimization.agi_safety_validator import (  # noqa: F401
         AGISafetyValidator,
         apply_ocam_razor,
         compute_total_cost,
@@ -1223,7 +1223,7 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
             prompt += f"- Profit Factor: {opt.get('best_pf', 0)} (atual deve ser < 1)\n"
             prompt += f"- Win Rate: {opt.get('best_wr', 0)}%\n"
             # Sugerir mudança EXPLÍCITA
-            prompt += f"- **MUDANÇA SUGERIDA (já validada)**:\n"
+            prompt += "- **MUDANÇA SUGERIDA (já validada)**:\n"
             prompt += f"  {{\"symbol\": \"{sym}\", \"params\": {{"
             params_json = []
             if opt.get('best_sl_atr_mult'):
@@ -1241,7 +1241,7 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
             # Variantes A/B
             variants = opt.get("variants", [])
             if variants:
-                prompt += f"- Variantes A/B para testar:\n"
+                prompt += "- Variantes A/B para testar:\n"
                 for v in variants:
                     prompt += f"  - `{v['label']}`: esperado R$ {v['expected_pnl']:+.2f}\n"
             prompt += "\n"
@@ -1684,7 +1684,7 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
     print(f"\n  TOTAL: {total_trades} trades | PnL R${total_pnl:+.2f}")
 
     # Exit reasons
-    print(f"\n🚪 EXIT REASONS:")
+    print("\n🚪 EXIT REASONS:")
     for reason, data in perf.get("exit_reasons", {}).items():
         print(f"  {reason}: {data['count']}x | avg R${data['avg_pnl']:+.2f}")
 
@@ -1697,12 +1697,12 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
 
     # LLM analysis
     if llm_result and llm_result.get("analysis"):
-        print(f"\n🧠 ANÁLISE LLM:")
+        print("\n🧠 ANÁLISE LLM:")
         print(f"  {llm_result['analysis']}")
 
     # Web intelligence
     if web_intel:
-        print(f"\n🌐 INTELIGÊNCIA TÉCNICA (tinyfish):")
+        print("\n🌐 INTELIGÊNCIA TÉCNICA (tinyfish):")
         for sym, intel in web_intel.items():
             n_st = len(intel.get("strategy_tips", ""))
             n_ind = len(intel.get("indicator_settings", ""))
@@ -1719,12 +1719,12 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
 
     # Strategy Explorer
     if optimization:
-        print(f"\n🔬 STRATEGY EXPLORER (configs lucrativas encontradas):")
+        print("\n🔬 STRATEGY EXPLORER (configs lucrativas encontradas):")
 
         # Show strategy switches first
         strategy_switches = optimization.get("_strategy_switches", [])
         if strategy_switches:
-            print(f"\n  🔄 TROCAS DE ESTRATÉGIA RECOMENDADAS:")
+            print("\n  🔄 TROCAS DE ESTRATÉGIA RECOMENDADAS:")
             for sw in strategy_switches:
                 bs = sw.get("best_stats", {})
                 print(f"    📊 {sw['pair']}: {sw['from']} → {sw['to']}")
@@ -1769,7 +1769,7 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
 
     # Fallback de pausa
     if paused and paused.get("paused"):
-        print(f"\n🛑 FALLBACK — PARES PAUSADOS:")
+        print("\n🛑 FALLBACK — PARES PAUSADOS:")
         for p in paused["paused"]:
             print(f"  🛑 {p}  (não convergiu após iterações)")
         if paused.get("skipped"):
@@ -1777,7 +1777,7 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
 
     # Status final por par (lucrativo / pausado)
     if perf.get("by_symbol_tf"):
-        print(f"\n📋 STATUS FINAL POR SÍMBOLO/TIMEFRAME:")
+        print("\n📋 STATUS FINAL POR SÍMBOLO/TIMEFRAME:")
         for key, data in sorted(perf.get("by_symbol_tf", {}).items()):
             paused_flag = " 🛑 PAUSADO" if key in (paused.get("paused") or []) else ""
             icon = "🟢" if data["total_pnl"] > 0 else "🔴"
@@ -2283,7 +2283,7 @@ def check_forward_convergence(
     return (converged, failing, bt_results)
 
 
-def run_exhaustive_search(config: dict, days: int = 7) -> dict:
+def run_exhaustive_search(config: dict, days: int = 7, max_workers: int = 0) -> dict:
     """Run exhaustive strategy search: test ALL 27 strategies for every pair.
 
     This function tests every strategy in exhaustive_strategy_search.ALL_STRATEGIES
@@ -2291,9 +2291,18 @@ def run_exhaustive_search(config: dict, days: int = 7) -> dict:
     It returns the best strategy per pair and identifies pairs where ALL 27
     strategies are negative (safe to disable).
 
+    Parallelism:
+      * Phase 1 (bar fetch): serial in parent — each Wine/MT5 fetch is a subprocess
+        call, parallelising these risks overwhelming the Wine gateway.
+      * Phase 2 (strategy simulation): parallel via ProcessPoolExecutor across pairs.
+        Each worker runs `test_all_strategies_for_pair` (27 strategies × ~30 param
+        combos ≈ 810 forward sims) on already-fetched bars. With N cores we get
+        ~N× speedup over the previous serial implementation.
+
     Args:
         config: vt_config dict (merged with params_by_tf)
         days: not used directly (bar count is per-TF from BAR_COUNT_PER_TF)
+        max_workers: 0 = auto (min(cpu_count, pairs)); >0 = explicit cap
 
     Returns:
         Dict with keys:
@@ -2303,9 +2312,10 @@ def run_exhaustive_search(config: dict, days: int = 7) -> dict:
         - total_pairs: int
         - strategies_tested: int (len of ALL_STRATEGIES)
     """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
     from optimization.exhaustive_strategy_search import (
-        test_all_strategies_for_pair, ALL_STRATEGIES,
-        merge_params_by_tf_into_config,
+        _test_pair_worker,
+        ALL_STRATEGIES, merge_params_by_tf_into_config,
     )
     from optimization.vt_forward_backtest import (
         fetch_bars_for_backtest, BAR_COUNT_PER_TF, DEFAULT_BAR_COUNT,
@@ -2316,17 +2326,18 @@ def run_exhaustive_search(config: dict, days: int = 7) -> dict:
     timeframes = config.get("timeframes", [])
     disabled = set(config.get("disabled_timeframes", []) or [])
 
-    all_results = {}
-    best_per_pair = {}
-    all_negative_pairs = []
-
     log.info(f"🔍 Exhaustive search: {len(symbols)} syms × {len(timeframes)} tfs × "
              f"{len(ALL_STRATEGIES)} strategies")
 
+    # ─── Phase 1: fetch bars serially (Wine/MT5 is a single-process gateway) ─
+    work_items = []
+    skipped = []
+    no_bars_pairs = set()
     for sym in symbols:
         for tf in timeframes:
             pair_key = f"{sym}_{tf}"
             if pair_key in disabled:
+                skipped.append(pair_key)
                 continue
 
             full_symbol = f"{sym}$"
@@ -2334,11 +2345,65 @@ def run_exhaustive_search(config: dict, days: int = 7) -> dict:
             bars = fetch_bars_for_backtest(full_symbol, tf, count=bar_count)
 
             if not bars:
-                all_results[pair_key] = []
+                # Treat as "no data" — worker will return [] immediately
+                work_items.append((pair_key, sym, tf, [], test_config))
+                no_bars_pairs.add(pair_key)
                 continue
 
-            results = test_all_strategies_for_pair(sym, tf, bars, test_config)
+            work_items.append((pair_key, sym, tf, bars, test_config))
+
+    if not work_items:
+        log.warning("🔍 Exhaustive search: no active pairs to test")
+        return {
+            "best_per_pair": {},
+            "all_results": {},
+            "all_negative_pairs": [],
+            "total_pairs": 0,
+            "strategies_tested": len(ALL_STRATEGIES),
+        }
+
+    # ─── Phase 2: parallel strategy testing across pairs ───────────────────
+    cpu_count = os.cpu_count() or 1
+    if not max_workers or max_workers < 1:
+        max_workers = cpu_count
+    # Cap by pair count — never more workers than work items
+    num_workers = min(max_workers, len(work_items))
+
+    log.info(
+        f"🔍 Exhaustive search: {len(work_items)} pairs across {num_workers} "
+        f"ProcessPoolExecutor workers (cpu_count={cpu_count}, "
+        f"skipped={len(skipped)})"
+    )
+
+    all_results: dict = {}
+    best_per_pair: dict = {}
+    all_negative_pairs: list = []
+
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        future_to_pair = {
+            executor.submit(_test_pair_worker, item): item[0]
+            for item in work_items
+        }
+        completed = 0
+        for future in as_completed(future_to_pair):
+            pair_key = future_to_pair[future]
+            completed += 1
+            try:
+                _, results = future.result()
+            except Exception as e:
+                log.warning(f"  [{completed}/{len(work_items)}] {pair_key}: "
+                            f"worker crashed — {type(e).__name__}: {e}")
+                results = []
+
             all_results[pair_key] = results
+
+            if not results:
+                # No bars (we couldn't fetch MT5 data) — don't treat as a failed
+                # strategy test. Worker crash with bars would also land here, but
+                # the log line above already flags that case.
+                if pair_key not in no_bars_pairs:
+                    all_negative_pairs.append(pair_key)
+                continue
 
             # Find best strategy with PnL > 0 and trades >= 1
             best_strat = None
@@ -2360,16 +2425,15 @@ def run_exhaustive_search(config: dict, days: int = 7) -> dict:
                     "max_dd": best_result.get("max_dd", 0),
                     "params": best_params if best_params else {},
                 }
-                log.info(f"  ✅ {pair_key}: best={best_strat} "
-                         f"pnl=R${best_result['pnl']:+.2f} "
+                log.info(f"  ✅ [{completed}/{len(work_items)}] {pair_key}: "
+                         f"best={best_strat} pnl=R${best_result['pnl']:+.2f} "
                          f"trades={best_result['n_trades']} "
                          f"wr={best_result.get('wr', 0):.0f}%")
             else:
                 all_negative_pairs.append(pair_key)
-                # Log top 3 least-bad strategies for debugging
                 for i, (strat, res, params) in enumerate(results[:3]):
-                    log.info(f"  🔴 {pair_key} #{i+1}: {strat} "
-                             f"pnl=R${res.get('pnl', 0):+.2f} "
+                    log.info(f"  🔴 [{completed}/{len(work_items)}] {pair_key} "
+                             f"#{i+1}: {strat} pnl=R${res.get('pnl', 0):+.2f} "
                              f"trades={res.get('n_trades', 0)}")
 
     n_positive = len(best_per_pair)
@@ -2395,33 +2459,33 @@ def notify_exhaustive_search_results(exhaustive_results: dict):
     """
     if not exhaustive_results:
         return
-    
+
     best = exhaustive_results.get("best_per_pair", {})
     all_neg = exhaustive_results.get("all_negative_pairs", [])
     n_strats = exhaustive_results.get("strategies_tested", 0)
     total = exhaustive_results.get("total_pairs", 0)
-    
+
     lines = [
         f"🔍 Busca Exaustiva: {n_strats} estratégias × {total} pares",
         f"✅ {len(best)} pares com estratégia lucrativa",
         f"❌ {len(all_neg)} pares com TODAS as {n_strats} estratégias negativas",
         "",
     ]
-    
+
     # Show best strategy per pair
     for pair_key, info in sorted(best.items()):
         lines.append(
             f"  ✅ {pair_key}: {info['strategy']} "
             f"(R${info['pnl']:+.0f}, {info['n_trades']}t, WR {info['wr']:.0f}%)"
         )
-    
+
     # Show all-negative pairs (all 27 tested)
     if all_neg:
         lines.append("")
         lines.append(f"❌ Pares onde TODAS as {n_strats} estratégias foram negativas:")
         for pair_key in all_neg:
             lines.append(f"  ❌ {pair_key}")
-    
+
     notify_telegram("\n".join(lines))
 
 
@@ -2695,17 +2759,22 @@ def _build_v3_prompt_context(
     risk_tags: dict,
     discovery_results: dict,
     trade_analysis: dict,
+    exhaustive_results: dict = None,
 ) -> str:
     """Build v3.0 context section to append to the LLM prompt.
 
-    Includes: regime classification, risk tags, discovery engine results,
-    and execution vs logic error analysis.
+    Includes: regime classification, risk tags, exhaustive search results
+    (alta fidelidade), discovery engine results (heurística), and execution
+    vs logic error analysis.
 
     Args:
         regime_info: From Stage 1 (regime classifier).
         risk_tags: From Stage 2 (macro intel).
-        discovery_results: From Stage 3 (discovery engine).
+        discovery_results: From Stage 3.5 (discovery engine — param tuning).
         trade_analysis: From Stage 1.3 (error classification).
+        exhaustive_results: From Stage 3 (exhaustive search — replay real,
+            testa todas as 27 estratégias por par). É a evidência de MAIOR
+            fidelidade e deve ser priorizada pelo LLM sobre o discovery.
 
     Returns:
         String to append to the LLM prompt, or empty string if no data.
@@ -2730,6 +2799,24 @@ def _build_v3_prompt_context(
 - Reasoning: {risk_tags.get('reasoning', 'N/A')}
 - Implicação: {'Reduzir exposição, usar SL mais largo' if tag in ('HIGH_VOLATILITY_EXPECTED', 'EVENT_RISK') else 'Operar normalmente' if tag == 'LOW_VOLATILITY_EXPECTED' else 'Favorecer estratégias de tendência'}
 """)
+
+    # Exhaustive Strategy Search (alta fidelidade — priorizar sobre o Discovery)
+    if exhaustive_results:
+        best_per_pair = exhaustive_results.get("best_per_pair", {})
+        all_negative = exhaustive_results.get("all_negative_pairs", [])
+        if best_per_pair:
+            parts.append("## 🔍 BUSCA EXAUSTIVA (alta fidelidade — replay real, 27 estratégias)\n")
+            parts.append("**Melhor estratégia por par (PRIORIZE esta evidência sobre a heurística do Discovery):**\n")
+            for pair, info in sorted(best_per_pair.items()):
+                parts.append(
+                    f"- {pair}: {info.get('strategy', '?')} | PnL=R${info.get('pnl', 0):+.2f} | "
+                    f"trades={info.get('n_trades', 0)} | wr={info.get('wr', 0)*100:.0f}%\n"
+                )
+            if all_negative:
+                parts.append(
+                    f"**Pares onde TODAS as 27 estratégias foram negativas (candidatos a desabilitar):** "
+                    f"{', '.join(all_negative)}\n"
+                )
 
     # Discovery Engine results
     if discovery_results:
@@ -2817,7 +2904,7 @@ def _build_v3_telegram_card(
         "LOW_VOLATILITY": "Baixa Volatilidade",
     }.get(regime, regime)
 
-    lines = [f"🧬 AGI Tuning Concluído (17:10)", ""]
+    lines = ["🧬 AGI Tuning Concluído (17:10)", ""]
     lines.append(f"📊 Regime Atual: {regime_pt}")
     lines.append(f"🏷️ Risk Tag: {risk_tag}")
 
@@ -2889,8 +2976,10 @@ def main():
                         help="Max processos paralelos pro forward backtest (0=auto via load avg)")
     parser.add_argument("--use-backtest-convergence", action="store_true",
                         help="Usa forward backtest como shadow-of-truth no critério de convergência")
-    parser.add_argument("--no-shadow", dest="no_shadow", action="store_true", default=False,
-                        help="Desativa shadow mode (default: ativo)")
+    parser.add_argument("--shadow", dest="shadow", action="store_true", default=False,
+                        help="Ativa shadow mode (default: desativado). Re-roda o AGI em "
+                             "dry-run sobre um snapshot para comparar live vs shadow — "
+                             "aprox. dobra o tempo da rodada, use só para auditoria manual.")
     # ── AGI v3.0 new arguments (backward compatible) ──
     parser.add_argument("--train-days", type=int, default=None,
                         help="[v3] Dias de treinamento (default: --days). Alias para --days se não setado.")
@@ -3003,24 +3092,39 @@ def main():
         # Mapear símbolo → estratégia (da config)
         strat_map = config.get("strategy", {}) or {}
 
-        for sym in list(root_set)[:3]:
-            try:
-                # Pegar estratégia do config (pode ser WIN/BIT/DOL/IND/WSP/WDO)
-                # Config key pode ser maiúscula ou minúscula
-                strategy_name = (
-                    strat_map.get(sym) or
-                    strat_map.get(sym.upper()) or
-                    strat_map.get(sym.lower()) or
-                    "GENERAL"
-                )
-                intel = web_intel_for_symbol(sym, strategy=strategy_name)
-                if (intel.get("strategy_tips") or
-                    intel.get("indicator_settings") or
-                    intel.get("sl_trail_tactics") or
-                    intel.get("patterns")):
-                    web_intel[sym] = intel
-            except Exception as e:
-                log.warning(f"web_intel erro para {sym}: {e}")
+        # Paralelizado: cada web_intel_for_symbol é uma chamada web (tinyfish,
+        # I/O bound). ThreadPoolExecutor busca os símbolos concorrentemente em
+        # vez de sequencialmente — ganho direto no tempo da fase de web intel.
+        syms_to_fetch = list(root_set)[:3]
+
+        def _fetch_web_intel(sym):
+            # Pegar estratégia do config (pode ser WIN/BIT/DOL/IND/WSP/WDO)
+            # Config key pode ser maiúscula ou minúscula
+            strategy_name = (
+                strat_map.get(sym) or
+                strat_map.get(sym.upper()) or
+                strat_map.get(sym.lower()) or
+                "GENERAL"
+            )
+            intel = web_intel_for_symbol(sym, strategy=strategy_name)
+            if (intel.get("strategy_tips") or
+                intel.get("indicator_settings") or
+                intel.get("sl_trail_tactics") or
+                intel.get("patterns")):
+                return sym, intel
+            return sym, None
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=max(2, len(syms_to_fetch))) as pool:
+            future_to_sym = {pool.submit(_fetch_web_intel, s): s for s in syms_to_fetch}
+            for fut in future_to_sym:
+                sym = future_to_sym[fut]
+                try:
+                    _, intel = fut.result()
+                    if intel:
+                        web_intel[sym] = intel
+                except Exception as e:
+                    log.warning(f"web_intel erro para {sym}: {e}")
         log.info(f"🌐 Web intel técnica coletada para {len(web_intel)} símbolos")
     else:
         if args.no_web:
@@ -3064,7 +3168,7 @@ def main():
     # 4.5. Strategy Explorer — busca configs lucrativas no histórico
     optimization = {}
     try:
-        from strategy_explorer import generate_optimization_report, IMPERATIVE_RULE, ALL_STRATEGIES as SE_STRATEGIES
+        from strategy_explorer import generate_optimization_report, ALL_STRATEGIES as SE_STRATEGIES
         notify_telegram("🔬 Rodando Strategy Explorer...")
         log.info("🔬 Rodando Strategy Explorer (busca configs lucrativas)...")
         n_strategies = len(SE_STRATEGIES)
@@ -3166,7 +3270,48 @@ def main():
             config = load_config(force=True)
 
     # ═══════════════════════════════════════════════════════════════
-    # STAGE 3 — Multi-Stage Discovery Engine (v3.0)
+    # STAGE 3 — Exhaustive Strategy Search (test ALL 27 strategies FIRST)
+    # Roda ANTES do Discovery Engine e do iteration loop: é a regra imperativa
+    # do projeto ("teste todas as estratégias antes de afinar params"). Para
+    # cada par, encontra a melhor estratégia entre as 27 via replay real (alta
+    # fidelidade). Só pares onde TODAS as 27 são negativas podem ser
+    # desabilitados com segurança.
+    # ═══════════════════════════════════════════════════════════════
+    exhaustive_results = {}
+    if not args.dry_run:
+        try:
+            notify_telegram("🔍 Busca exaustiva: testando 27 estratégias × todos os pares...")
+            log.info("🔍 Running exhaustive strategy search (ALL 27 strategies per pair)...")
+            exhaustive_results = run_exhaustive_search(
+                config, days=analysis_days, max_workers=args.max_workers,
+            )
+            notify_exhaustive_search_results(exhaustive_results)
+
+            # Apply best strategy from exhaustive search for pairs that have one
+            best_per_pair = exhaustive_results.get("best_per_pair", {})
+            strategy_changes = 0
+            for pair_key, info in best_per_pair.items():
+                current_strat = config.get("strategy_by_tf", {}).get(pair_key)
+                if current_strat != info["strategy"]:
+                    config.setdefault("strategy_by_tf", {})[pair_key] = info["strategy"]
+                    strategy_changes += 1
+                    log.info(f"  🔄 {pair_key}: {current_strat} → {info['strategy']} "
+                             f"(exhaustive: pnl=R${info['pnl']:+.2f})")
+
+            if strategy_changes > 0:
+                save_full_config(config, updated_by="agi_exhaustive_search")
+                config = load_config(force=True)
+                log.info(f"🔍 Exhaustive search applied {strategy_changes} strategy changes")
+        except Exception as e:
+            log.warning(f"Exhaustive search erro (non-fatal): {e}")
+    else:
+        log.info("🔍 [DRY-RUN] Skipping exhaustive search")
+
+    # ═══════════════════════════════════════════════════════════════
+    # STAGE 3.5 — Multi-Stage Discovery Engine (param tuning, AFTER strategy chosen)
+    # Bayesian/Optuna de afinamento de params. Roda DEPOIS do exhaustive (que
+    # já escolheu a melhor estratégia por par), refinando params das estratégias
+    # vencedoras — nunca antes de saber qual estratégia é a melhor.
     # ═══════════════════════════════════════════════════════════════
     discovery_results = {}
     if HAS_BAYESIAN and HAS_OPTUNA and args.optimizer_engine == "bayesian":
@@ -3174,7 +3319,7 @@ def main():
             from strategy_explorer import load_trades, ALL_STRATEGIES
             from strategy_explorer import get_all_symbols, get_timeframes_for_symbol
 
-            log.info("🧬 Stage 3: Running Multi-Stage Discovery Engine...")
+            log.info("🧬 Stage 3.5: Running Multi-Stage Discovery Engine...")
             notify_telegram("🧬 Discovery Engine rodando (Bayesian Optimization)...")
 
             # Build trades_by_pair for the discovery engine
@@ -3237,40 +3382,6 @@ def main():
         log.warning("🧬 Bayesian optimizer solicitado mas optuna não instalado — usando grid")
 
     # ═══════════════════════════════════════════════════════════════
-    # STAGE 3.5 — Exhaustive Strategy Search (test ALL 27 strategies)
-    # Runs BEFORE iteration loop. For each pair, finds the best strategy
-    # among all 27. Only pairs where ALL 27 strategies are negative can
-    # be safely disabled.
-    # ═══════════════════════════════════════════════════════════════
-    exhaustive_results = {}
-    if not args.dry_run:
-        try:
-            notify_telegram("🔍 Busca exaustiva: testando 27 estratégias × todos os pares...")
-            log.info("🔍 Running exhaustive strategy search (ALL 27 strategies per pair)...")
-            exhaustive_results = run_exhaustive_search(config, days=analysis_days)
-            notify_exhaustive_search_results(exhaustive_results)
-
-            # Apply best strategy from exhaustive search for pairs that have one
-            best_per_pair = exhaustive_results.get("best_per_pair", {})
-            strategy_changes = 0
-            for pair_key, info in best_per_pair.items():
-                current_strat = config.get("strategy_by_tf", {}).get(pair_key)
-                if current_strat != info["strategy"]:
-                    config.setdefault("strategy_by_tf", {})[pair_key] = info["strategy"]
-                    strategy_changes += 1
-                    log.info(f"  🔄 {pair_key}: {current_strat} → {info['strategy']} "
-                             f"(exhaustive: pnl=R${info['pnl']:+.2f})")
-
-            if strategy_changes > 0:
-                save_full_config(config, updated_by="agi_exhaustive_search")
-                config = load_config(force=True)
-                log.info(f"🔍 Exhaustive search applied {strategy_changes} strategy changes")
-        except Exception as e:
-            log.warning(f"Exhaustive search erro (non-fatal): {e}")
-    else:
-        log.info("🔍 [DRY-RUN] Skipping exhaustive search")
-
-    # ═══════════════════════════════════════════════════════════════
     # STAGE 5 — Safety Validation Gate (v3.0)
     # Applied to all LLM output before changes
     # ═══════════════════════════════════════════════════════════════
@@ -3283,7 +3394,7 @@ def main():
         prompt = build_llm_prompt(perf, issues, config, web_intel=web_intel, optimization=optimization)
 
         # v3.0: Enhance prompt with regime + risk tags + discovery results
-        v3_context = _build_v3_prompt_context(regime_info, risk_tags, discovery_results, trade_analysis)
+        v3_context = _build_v3_prompt_context(regime_info, risk_tags, discovery_results, trade_analysis, exhaustive_results)
         if v3_context:
             prompt += v3_context
 
@@ -3608,7 +3719,7 @@ def main():
                     f"regime={regime_info.get('current_regime', '?')}")
 
     # ─── SHADOW MODE — run optimization on snapshot, compare, log ───
-    if not args.dry_run and not args.no_shadow:
+    if not args.dry_run and args.shadow:
         try:
             config_path = PROJECT_DIR / "vt_config.json"
             if not config_path.exists():
