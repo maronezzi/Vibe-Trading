@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "mt5"))  # para imports 'f
 from core.vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary, sync_fees_from_mt5
 from mt5.mt5_orchestrator import status, buy, sell, close, close_all, tick, modify_sl, _run_wine, EXECUTOR_WIN
 from mt5.mt5_error_recovery import safe_buy, safe_sell, safe_modify_sl, safe_close
+from core.vt_emergency import safe_modify_sl_with_emergency_close
 from core.vt_config_loader import load_config
 from core.vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
 from core.vt_order_validator_v2 import validate_order
@@ -1155,7 +1156,7 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                         log(f"[VALIDATOR] SL {int(new_sl)}pts ({_sl_native:.0f} nativos) excede max_native {_spec['max_native']}pts → clampado para {_max_exec}pts")
                         new_sl = _max_exec
                     log(f"[VALIDATOR] Corrigindo SL: {sl_pts}pts → {int(new_sl)}pts ({reason})")
-                    fix_result = safe_modify_sl(symbol, ticket, int(new_sl), exec_price, direction)
+                    fix_result = safe_modify_sl_with_emergency_close(symbol, ticket, int(new_sl), exec_price, direction)
                     if fix_result.get("status") == "ok":
                         sl_pts = int(new_sl)
                         log(f"[VALIDATOR] SL corrigido com sucesso para {sl_pts}pts")
@@ -1214,7 +1215,7 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                                     f"SL: {sl_pts}pts → {suggested_pts}pts\n"
                                     f"📋 Alerta [{_alert_sev}/{_alert_type}]: {_alert_msg}"
                                 )
-                                fix_result = safe_modify_sl(symbol, ticket, suggested_pts, exec_price, direction)
+                                fix_result = safe_modify_sl_with_emergency_close(symbol, ticket, suggested_pts, exec_price, direction)
                                 if fix_result.get("status") == "ok":
                                     sl_pts = suggested_pts
                                     log(f"[VALIDATOR] SL corrigido localmente para {sl_pts}pts")
@@ -1451,7 +1452,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             # BUY: breakeven = SL no entry + custo (SL = entry + custo*point)
             be_sl_pts = cost_pts  # positivo → SL = entry - cost_pts*point_val (abaixo de entry mas perto)
             if be_sl_pts < abs(sl_pts):  # menor distância = SL mais apertado = melhor
-                result = safe_modify_sl(symbol, pos["entry_ticket"], be_sl_pts, entry_price, direction)
+                result = safe_modify_sl_with_emergency_close(symbol, pos["entry_ticket"], be_sl_pts, entry_price, direction)
                 if result.get("status") == "ok":
                     pos["sl_pts"] = be_sl_pts
                     sl_pts = be_sl_pts  # CRITICAL: refresh local para trailing não afrouxar
@@ -1462,7 +1463,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             # SELL: breakeven = SL no entry - custo (SL = entry + cost_pts*point_val)
             be_sl_pts = cost_pts
             if be_sl_pts < abs(sl_pts):
-                result = safe_modify_sl(symbol, pos["entry_ticket"], be_sl_pts, entry_price, direction)
+                result = safe_modify_sl_with_emergency_close(symbol, pos["entry_ticket"], be_sl_pts, entry_price, direction)
                 if result.get("status") == "ok":
                     pos["sl_pts"] = be_sl_pts
                     sl_pts = be_sl_pts  # CRITICAL: refresh local para trailing não afrouxar
@@ -1531,7 +1532,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     #   SELL: SL = entry + pts*point (pts<0 → SL abaixo entry ✓)
     if new_sl_pts is not None and new_sl_pts != 0 and new_sl_pts != sl_pts:
         try:
-            result = safe_modify_sl(symbol, pos["entry_ticket"], new_sl_pts, entry_price, direction)
+            result = safe_modify_sl_with_emergency_close(symbol, pos["entry_ticket"], new_sl_pts, entry_price, direction)
             if result.get("status") == "ok":
                 pos["sl_pts"] = new_sl_pts
                 log(f"[TRAIL] SL atualizado no MT5: {symbol} ticket={pos['entry_ticket']} → SL={new_sl_pts} pts")
