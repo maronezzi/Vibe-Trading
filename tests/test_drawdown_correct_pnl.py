@@ -31,7 +31,7 @@ ESTE TESTE:
 import os
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -177,8 +177,8 @@ class TestDrawdownCorrectPnl(unittest.TestCase):
         drawdown_alerts = [a for a in anomalies if a["type"] == "DRAWDOWN"]
         self.assertEqual(
             len(drawdown_alerts), 0,
-            f"BUG: DRAWDOWN disparou apesar de SELL a favor. "
-            f"Profit agregado -1375 foi usado em vez de calcular do preço real."
+            "BUG: DRAWDOWN disparou apesar de SELL a favor. "
+            "Profit agregado -1375 foi usado em vez de calcular do preço real."
         )
 
 

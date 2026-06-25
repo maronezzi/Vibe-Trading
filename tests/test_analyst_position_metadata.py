@@ -24,7 +24,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
@@ -57,7 +57,7 @@ def _build_snapshot(symbol="INDM26", tf="M5", atr=131.0, current=171145.0, **ove
             "type": "BUY",
             "symbol": symbol,
             "volume": 5.0,  # ← AGREGADO de 5 ordens abertas
-            "price_open": 170620.0,
+            "price_open": 171600.0,  # acima do current (171145) → BUY com prejuízo REAL (drawdown legítimo)
             "sl": 170420.0,
             "profit": -200.0,  # PnL negativo para disparar DRAWDOWN
             "ticket": 2459077217,
@@ -175,7 +175,7 @@ class TestAnalystPositionMetadata(unittest.TestCase):
         self.assertRegex(drawdown[0]["msg"], r"Vol:\s*1(\.0)?\b",
                          f"Bug: volume no alert está errado. Msg: {drawdown[0]['msg']}")
         self.assertNotIn("Vol: 5.0", drawdown[0]["msg"],
-                         f"Bug: alert mostra volume agregado 5.0 em vez de 1.0")
+                         "Bug: alert mostra volume agregado 5.0 em vez de 1.0")
 
     def test_drawdown_atr_ratio_not_zero_when_atr_positive(self):
         """Bug 3: Quando ATR do state é positivo, ratio não pode ser 0.0x."""

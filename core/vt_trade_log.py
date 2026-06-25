@@ -19,9 +19,8 @@ Campos necessários:
 import sqlite3
 import json
 import logging
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger("vt_trade_log")
 
@@ -212,8 +211,14 @@ def log_entry(symbol: str, direction: str, volume: float,
 
 def log_exit(trade_id: int, exit_price: float, exit_reason: str,
              exit_ticket: str = None, exit_sl_price: float = None,
-             swap: float = 0, notes: str = None, raw_json: dict = None):
-    """Registra FECHAMENTO de uma posição e calcula PnL."""
+             swap: float = 0, notes: str = None, raw_json: dict = None,
+             close_source: str = None):
+    """Registra FECHAMENTO de uma posição e calcula PnL.
+
+    close_source: origem do fechamento (SL_SERVER, SL_LOCAL, EOD,
+    RECONCILIATION, EMERGENCY_CLOSE). NULL se não informado (compatível com
+    callers legados que não passam esse argumento).
+    """
     conn = get_db()
     row = conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
     if not row:
@@ -248,6 +253,7 @@ def log_exit(trade_id: int, exit_price: float, exit_reason: str,
             net_pnl = ?,
             notes = ?,
             raw_exit_json = ?,
+            close_source = ?,
             updated_at = datetime('now', 'localtime')
         WHERE id = ?
     """, (
@@ -256,6 +262,7 @@ def log_exit(trade_id: int, exit_price: float, exit_reason: str,
         exit_sl_price, swap, gross_pnl, fees, net_pnl,
         notes,
         json.dumps(raw_json, default=str) if raw_json else None,
+        close_source,
         trade_id,
     ))
 

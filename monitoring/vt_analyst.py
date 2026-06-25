@@ -26,7 +26,6 @@ Uso:
 
 import sys
 import json
-import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -385,26 +384,32 @@ def detect_anomalies(snapshot: dict) -> list:
     # 3. Drawdown na posição (só quando pnl < 0 — prejuízo real)
     pos = snapshot.get("position")
     if pos:
-        pnl = pos.get("profit", 0)
         entry = pos.get("price_open", 0)
+        current = snapshot.get("price", 0)
+        _dir_raw = pos.get("type", "")
+        direction = "BUY" if (isinstance(_dir_raw, int) and _dir_raw == 0) else (
+            "SELL" if isinstance(_dir_raw, int) else _dir_raw)
+        # Computar PnL REAL (direção + movimento de preço) em vez do profit
+        # agregado do MT5 — este pode estar stale e dispara drawdown falso em
+        # SELLs lucrativos (ex.: SELL entry 5159 → atual 5128 é lucro, não perda).
+        try:
+            from vt_trade_log import get_multiplier
+            mult = get_multiplier(symbol)
+        except Exception:
+            mult = 0.20 if "WIN" in symbol else 10.0 if "WDO" in symbol else 1.0
+        if entry > 0 and current > 0 and direction in ("BUY", "SELL"):
+            pnl_pts = (current - entry) if direction == "BUY" else (entry - current)
+            pnl = pnl_pts * mult * pos.get("volume", 1)
+        else:
+            pnl = pos.get("profit", 0)
         # Preferir atr da posição real (state) sobre o atr do snapshot,
         # pois o snapshot pode estar usando o atr de outro TF (M5 vs M30)
         atr = pos.get("atr", 0) or snapshot["atr"]
         if atr > 0 and entry > 0 and pnl < 0:
-            # Usar get_multiplier para multiplicador correto por ativo
-            try:
-                from vt_trade_log import get_multiplier
-                mult = get_multiplier(symbol)
-            except Exception:
-                mult = 0.20 if "WIN" in symbol else 10.0 if "WDO" in symbol else 1.0
             drawdown_pts = abs(pnl) / mult
             if drawdown_pts > atr * 0.5:
                 # Coletar dados para mensagem rica
-                direction = pos.get("type", "")
-                if isinstance(direction, int):
-                    direction = "BUY" if direction in (0,) else "SELL"
                 sl_price = pos.get("sl", 0)
-                current = snapshot.get("price", 0)
                 ticket = pos.get("ticket", pos.get("id", ""))
                 volume = pos.get("volume", 1)
                 # Distância até o SL
