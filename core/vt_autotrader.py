@@ -1744,6 +1744,8 @@ def close_all_and_report():
 
 def run_once():
     init_db()
+    _init_strategy_utils()
+    load_strategies()
     log("Verificação única...")
     check_and_trade()
     log("Verificação concluída")

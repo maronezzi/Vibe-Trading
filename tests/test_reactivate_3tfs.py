@@ -50,13 +50,28 @@ def test_no_disabled_timeframes():
     )
 
 
-def test_no_disabled_symbols():
-    """Nenhum símbolo deve estar em disabled_symbols."""
+def test_disabled_symbols_have_justification():
+    """disabled_symbols deve estar vazio OU ter nota de justificativa no _notes.
+
+    A partir de 2026-06-25, Bruno pode desabilitar símbolos manualmente
+    baseado em análise de risco. O teste valida que QUALQUER desabilitação
+    tem rastro explícito no _notes (audit trail).
+    """
     cfg = load_config()
     disabled = cfg.get("disabled_symbols", [])
-    assert len(disabled) == 0, (
-        f"Esperado 0 symbols desativados, achou {len(disabled)}: {disabled}"
-    )
+    notes = cfg.get("_notes", "")
+    if disabled:
+        # Se há desabilitação, deve estar documentada
+        assert "[" in notes and "]" in notes, (
+            f"disabled_symbols={disabled} sem nota explicativa em _notes. "
+            f"Adicione: '\\n\\n[YYYY-MM-DD HH:MM] Desabilitado X por motivo Y.'"
+        )
+        # E a nota deve mencionar os símbolos desabilitados
+        for sym in disabled:
+            assert sym in notes, (
+                f"Símbolo '{sym}' está em disabled_symbols mas não mencionado em _notes. "
+                f"Adicione nota explicativa."
+            )
 
 
 def test_no_ind_dol_residual_in_known_keys():
