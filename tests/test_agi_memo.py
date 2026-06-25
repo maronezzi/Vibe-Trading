@@ -91,8 +91,6 @@ class TestReenableSymbols(unittest.TestCase):
 
     def setUp(self):
         # 2026-06-19: backup isolado por teste via tmp_path (era /tmp compartilhado)
-        import shutil
-        import tempfile
         from vt_config_loader import load_config, save_full_config
         self._load = load_config
         self._save = save_full_config

@@ -18,7 +18,7 @@ import subprocess
 import json
 import os
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 PROJECT = Path("/home/bruno/Projects/Vibe-Trading")
 WINE_PYTHON = os.path.expanduser("~/.wine/drive_c/Python311/python.exe")

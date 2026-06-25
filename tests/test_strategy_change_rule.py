@@ -41,8 +41,8 @@ class TestBuffettNoChangeRule(unittest.TestCase):
         # Buffett: improvement < R$ 100 E worst case > R$ 100 → NÃO troca
         self.assertFalse(
             decision["change"],
-            f"AGI propôs trocar WIN de BOLLINGER pra RSI_REVERSION com "
-            f"improvement=R$ 8 e worst case=-R$ 393. Buffett não faria essa troca."
+            "AGI propôs trocar WIN de BOLLINGER pra RSI_REVERSION com "
+            "improvement=R$ 8 e worst case=-R$ 393. Buffett não faria essa troca."
         )
         self.assertEqual(decision["reason"], "INSUFFICIENT_EVIDENCE")
         self.assertGreater(decision["recommended_window_days"], 7)

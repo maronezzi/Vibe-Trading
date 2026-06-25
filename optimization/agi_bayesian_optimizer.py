@@ -12,13 +12,11 @@ Usage:
     results = run_discovery_engine(config, trades, all_trades, days=30, validate_days=5)
 """
 
-import copy
 import json
 import logging
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger("agi_bayesian")
 
@@ -33,7 +31,6 @@ except ImportError:
 from agi_safety_validator import (
     apply_ocam_razor,
     compute_total_cost,
-    is_trade_profitable_after_costs,
 )
 
 sys_path_inserted = False

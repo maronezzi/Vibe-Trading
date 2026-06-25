@@ -3,10 +3,13 @@
 Otimizador completo: encontra a MELHOR estratégia + SL + params
 para cada ativo em cada timeframe, de forma que TODOS sejam positivos.
 """
-import subprocess, csv, io, os, json, itertools
+import subprocess
+import csv
+import io
+import os
+import json
 import pandas as pd
 import numpy as np
-from datetime import datetime
 
 WINE_PYTHON = os.path.expanduser('~/.wine/drive_c/Python311/python.exe')
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -388,7 +391,7 @@ def optimize():
                                     'pnl_day': pnl / max(n_days, 1),
                                     'atr': atr_medio, 'days': n_days
                                 }
-                        except Exception as e:
+                        except Exception:
                             pass
 
             if best['pnl'] > -999999:
@@ -405,7 +408,7 @@ def optimize():
 
     # ─── Summary ─────────────────────────────────────────────────────────────
     print(f"\n\n{'#'*80}")
-    print(f"  RESUMO FINAL — TODOS OS ATIVOS × TIMEFRAMES")
+    print("  RESUMO FINAL — TODOS OS ATIVOS × TIMEFRAMES")
     print(f"{'#'*80}\n")
     print(f"  {'Ativo_TF':<12} {'Estratégia':<16} {'SL':>5} {'Trades':>7} {'WR%':>6} {'PnL':>10} {'R$/dia':>9} {'Status':>10}")
     print(f"  {'─'*80}")
@@ -451,7 +454,7 @@ def optimize():
     with open('/tmp/vt_optimization_results.json', 'w') as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
-    print(f"\n  Resultados salvos: /tmp/vt_optimization_results.json")
+    print("\n  Resultados salvos: /tmp/vt_optimization_results.json")
     return results
 
 if __name__ == '__main__':

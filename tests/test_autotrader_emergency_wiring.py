@@ -25,7 +25,6 @@ direto. NÃO executa o autotrader.
 """
 import ast
 import os
-import sys
 import unittest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

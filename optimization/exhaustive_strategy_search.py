@@ -306,7 +306,7 @@ def main():
         total_combos += len(_generate_param_combos(strat))
 
     print("=" * 100)
-    print(f"EXHAUSTIVE STRATEGY SEARCH WITH PARAMETER OPTIMIZATION")
+    print("EXHAUSTIVE STRATEGY SEARCH WITH PARAMETER OPTIMIZATION")
     print(f"16 pairs × {len(ALL_STRATEGIES)} strategies × ~avg {total_combos // len(ALL_STRATEGIES)} param combos")
     print(f"Total simulations per pair: ~{total_combos}")
     print("=" * 100)
@@ -432,7 +432,7 @@ def main():
     print(f"Total trades: {total_trades}")
 
     if disabled_pairs:
-        print(f"\nDisabled pairs:")
+        print("\nDisabled pairs:")
         for pair_key, reason in disabled_pairs:
             print(f"  {pair_key}: {reason}")
 

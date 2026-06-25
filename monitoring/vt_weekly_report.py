@@ -18,10 +18,8 @@ Uso:
 """
 
 import sys
-import json
 import sqlite3
 import csv
-import os
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from collections import defaultdict
@@ -34,9 +32,6 @@ TELEGRAM_GROUP = "-1004284773048"
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from matplotlib.patches import FancyBboxPatch
-import numpy as np
 
 # Dark theme
 plt.rcParams.update({
@@ -392,7 +387,7 @@ def format_report(analysis, monday, friday):
     """Formata relatório semanal para Telegram."""
     a = analysis
     lines = [
-        f"📊 *RELATÓRIO SEMANAL Vibe-Trading*",
+        "📊 *RELATÓRIO SEMANAL Vibe-Trading*",
         f"📅 {monday.strftime('%d/%m')} a {friday.strftime('%d/%m/%Y')}",
         "━" * 28,
         "",
@@ -403,7 +398,7 @@ def format_report(analysis, monday, friday):
     lines.extend([
         f"{pnl_icon} *PnL Semanal: R$ {a['total_pnl']:+,.2f}*",
         "",
-        f"📈 *Resumo Geral*",
+        "📈 *Resumo Geral*",
         f"• Trades: {a['closed']} ({a['wins']}W / {a['losses']}L | WR {a['win_rate']:.0f}%)",
         f"• PnL Bruto: R$ {a['total_gross']:+,.2f}",
         f"• Taxas: R$ {a['total_fees']:,.2f}",

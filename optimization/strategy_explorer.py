@@ -583,6 +583,6 @@ if __name__ == "__main__":
             print(f"  Melhor config params: SL {best.get('sl_atr_mult', '?')} | CD {best.get('cooldown_seconds', '?')}s")
             print(f"    → WR {best['wr']}% | PnL R$ {best['pnl']:+.2f} | PF {best['profit_factor']}")
         if variants:
-            print(f"  Variantes para A/B test:")
+            print("  Variantes para A/B test:")
             for v in variants:
                 print(f"    • {v['label']}: esperado R$ {v['expected_pnl']:+.2f}")

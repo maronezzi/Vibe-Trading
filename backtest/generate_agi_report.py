@@ -3,19 +3,18 @@ generate_agi_report.py — Gera Excel completo com resultados do AGI v12.
 Gráficos, tabelas comparativas, análise por ativo/timeframe.
 """
 
-import sys, csv, io, subprocess, os, json
-from pathlib import Path
-from datetime import datetime, time
+import csv
+import io
+import subprocess
+import os
+from datetime import datetime
 import numpy as np
 import pandas as pd
 
 from openpyxl import Workbook
-from openpyxl.chart import BarChart, LineChart, Reference, BarChart3D, PieChart
-from openpyxl.chart.series import DataPoint
-from openpyxl.chart.label import DataLabelList
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
+from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from openpyxl.chart.layout import Layout, ManualLayout
 
 # ─── MT5 fetch ───────────────────────────────────────────────────────────────
 WINE_PYTHON = os.path.expanduser("~/.wine/drive_c/Python311/python.exe")
@@ -330,16 +329,16 @@ def backtest(df, symbol, tf, strategy, *, capital=1_000_000.0):
 
 def run():
     print("🔄 Buscando dados e rodando backtests...")
-    
+
     timeframes = ["M5", "M15", "M30", "H1"]
     tf_bars = {"M5": 500, "M15": 500, "M30": 300, "H1": 200}
-    
+
     all_results = []
     all_trades = []
-    
+
     # Symbols to test (all 6 for comparison)
     symbols = ["WIN$", "WDO$", "BIT$", "DOL$", "WSP$", "IND$"]
-    
+
     for symbol in symbols:
         strategy = BEST_STRATEGY[symbol]
         for tf in timeframes:
@@ -348,12 +347,12 @@ def run():
             if df.empty:
                 print(f"  ❌ {symbol} {tf} — sem dados")
                 continue
-            
+
             trades = backtest(df, symbol, tf, strategy)
             n_days = df["date"].nunique()
             p0, p1 = float(df["close"].iloc[0]), float(df["close"].iloc[-1])
             price_change = (p1/p0 - 1) * 100
-            
+
             if trades:
                 n = len(trades)
                 wins = sum(1 for t in trades if t["pnl"] > 0)
@@ -369,13 +368,13 @@ def run():
                 pf = gw / gl if gl > 0 else 999
                 pnl_per_day = pnl / n_days if n_days > 0 else pnl
                 avg_bars = np.mean([t["bars"] for t in trades])
-                
+
                 # Exit reasons
                 reasons = {}
                 for t in trades:
                     r = t["reason"]
                     reasons[r] = reasons.get(r, 0) + 1
-                
+
                 # Win/loss streaks
                 streak_w = 0; streak_l = 0; max_sw = 0; max_sl = 0
                 for t in trades:
@@ -385,14 +384,14 @@ def run():
                     else:
                         streak_l += 1; streak_w = 0
                         max_sl = max(max_sl, streak_l)
-                
+
                 # Cumulative PnL
                 cum_pnl = []
                 running = 0
                 for t in trades:
                     running += t["pnl"]
                     cum_pnl.append(running)
-                
+
                 result = {
                     "symbol": symbol, "name": CONTRACT_SPECS[symbol]["name"],
                     "tf": tf, "strategy": strategy,
@@ -408,41 +407,41 @@ def run():
                 }
                 all_results.append(result)
                 all_trades.extend(trades)
-                
+
                 print(f"  ✅ {symbol} {tf}: {n}t, WR {wr:.1f}%, PnL R$ {pnl:+.1f}")
             else:
                 print(f"  ⚪ {symbol} {tf}: 0 trades")
-    
+
     # ─── Create Excel ───
     print("\n📊 Gerando Excel...")
     wb = Workbook()
-    
+
     # ═══════════════════════════════════════════════════════════════════════════
     # SHEET 1: RESUMO EXECUTIVO
     # ═══════════════════════════════════════════════════════════════════════════
     ws1 = wb.active
     ws1.title = "📊 Resumo Executivo"
     ws1.sheet_properties.tabColor = BLUE
-    
+
     # Title
     ws1.merge_cells("A1:N1")
     ws1["A1"] = "🧪 AGI v12 — Relatório de Performance"
     ws1["A1"].font = Font(bold=True, size=16, color=DARK_BG)
     ws1["A1"].alignment = Alignment(horizontal='center')
-    
+
     ws1.merge_cells("A2:N2")
     ws1["A2"] = f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Backtest: M5/M15/M30/H1 | 6 Ativos"
     ws1["A2"].font = Font(size=10, color="666666")
     ws1["A2"].alignment = Alignment(horizontal='center')
-    
+
     # Summary table
-    headers = ["Ativo", "Nome", "Estratégia", "TF", "Trades", "Wins", "Losses", 
+    headers = ["Ativo", "Nome", "Estratégia", "TF", "Trades", "Wins", "Losses",
                "WR%", "PnL R$", "PF", "PnL/Dia", "Margin", "ROI%", "Price Δ%"]
     row = 4
     for col, h in enumerate(headers, 1):
         ws1.cell(row=row, column=col, value=h)
     style_header_row(ws1, row, len(headers))
-    
+
     row = 5
     for r in all_results:
         roi = (r["pnl"] / r["margin"] * 100) if r["margin"] > 0 else 0
@@ -459,7 +458,7 @@ def run():
             if col == 8:  # WR
                 cell.fill = green_fill if v >= 50 else PatternFill(start_color="FEF9E7", fill_type="solid")
         row += 1
-    
+
     # Totals
     row += 1
     ws1.cell(row=row, column=1, value="TOTAIS").font = bold_font
@@ -470,17 +469,17 @@ def run():
     ws1.cell(row=row, column=9, value=round(total_pnl, 1)).font = Font(bold=True, size=12, color=GREEN if total_pnl > 0 else RED)
     ws1.cell(row=row, column=12, value=total_margin).font = bold_font
     ws1.cell(row=row, column=13, value=round(total_pnl/total_margin*100, 1) if total_margin > 0 else 0).font = bold_font
-    
+
     # Column widths
     for col in range(1, len(headers) + 1):
         ws1.column_dimensions[get_column_letter(col)].width = 12
-    
+
     # ═══════════════════════════════════════════════════════════════════════════
     # SHEET 2: GRÁFICO PnL POR ATIVO
     # ═══════════════════════════════════════════════════════════════════════════
     ws2 = wb.create_sheet("📈 PnL por Ativo")
     ws2.sheet_properties.tabColor = GREEN
-    
+
     # Data for chart
     ws2["A1"] = "Ativo"
     ws2["B1"] = "PnL Total R$"
@@ -488,7 +487,7 @@ def run():
     ws2["D1"] = "WR%"
     ws2["E1"] = "Profit Factor"
     style_header_row(ws2, 1, 5)
-    
+
     # Aggregate by symbol
     sym_data = {}
     for r in all_results:
@@ -498,14 +497,14 @@ def run():
         sym_data[s]["pnl"] += r["pnl"]
         sym_data[s]["pnl_day"] += r["pnl_per_day"]
         sym_data[s]["trades"] += r["n_trades"]
-    
+
     row = 2
     for s, d in sorted(sym_data.items(), key=lambda x: x[1]["pnl"], reverse=True):
         ws2.cell(row=row, column=1, value=f"{s} ({d['name']})")
         ws2.cell(row=row, column=2, value=round(d["pnl"], 1))
         ws2.cell(row=row, column=3, value=round(d["pnl_day"], 1))
         row += 1
-    
+
     # PnL Bar Chart
     chart1 = BarChart()
     chart1.type = "col"
@@ -515,21 +514,21 @@ def run():
     chart1.style = 10
     chart1.width = 20
     chart1.height = 12
-    
+
     data = Reference(ws2, min_col=2, min_row=1, max_row=row-1)
     cats = Reference(ws2, min_col=1, min_row=2, max_row=row-1)
     chart1.add_data(data, titles_from_data=True)
     chart1.set_categories(cats)
     chart1.shape = 4
-    
+
     ws2.add_chart(chart1, "A" + str(row + 2))
-    
+
     # ═══════════════════════════════════════════════════════════════════════════
     # SHEET 3: HEATMAP POR TF
     # ═══════════════════════════════════════════════════════════════════════════
     ws3 = wb.create_sheet("🗓️ Heatmap TF")
     ws3.sheet_properties.tabColor = ORANGE
-    
+
     ws3["A1"] = "Ativo"
     ws3["B1"] = "M5 PnL"
     ws3["C1"] = "M15 PnL"
@@ -537,7 +536,7 @@ def run():
     ws3["E1"] = "H1 PnL"
     ws3["F1"] = "TOTAL"
     style_header_row(ws3, 1, 6)
-    
+
     # Build heatmap data
     heatmap = {}
     for r in all_results:
@@ -545,7 +544,7 @@ def run():
         if s not in heatmap:
             heatmap[s] = {}
         heatmap[s][r["tf"]] = r["pnl"]
-    
+
     row = 2
     for s in ["BIT$", "DOL$", "IND$", "WIN$", "WSP$", "WDO$"]:
         if s not in heatmap:
@@ -565,23 +564,23 @@ def run():
         total_cell = style_data_cell(ws3, row, 6, round(total, 1))
         total_cell.font = Font(bold=True, color=GREEN if total > 0 else RED)
         row += 1
-    
+
     for col in range(1, 7):
         ws3.column_dimensions[get_column_letter(col)].width = 16
-    
+
     # ═══════════════════════════════════════════════════════════════════════════
     # SHEET 4: DETALHES POR ATIVO
     # ═══════════════════════════════════════════════════════════════════════════
     ws4 = wb.create_sheet("📋 Detalhes")
     ws4.sheet_properties.tabColor = PURPLE
-    
+
     headers4 = ["Ativo", "TF", "Estratégia", "Trades", "WR%", "PnL R$", "PF",
                 "Avg Win", "Avg Loss", "Max Win", "Max Loss", "PnL/Dia",
                 "SL", "1645", "Trail", "Force", "Max Streak W", "Max Streak L", "Days"]
     for col, h in enumerate(headers4, 1):
         ws4.cell(row=1, column=col, value=h)
     style_header_row(ws4, 1, len(headers4))
-    
+
     row = 2
     for r in all_results:
         reasons = r.get("reasons", {})
@@ -600,22 +599,22 @@ def run():
             if col == 6:
                 cell.fill = green_fill if v > 0 else red_fill
         row += 1
-    
+
     for col in range(1, len(headers4) + 1):
         ws4.column_dimensions[get_column_letter(col)].width = 13
-    
+
     # ═══════════════════════════════════════════════════════════════════════════
     # SHEET 5: TRADE-BY-TRADE
     # ═══════════════════════════════════════════════════════════════════════════
     ws5 = wb.create_sheet("📜 Trades")
     ws5.sheet_properties.tabColor = DARK_BG
-    
+
     headers5 = ["#", "Ativo", "TF", "Estratégia", "Dir", "Entry Time", "Exit Time",
                 "Entry Price", "Exit Price", "PnL R$", "Reason", "Bars"]
     for col, h in enumerate(headers5, 1):
         ws5.cell(row=1, column=col, value=h)
     style_header_row(ws5, 1, len(headers5))
-    
+
     row = 2
     for i, t in enumerate(all_trades, 1):
         et = t["et"].strftime("%d/%m %H:%M") if hasattr(t["et"], "strftime") else str(t["et"])
@@ -628,16 +627,16 @@ def run():
             if col == 10:
                 cell.fill = green_fill if v > 0 else red_fill
         row += 1
-    
+
     for col in range(1, len(headers5) + 1):
         ws5.column_dimensions[get_column_letter(col)].width = 14
-    
+
     # ═══════════════════════════════════════════════════════════════════════════
     # SHEET 6: EQUITY CURVE (cumulative PnL per asset)
     # ═══════════════════════════════════════════════════════════════════════════
     ws6 = wb.create_sheet("💰 Equity Curve")
     ws6.sheet_properties.tabColor = GREEN
-    
+
     # Build equity data per symbol
     sym_equity = {}
     for r in all_results:
@@ -648,7 +647,7 @@ def run():
         for p in r["cum_pnl"]:
             cum = p
             sym_equity[s].append(cum)
-    
+
     # Write headers
     ws6["A1"] = "Trade #"
     col = 2
@@ -658,16 +657,16 @@ def run():
         sym_cols[s] = col
         col += 1
     style_header_row(ws6, 1, col - 1)
-    
+
     # Find max trades
     max_trades = max(len(v) for v in sym_equity.values()) if sym_equity else 0
-    
+
     for i in range(max_trades):
         ws6.cell(row=i+2, column=1, value=i+1)
         for s, vals in sym_equity.items():
             if i < len(vals):
                 ws6.cell(row=i+2, column=sym_cols[s], value=round(vals[i], 1))
-    
+
     # Equity Line Chart
     if max_trades > 0:
         chart2 = LineChart()
@@ -677,30 +676,30 @@ def run():
         chart2.style = 10
         chart2.width = 25
         chart2.height = 14
-        
+
         cats = Reference(ws6, min_col=1, min_row=2, max_row=max_trades+1)
         for s, col_idx in sym_cols.items():
             data = Reference(ws6, min_col=col_idx, min_row=1, max_row=max_trades+1)
             chart2.add_data(data, titles_from_data=True)
         chart2.set_categories(cats)
-        
+
         ws6.add_chart(chart2, "A" + str(max_trades + 4))
-    
+
     # ═══════════════════════════════════════════════════════════════════════════
     # SHEET 7: RECOMENDAÇÃO
     # ═══════════════════════════════════════════════════════════════════════════
     ws7 = wb.create_sheet("🎯 Recomendação")
     ws7.sheet_properties.tabColor = GREEN
-    
+
     ws7.merge_cells("A1:F1")
     ws7["A1"] = "🎯 RECOMENDAÇÃO AGI v12 — Ativos para Day Trade"
     ws7["A1"].font = Font(bold=True, size=14, color=DARK_BG)
-    
+
     headers7 = ["Prioridade", "Ativo", "Estratégia", "PnL/Dia R$", "Confiança", "Ação"]
     for col, h in enumerate(headers7, 1):
         ws7.cell(row=3, column=col, value=h)
     style_header_row(ws7, 3, len(headers7))
-    
+
     # Rank by total PnL
     ranked = sorted(sym_data.items(), key=lambda x: x[1]["pnl"], reverse=True)
     row = 4
@@ -715,17 +714,17 @@ def run():
             if col == 6:
                 cell.font = Font(bold=True, color=GREEN if "OPERAR" in str(v) else RED)
         row += 1
-    
+
     for col in range(1, 7):
         ws7.column_dimensions[get_column_letter(col)].width = 18
-    
+
     # Save
     output_path = "/home/bruno/Projects/Vibe-Trading/backtest/AGI_v12_Report.xlsx"
     wb.save(output_path)
     print(f"\n✅ Excel salvo: {output_path}")
     print(f"   {len(all_results)} combinações ativo/TF")
     print(f"   {len(all_trades)} trades no total")
-    print(f"   7 abas: Resumo, Gráfico, Heatmap, Detalhes, Trades, Equity, Recomendação")
+    print("   7 abas: Resumo, Gráfico, Heatmap, Detalhes, Trades, Equity, Recomendação")
 
 
 if __name__ == "__main__":

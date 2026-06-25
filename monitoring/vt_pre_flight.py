@@ -26,7 +26,7 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -40,7 +40,7 @@ sys.path.insert(0, str(ROOT / "mt5"))  # noqa: E402 — fixa ModuleNotFoundError
 
 # Importações do projeto (com fallback se não disponível)
 try:
-    from vt_calendar import is_trading_day, resolve_all_symbols, B3_HOLIDAYS
+    from vt_calendar import is_trading_day, resolve_all_symbols
     from vt_hermes_helper import hermes_send, find_hermes
 except Exception as e:
     print(f"[FATAL] Falha ao importar módulos do projeto: {e}")
@@ -118,7 +118,7 @@ def check_symbols(cfg: dict) -> tuple[bool, str]:
         log(f"Contratos resolvidos: {resolved}")
         # resolve_all_symbols() já persiste no config se houve mudança de contrato.
         # Não tocamos _updated_at/_updated_by para não poluir histórico de autoria.
-        log(f"OK")
+        log("OK")
     except Exception as e:
         log(f"❌ Falha ao resolver símbolos: {e}")
         return False, f"resolve_all_symbols falhou: {e}"
@@ -213,7 +213,7 @@ def check_hermes() -> tuple[bool, str]:
     section("6. HERMES BINARY")
     bin_path = find_hermes()
     if not bin_path:
-        log(f"❌ Hermes não encontrado em ~/.local/bin nem ~/.hermes/...")
+        log("❌ Hermes não encontrado em ~/.local/bin nem ~/.hermes/...")
         return False, "hermes binário não achável"
     log(f"Hermes binary: {bin_path}")
     # Testar versão
@@ -247,7 +247,7 @@ def check_llm() -> tuple[bool, str]:
             # Detectar 429 / quota
             err = r.stderr.lower() if r.stderr else r.stdout.lower()
             if "429" in err or "balance" in err or "quota" in err:
-                log(f"⚠️ LLM sem saldo/quota (HTTP 429). Validator vai rodar em modo degraded.")
+                log("⚠️ LLM sem saldo/quota (HTTP 429). Validator vai rodar em modo degraded.")
                 return True, "DEGRADED (sem saldo LLM — local checks ativos)"
             log(f"⚠️ LLM resposta inesperada: rc={r.returncode} out={r.stdout[:80]}")
             return True, "DEGRADED"
@@ -286,7 +286,7 @@ def test_params_lookup(cfg: dict) -> tuple[bool, str]:
     section("9. SIMULAÇÃO _get_params_for_tf / _get_strategy_for_tf")
     # Carregar dinamicamente a função do autotrader
     try:
-        from vt_autotrader import _get_params_for_tf, _get_strategy_for_tf, _calc_sl
+        from vt_autotrader import _get_params_for_tf, _get_strategy_for_tf
         tfs_by = cfg.get("timeframes_by_symbol", {})
         ok = 0
         for sym, tfs in tfs_by.items():

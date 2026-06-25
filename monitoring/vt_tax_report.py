@@ -16,11 +16,10 @@ Uso:
     python3 vt_tax_report.py --all-months        # Todos os meses
 """
 
-import sys
 import json
 import sqlite3
 import csv
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent / "vt_trades.db"
@@ -182,11 +181,11 @@ def format_tax_report(report):
     s = report["summary"]
     ir = report["ir"]
     lines = [
-        f"📋 *RELATÓRIO DE IMPOSTO DE RENDA*",
+        "📋 *RELATÓRIO DE IMPOSTO DE RENDA*",
         f"📅 {report['month_name']} {report['year']}",
         "─" * 30,
         "",
-        f"📊 *Resumo do Mês*",
+        "📊 *Resumo do Mês*",
         f"• Trades: {s['total_trades']} ({s['wins']}W / {s['losses']}L | WR {s['win_rate']:.0f}%)",
         f"• PnL Bruto: R$ {s['gross_pnl']:+,.2f}",
         f"• Taxas (fees): R$ {s['total_fees']:,.2f}",

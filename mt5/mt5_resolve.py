@@ -6,7 +6,6 @@ WINQ26 = Jun/2026 (letra do mês + 2 últimos dígitos do ano)
 
 import sys
 import json
-import subprocess
 from datetime import datetime
 
 sys.path.insert(0, r"C:\Python311\Lib\site-packages")
@@ -47,7 +46,7 @@ def find_active_symbols(root="WIN"):
             if tick:
                 # Usa o volume do tick como proxy de liquidez
                 real_volume = tick.volume if hasattr(tick, 'volume') else 0
-            
+
             candidates.append({
                 "name": sym,
                 "code": code,

@@ -17,7 +17,6 @@ Aplica-se a:
 - core/vt_watchdog.py (reconcile)
 """
 import sys
-import logging
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, "/home/bruno/Projects/Vibe-Trading")
@@ -200,7 +199,7 @@ def test_watchdog_state_file_sync_info_is_silent():
     with patch.object(nlf, "_send", side_effect=lambda m: sent.append(m)):
         for _ in range(10):
             nlf.notify_silent(
-                f"[INFO] State file sync: 2462062917 (BITM26) DB trade #1403"
+                "[INFO] State file sync: 2462062917 (BITM26) DB trade #1403"
             )
     assert len(sent) == 0
 
@@ -236,8 +235,8 @@ def test_bruno_real_scenario_no_spam():
         for run in range(5):
             # O sync_fix é log de manutenção → silent
             nlf.notify_silent(
-                f"[SYNC FIX] Ticket 2462062917 (BITM26) missing from state file "
-                f"but found in DB trade #1403 — not flagging as orphan"
+                "[SYNC FIX] Ticket 2462062917 (BITM26) missing from state file "
+                "but found in DB trade #1403 — not flagging as orphan"
             )
             # O [INFO] State file sync: ... também é silent
             nlf.notify_silent(

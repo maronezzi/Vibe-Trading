@@ -6,7 +6,6 @@ import sys
 import os
 import sqlite3
 import tempfile
-import json
 from datetime import datetime
 from pathlib import Path
 

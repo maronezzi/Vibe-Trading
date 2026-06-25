@@ -9,12 +9,9 @@ Responsabilidades:
 Feriados B3 2025-2027: feriados nacionais + feriados da bolsa.
 Contratos B3: código mês + ano (H=março, J=junho, M=setembro, Z=dezembro)
 """
-import json
-import os
 import re
 import sys
-from datetime import date, datetime, timedelta
-from pathlib import Path
+from datetime import date, timedelta
 
 # ─── Feriados B3 (nacionais + bolsa) ───
 # Fonte: B3 oficial — atualizar anualmente
@@ -417,7 +414,7 @@ def resolve_all_symbols() -> dict:
     Também atualiza o config se houver mudança de contrato.
     """
     from vt_config_loader import load_config
-    
+
     config = load_config()
     symbols = config.get("symbols", [])
     current = config.get("resolved_symbols", {})
@@ -427,7 +424,7 @@ def resolve_all_symbols() -> dict:
     for root in symbols:
         resolved = resolve_symbol(root)
         updated[root] = resolved
-        
+
         if resolved != current.get(root):
             changed.append(f"{root}: {current.get(root, '?')} → {resolved}")
 
@@ -436,7 +433,7 @@ def resolve_all_symbols() -> dict:
         config["resolved_symbols"] = updated
         config["_notes"] = f"auto-resolve vencimento: {', '.join(changed)}"
         _save_config(config)
-        _notify(f"📅 Rolagem de contrato detectada!\n" + "\n".join(changed))
+        _notify("📅 Rolagem de contrato detectada!\n" + "\n".join(changed))
 
     return updated
 
@@ -463,7 +460,7 @@ def get_trading_calendar(days: int = 10) -> list[dict]:
     for i in range(days):
         d = today + timedelta(days=i)
         ok, motivo = is_trading_day(d)
-        
+
         # Verificar vencimentos nesse dia
         expiries = []
         for root in ["WIN", "WDO", "IND", "DOL", "BIT", "WSP"]:
@@ -475,7 +472,7 @@ def get_trading_calendar(days: int = 10) -> list[dict]:
             else:
                 if _last_business_day(d.year, d.month) == d and d == _last_business_day(d.year, d.month):
                     expiries.append(root)
-        
+
         calendar.append({
             "date": d.strftime("%d/%m/%Y (%a)"),
             "trading": ok,
@@ -488,19 +485,19 @@ def get_trading_calendar(days: int = 10) -> list[dict]:
 if __name__ == "__main__":
     # Teste rápido
     import sys
-    
+
     if "--calendar" in sys.argv:
         cal = get_trading_calendar(15)
         for d in cal:
             status = "✅" if d["trading"] else "❌"
             exp = f" 📅 Venc: {d['expiries']}" if d["expiries"] else ""
             print(f"{status} {d['date']} — {d['reason']}{exp}")
-    
+
     elif "--resolve" in sys.argv:
         for root in ["WIN", "BIT", "DOL", "IND", "WSP"]:
             contract = resolve_symbol(root)
             print(f"{root} → {contract}")
-    
+
     elif "--today" in sys.argv:
         ok, motivo = is_trading_day()
         print(f"Hoje: {'✅ Trading' if ok else '❌ ' + motivo}")
@@ -519,6 +516,6 @@ if __name__ == "__main__":
                     print(f"  {root} → {contract} (vence {expiry.strftime('%d/%m')}, {days} dias úteis)")
                 else:
                     print(f"  {root} → {contract}")
-    
+
     else:
         print("Uso: python vt_calendar.py --calendar | --resolve | --today")

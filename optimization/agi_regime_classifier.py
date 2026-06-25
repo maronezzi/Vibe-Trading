@@ -21,7 +21,6 @@ import logging
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger("agi_regime")
 

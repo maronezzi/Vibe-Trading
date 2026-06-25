@@ -32,7 +32,7 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     calculate_rsi = utils["calculate_rsi"]
     calculate_adx = utils["calculate_adx"]
     calc_sl = utils["calc_sl"]
-    
+
     # Parameters
     ema_fast_period = params.get("ema_fast", 9)
     ema_slow_period = params.get("ema_slow", 21)
@@ -44,23 +44,23 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     macd_fast = params.get("macd_fast", 12)
     macd_slow = params.get("macd_slow", 26)
     macd_signal = params.get("macd_signal", 9)
-    
+
     min_bars = max(ema_slow_period, adx_period * 2, macd_slow + macd_signal) + 5
     if not bars or len(bars) < min_bars:
         return None
-    
+
     # Calculate indicators
     ema_fast_val = calculate_ema(bars, ema_fast_period)
     ema_slow_val = calculate_ema(bars, ema_slow_period)
     adx_val, plus_di, minus_di = calculate_adx(bars, adx_period)
     rsi = calculate_rsi(bars, rsi_period)
-    
+
     if ema_fast_val == 0 or ema_slow_val == 0 or adx_val == 0:
         return None
-    
+
     # MACD calculation
     closes = [float(b["close"]) for b in reversed(bars)]
-    
+
     def _ema_arr(arr, period):
         if len(arr) < period:
             return arr[:]
@@ -69,78 +69,78 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
         for v in arr[1:]:
             result.append(alpha * v + (1 - alpha) * result[-1])
         return result
-    
+
     ema_fast_macd = _ema_arr(closes, macd_fast)
     ema_slow_macd = _ema_arr(closes, macd_slow)
     macd_line = [f - s for f, s in zip(ema_fast_macd, ema_slow_macd)]
     signal_line = _ema_arr(macd_line, macd_signal)
     histogram = [m - s for m, s in zip(macd_line, signal_line)]
-    
+
     if len(histogram) < 3:
         return None
-    
+
     cur_hist = histogram[-1]
     prev_hist = histogram[-2]
     prev2_hist = histogram[-3]
-    
+
     # MACD signals — more lenient than v1
     macd_cross_up = prev_hist <= 0 and cur_hist > 0
     macd_cross_down = prev_hist >= 0 and cur_hist < 0
-    
+
     # Also accept momentum increasing in right direction
     macd_momentum_up = cur_hist > 0 and cur_hist > prev_hist and prev_hist > prev2_hist
     macd_momentum_down = cur_hist < 0 and cur_hist < prev_hist and prev_hist < prev2_hist
-    
+
     # Need minimum trend strength (lowered threshold)
     if adx_val < adx_threshold:
         return None
-    
+
     # Determine trend direction from EMA
     is_uptrend = ema_fast_val > ema_slow_val
     is_downtrend = ema_fast_val < ema_slow_val
-    
+
     if not is_uptrend and not is_downtrend:
         return None
-    
+
     # DI confirmation
     if is_uptrend and plus_di < minus_di:
         return None
     if is_downtrend and minus_di < plus_di:
         return None
-    
+
     direction = None
-    
+
     # BUY: uptrend + MACD momentum turning up
     if is_uptrend and (macd_cross_up or macd_momentum_up):
         if rsi > rsi_ob:
             return None
         direction = "BUY"
-    
+
     # SELL: downtrend + MACD momentum turning down
     elif is_downtrend and (macd_cross_down or macd_momentum_down):
         if rsi < rsi_os:
             return None
         direction = "SELL"
-    
+
     if not direction:
         return None
-    
+
     # Volume confirmation
     if bars and len(bars) >= 20:
         recent_vol = sum(float(b.get("volume", 1) or 1) for b in bars[:5]) / 5
         avg_vol = sum(float(b.get("volume", 1) or 1) for b in bars[:20]) / 20
         if avg_vol > 0 and recent_vol < avg_vol * 0.2:
             return None
-    
+
     # Price position relative to EMA slow
     if direction == "BUY" and price < ema_slow_val * 0.995:
         return None
     if direction == "SELL" and price > ema_slow_val * 1.005:
         return None
-    
+
     # Calculate SL
     sl_pts = calc_sl(symbol, atr, params)
-    
+
     return {
         "direction": direction,
         "sl_pts": sl_pts,

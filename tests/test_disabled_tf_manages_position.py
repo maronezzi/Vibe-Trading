@@ -6,7 +6,6 @@ o check_and_trade() pula esse TF com `continue` ANTES de verificar se há
 posição aberta em state.positions. Resultado: posições existentes ficam
 órfãs (sem trailing, sem breakeven, sem hard_exit).
 """
-import json
 import sys
 import unittest
 from pathlib import Path

@@ -16,7 +16,6 @@ Uso (chamado automaticamente pelo autotrader):
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -144,7 +143,7 @@ def _validate_sl_locally(order_data: dict) -> list:
         "WDO": 1000, "WIN": 1, "BIT": 100, "DOL": 1000, "IND": 1, "WSP": 100
     }.get(base, 1)
     sl_native = sl_pts / _point_mult if _point_mult > 0 else sl_pts
-    
+
     if atr > 0:
         atr_mult = sl_native / atr
         max_mult = limits.get("atr_multiplier_max", 5.0)

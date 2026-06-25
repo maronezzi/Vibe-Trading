@@ -30,7 +30,7 @@ NÃO MEXE NO AUTOTRADER RODANDO:
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Optional
 
 _logger = logging.getLogger("vt.emergency")
 if not _logger.handlers:

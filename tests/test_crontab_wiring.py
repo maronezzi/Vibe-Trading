@@ -30,7 +30,6 @@ se o crontab driftar do estado conhecido.
 import os
 import re
 import subprocess
-import sys
 import unittest
 
 PROJECT_ROOT = "/home/bruno/Projects/Vibe-Trading"

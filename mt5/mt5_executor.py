@@ -23,13 +23,10 @@ Garantias:
 """
 
 import sys
-import os
 import json
-import argparse
 import time
 import traceback
 from datetime import datetime
-from pathlib import Path
 
 sys.path.insert(0, r"C:\Python311\Lib\site-packages")
 import MetaTrader5 as mt5

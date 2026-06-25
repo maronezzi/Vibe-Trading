@@ -14,7 +14,7 @@ import sys
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
@@ -100,7 +100,7 @@ class TestValidatorHistoricalContext(unittest.TestCase):
 
     def test_losing_setup_skips_llm(self):
         """Setup com WR<30% nos últimos 30 dias → sugere NÃO abrir, sem LLM."""
-        from vt_order_validator_v2 import ValidatorV2, _llm_cache, historical_setup_stats
+        from vt_order_validator_v2 import ValidatorV2, _llm_cache
 
         _llm_cache.clear()
         # Popular DB com histórico ruim pra esse setup

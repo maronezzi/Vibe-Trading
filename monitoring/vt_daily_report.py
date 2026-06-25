@@ -13,8 +13,6 @@ Uso:
 """
 
 import sys
-import os
-import subprocess
 import json
 import sqlite3
 from datetime import datetime, date
@@ -39,13 +37,13 @@ def close_remaining_positions() -> dict:
     """Fecha posições abertas restantes."""
     s = status()
     positions = s.get("positions", [])
-    
+
     if not positions:
         return {"closed": 0, "message": "Nenhuma posição aberta"}
-    
+
     log(f"Fechando {len(positions)} posição(ões) restante(s)...")
     result = close_all()
-    
+
     # Parse result
     if "raw_stdout" in result:
         try:
@@ -53,7 +51,7 @@ def close_remaining_positions() -> dict:
             return {"closed": data.get("closed", 0), "message": f"Fechou {data.get('closed', 0)} posição(ões)"}
         except Exception:
             pass
-    
+
     return {"closed": len(positions), "message": f"Fechou {len(positions)} posição(ões)"}
 
 
@@ -62,10 +60,10 @@ def get_trades_report(target_date: str = None) -> dict:
     if target_date is None:
         # Ajusta para fuso horário local (UTC-3)
         target_date = date.today().isoformat()
-    
+
     db = sqlite3.connect(str(DB_PATH))
     db.row_factory = sqlite3.Row
-    
+
     # Trades do dia
     trades = db.execute('''
         SELECT symbol, timeframe, direction, strategy,
@@ -77,22 +75,22 @@ def get_trades_report(target_date: str = None) -> dict:
         WHERE date(entry_time) = ?
         ORDER BY entry_time
     ''', (target_date,)).fetchall()
-    
+
     # Estatísticas
     total_trades = len(trades)
     wins = sum(1 for t in trades if t['net_pnl'] and t['net_pnl'] > 0)
     losses = sum(1 for t in trades if t['net_pnl'] and t['net_pnl'] < 0)
     breakeven = total_trades - wins - losses
-    
+
     total_pnl = sum(t['net_pnl'] or 0 for t in trades)
     total_gross = sum(t['gross_pnl'] or 0 for t in trades)
     total_fees = sum(t['fees'] or 0 for t in trades)
-    
+
     best_trade = max((t['net_pnl'] or 0 for t in trades), default=0)
     worst_trade = min((t['net_pnl'] or 0 for t in trades), default=0)
-    
+
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
-    
+
     # Por símbolo
     symbols = {}
     for t in trades:
@@ -103,7 +101,7 @@ def get_trades_report(target_date: str = None) -> dict:
         if t['net_pnl'] and t['net_pnl'] > 0:
             symbols[sym]["wins"] += 1
         symbols[sym]["pnl"] += t['net_pnl'] or 0
-    
+
     # Por estratégia
     strategies = {}
     for t in trades:
@@ -114,9 +112,9 @@ def get_trades_report(target_date: str = None) -> dict:
         if t['net_pnl'] and t['net_pnl'] > 0:
             strategies[strat]["wins"] += 1
         strategies[strat]["pnl"] += t['net_pnl'] or 0
-    
+
     db.close()
-    
+
     return {
         "date": target_date,
         "trades": [dict(t) for t in trades],
@@ -141,15 +139,15 @@ def format_report(report: dict, close_info: dict) -> str:
     """Formata relatório para Telegram."""
     s = report["summary"]
     d = report["date"]
-    
+
     # Header
     lines = [
-        f"📊 *RELATÓRIO DIÁRIO Vibe-Trading*",
+        "📊 *RELATÓRIO DIÁRIO Vibe-Trading*",
         f"📅 {d}",
         "─" * 25,
         "",
     ]
-    
+
     # Estado da conta
     try:
         acc = status().get("account", {})
@@ -159,12 +157,12 @@ def format_report(report: dict, close_info: dict) -> str:
         lines.append("")
     except Exception:
         pass
-    
+
     # Fechamento de posições
     if close_info.get("closed", 0) > 0:
         lines.append(f"🔒 *{close_info['message']}*")
         lines.append("")
-    
+
     # Resumo geral
     pnl_icon = "🟢" if s["total_pnl"] > 0 else "🔴" if s["total_pnl"] < 0 else "⚪"
     lines.extend([
@@ -178,7 +176,7 @@ def format_report(report: dict, close_info: dict) -> str:
         f"{pnl_icon} *PnL Líquido: R$ {s['total_pnl']:+.2f}*",
         "",
     ])
-    
+
     # Por símbolo
     if report["by_symbol"]:
         lines.append("📊 *Por Símbolo*")
@@ -187,7 +185,7 @@ def format_report(report: dict, close_info: dict) -> str:
             icon = "🟢" if data["pnl"] > 0 else "🔴" if data["pnl"] < 0 else "⚪"
             lines.append(f"{icon} {sym}: {data['trades']}t | WR {wr:.0f}% | R$ {data['pnl']:+.2f}")
         lines.append("")
-    
+
     # Por estratégia
     if report["by_strategy"]:
         lines.append("🎯 *Por Estratégia*")
@@ -196,7 +194,7 @@ def format_report(report: dict, close_info: dict) -> str:
             icon = "🟢" if data["pnl"] > 0 else "🔴" if data["pnl"] < 0 else "⚪"
             lines.append(f"{icon} {strat}: {data['trades']}t | WR {wr:.0f}% | R$ {data['pnl']:+.2f}")
         lines.append("")
-    
+
     # Detalhes dos trades (últimos 10)
     if report["trades"]:
         lines.append("📋 *Trades*")
@@ -233,18 +231,18 @@ def format_report(report: dict, close_info: dict) -> str:
             # Notas (se houver)
             notes = t.get('notes')
             if notes and 'fees_synced' in str(notes):
-                lines.append(f"   ✅ Fees sincronizados com MT5")
-        
+                lines.append("   ✅ Fees sincronizados com MT5")
+
         if len(report["trades"]) > 10:
             lines.append(f"... e mais {len(report['trades']) - 10} trades")
         lines.append("")
-    
+
     # Footer
     lines.extend([
         "─" * 25,
         f"🤖 Relatório gerado automaticamente em {datetime.now().strftime('%H:%M')}"
     ])
-    
+
     return "\n".join(lines)
 
 
@@ -256,31 +254,31 @@ def send_telegram(message: str):
 
 def main():
     target_date = None
-    
+
     # Parse args
     if "--date" in sys.argv:
         idx = sys.argv.index("--date")
         if idx + 1 < len(sys.argv):
             target_date = sys.argv[idx + 1]
-    
+
     log("Iniciando relatório diário...")
-    
+
     # 1. Fechar posições restantes
     close_info = close_remaining_positions()
     log(close_info["message"])
-    
+
     # 2. Gerar relatório
     report = get_trades_report(target_date)
     log(f"Relatório: {report['summary']['total_trades']} trades, P&L R$ {report['summary']['total_pnl']:.2f}")
-    
+
     # 3. Formatarktigsund enviar
     formatted = format_report(report, close_info)
     print(formatted)  # Output pro cron
-    
+
     # 4. Enviar pro Telegram
     send_telegram(formatted)
     log("Relatório enviado!")
-    
+
     return formatted
 
 

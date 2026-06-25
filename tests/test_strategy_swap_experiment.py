@@ -7,11 +7,9 @@ Este módulo implementa isso.
 
 RED tests — written before implementation.
 """
-import pytest
-import json
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -150,7 +148,7 @@ class TestExperimentRunnerAGIIntegration:
 
     def test_agi_calls_experiment_before_pausing(self):
         """AGI deve chamar run_strategy_swap_experiment antes de adicionar par a disabled_timeframes."""
-        from experiment_runner import should_pause_pair, run_strategy_swap_experiment
+        from experiment_runner import should_pause_pair
 
         # Simular resultado onde experiment encontrou winner positivo
         result = {

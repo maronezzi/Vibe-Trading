@@ -33,25 +33,25 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     calculate_rsi = utils["calculate_rsi"]
     calculate_ema = utils["calculate_ema"]
     calc_sl = utils["calc_sl"]
-    
+
     # Parameters
     bb_period = params.get("bb_period", 20)
     bb_std = params.get("bb_std", 2.5)  # Wider bands for WIN volatility
     rsi_period = params.get("rsi_period", 14)
     rsi_ob = params.get("rsi_overbought", 70)
     rsi_os = params.get("rsi_oversold", 30)
-    
+
     if not bars or len(bars) < max(bb_period, rsi_period) + 5:
         return None
-    
+
     # Bollinger Bands
     bb_upper, bb_mid, bb_lower = calculate_bollinger(bars, bb_period, bb_std)
     if bb_upper == 0 or bb_lower == 0:
         return None
-    
+
     # RSI
     rsi = calculate_rsi(bars, rsi_period)
-    
+
     # Volume confirmation
     if bars and len(bars) >= 20:
         recent_vol = sum(float(b.get("volume", 1) or 1) for b in bars[:3]) / 3
@@ -59,23 +59,23 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
         vol_ratio = recent_vol / avg_vol if avg_vol > 0 else 1
     else:
         vol_ratio = 1.0
-    
+
     # EMA for trend bias
     ema_val = calculate_ema(bars, params.get("ema_slow", 21))
-    
+
     direction = None
-    
+
     # BUY: price at lower BB + RSI oversold + volume spike
     if price <= bb_lower and rsi < rsi_os and vol_ratio > 1.2:
         direction = "BUY"
-    
+
     # SELL: price at upper BB + RSI overbought + volume spike
     elif price >= bb_upper and rsi > rsi_ob and vol_ratio > 1.2:
         direction = "SELL"
-    
+
     if not direction:
         return None
-    
+
     # Extra safety: don't fight strong trends
     # If EMA is very far from price, trend might be too strong for reversion
     max_ema_dist = params.get("max_ema_dist", 0.015)  # 1.5% default for intraday
@@ -83,10 +83,10 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
         ema_dist = abs(price - ema_val) / ema_val
         if ema_dist > max_ema_dist:
             return None
-    
+
     # Calculate SL
     sl_pts = calc_sl(symbol, atr, params)
-    
+
     return {
         "direction": direction,
         "sl_pts": sl_pts,

@@ -10,7 +10,6 @@ vt_autotrader.py pra garantir que a simulação bate com a produção.
 import sys
 import csv
 from pathlib import Path
-from typing import Any
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))

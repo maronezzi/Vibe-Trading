@@ -13,9 +13,13 @@ Diferenças vs v5:
 9. Máx 1 posição por símbolo por timeframe
 """
 
-import sys, csv, io, subprocess, os
+import csv
+import io
+import subprocess
+import os
 from pathlib import Path
-import numpy as np, pandas as pd
+import numpy as np
+import pandas as pd
 
 WINE_PYTHON = os.path.expanduser("~/.wine/drive_c/Python311/python.exe")
 FETCH_SCRIPT = os.path.join(os.path.dirname(__file__), "mt5_fetch.py")
@@ -368,7 +372,7 @@ def run():
             print(f"  Payoff:   {r['payoff']:.2f}")
             print(f"  R$/dia:   R$ {r['avg_daily']:+.1f}")
             print(f"  Avg Barras: {r['avg_bars']:.1f}")
-            print(f"\n  Motivos de saída:")
+            print("\n  Motivos de saída:")
             for reason, data in sorted(r["reasons"].items(), key=lambda x: x[1]["pnl"], reverse=True):
                 pct = data["count"] / r["trades"] * 100 if r["trades"] else 0
                 wr_r = data["wins"] / data["count"] * 100 if data["count"] else 0

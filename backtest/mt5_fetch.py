@@ -14,7 +14,6 @@ import sys
 import csv
 import io
 import MetaTrader5 as mt5
-from datetime import datetime
 
 
 def main():

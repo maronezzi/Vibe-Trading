@@ -16,7 +16,6 @@ Mantém compatibilidade com a função `validate_and_fix()` do v1 (interface est
 import json
 import sqlite3
 import subprocess
-import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -435,7 +434,7 @@ class ValidatorV2:
                         "type": "SL_LADO_ERRADO",
                         "severity": "CRITICAL",
                         "detail": f"BUY com sl_pts={sl_pts} → SL efetivo {sl_price:.2f} ACIMA da entrada {entry_price:.2f}.",
-                        "suggestion": f"Usar sl_pts POSITIVO"
+                        "suggestion": "Usar sl_pts POSITIVO"
                     })
             elif direction == "SELL":
                 sl_price = entry_price + sl_native_distance
@@ -444,7 +443,7 @@ class ValidatorV2:
                         "type": "SL_LADO_ERRADO",
                         "severity": "CRITICAL",
                         "detail": f"SELL com sl_pts={sl_pts} → SL efetivo {sl_price:.2f} ABAIXO da entrada {entry_price:.2f}.",
-                        "suggestion": f"Usar sl_pts POSITIVO"
+                        "suggestion": "Usar sl_pts POSITIVO"
                     })
         return alerts
 
@@ -539,7 +538,7 @@ Retorne APENAS JSON:
                 try:
                     data = json.loads(raw)
                 except json.JSONDecodeError:
-                    _log(f"[WARN] parse: JSON irrecuperável")
+                    _log("[WARN] parse: JSON irrecuperável")
                     return
             else:
                 data = json.loads(llm_response[start:end])

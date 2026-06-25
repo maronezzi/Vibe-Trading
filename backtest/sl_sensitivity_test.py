@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """SL Sensitivity Test — qual SL multiplier maximiza lucro por ativo."""
-import subprocess, csv, io, os
+import subprocess
+import csv
+import io
+import os
 import pandas as pd
 import numpy as np
 

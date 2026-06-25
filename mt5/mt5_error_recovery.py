@@ -19,7 +19,6 @@ Erros tratados:
 import time
 import json
 import subprocess
-import traceback
 from datetime import datetime
 
 
@@ -462,7 +461,7 @@ def safe_modify_sl(symbol: str, ticket, sl_pts: int, entry_price: float = None,
     - Convergence check: se fix retorna mesmo valor (±5%), escala pra 3x stops_level
     - Same-value abort: se mesmo após escala ainda falha, aborta
     """
-    from mt5_orchestrator import modify_sl, tick, status
+    from mt5_orchestrator import modify_sl, status
     result = None
     fix_attempts = 0          # quantas vezes _fix_invalid_stops_modify foi chamado
     MAX_FIX_ATTEMPTS = 3      # máximo de fix por invocação de safe_modify_sl

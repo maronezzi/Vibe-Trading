@@ -25,10 +25,8 @@ Uso:
 
 import sys
 import os
-import shutil
 import time
 import json
-import subprocess
 import signal
 from datetime import datetime, date, timedelta
 from pathlib import Path
@@ -37,13 +35,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "mt5"))  # para imports 'from mt5_orchestrator' em mt5_error_recovery
 
 from core.vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary, sync_fees_from_mt5
-from mt5.mt5_orchestrator import status, buy, sell, close, close_all, tick, modify_sl, _run_wine, EXECUTOR_WIN
-from mt5.mt5_error_recovery import safe_buy, safe_sell, safe_modify_sl, safe_close
+from mt5.mt5_orchestrator import status, tick, _run_wine, EXECUTOR_WIN
+from mt5.mt5_error_recovery import safe_buy, safe_sell, safe_close
 from core.vt_emergency import safe_modify_sl_with_emergency_close
 from core.vt_config_loader import load_config
 from core.vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
 from core.vt_order_validator_v2 import validate_order
-from core.vt_calendar import is_trading_day, resolve_all_symbols, resolve_symbol, get_contract_expiry, _parse_contract_code
+from core.vt_calendar import is_trading_day, resolve_all_symbols, get_contract_expiry, _parse_contract_code
 
 # ===== CONFIGURAÇÃO =====
 # Config carregada do vt_config.json com hot reload
@@ -247,7 +245,7 @@ def notify_telegram(msg: str):
         from core.vt_hermes_helper import hermes_send
         ok = hermes_send(TELEGRAM_TARGET, msg)
         if not ok:
-            log(f"[NOTIFY FAIL] hermes_send retornou False")
+            log("[NOTIFY FAIL] hermes_send retornou False")
     except Exception as e:
         log(f"[NOTIFY FAIL] {e}")
 
@@ -613,7 +611,7 @@ def _check_consecutive_losses(symbol: str) -> bool:
         remaining = (halt_time - datetime.now()).total_seconds() / 60
         log(f"[BLOQUEADO] {symbol} — HALT ativo, {remaining:.0f}min restantes")
         return False
-    
+
     # Se 3+ perdas consecutivas no símbolo, pausar
     sym_losses = state.consecutive_losses.get(symbol, 0)
     if sym_losses >= state.max_consecutive_losses:
@@ -649,7 +647,7 @@ def check_and_trade():
         # Se o config tem symbol resolvido (ex: "WDO": "WDON26"), usa direto
         # Caso contrário, resolve e cacheia no state
         today_str = datetime.now().strftime("%Y-%m-%d")
-        
+
         # Verificar se config tem símbolos resolvidos
         resolved_map = CONFIG.get("resolved_symbols", {})
         if resolved_map.get(symbol_root):

@@ -6,10 +6,10 @@ Timeframes: M5, M15, M30, H1
 Estratégia por ativo/TF: a melhor descoberta nos testes anteriores
 """
 
-import sys, csv, io, subprocess, os, json
-from pathlib import Path
-from datetime import datetime, time
-import numpy as np
+import csv
+import io
+import subprocess
+import os
 import pandas as pd
 
 WINE_PYTHON = os.path.expanduser("~/.wine/drive_c/Python311/python.exe")
@@ -189,10 +189,10 @@ def backtest(df, symbol, tf, strategy, *, capital=1_000_000.0):
     spec = CONTRACT_SPECS[symbol]
     mult = spec["mult"]
     slip_r = spec["slip_r"]
-    
+
     atr = calc_atr(df, ATR_PERIOD)
     _z = pd.Series(0.0, index=df.index)
-    
+
     # Calculate indicators per strategy
     vwap = calc_vwap(df, 20) if strategy == "VWAP" else _z
     ema_f = calc_ema(df["close"], 9) if strategy in ("VWAP", "EMA_PULLBACK", "MACD_MOMENTUM") else _z
@@ -201,17 +201,17 @@ def backtest(df, symbol, tf, strategy, *, capital=1_000_000.0):
     adx_v, pdi, mdi = calc_adx(df, 14) if strategy in ("EMA_PULLBACK", "MACD_MOMENTUM") else (_z, _z, _z)
     _, _, hist = calc_macd(df) if strategy == "MACD_MOMENTUM" else (_z, _z, _z)
     bbu, bbm, bbl = calc_bollinger(df) if strategy == "BOLLINGER" else (_z, _z, _z)
-    
+
     sl_mult = 1.0 if strategy == "BOLLINGER" else 1.5
     trail_act = 1.5
     trail_dist = 0.5
     cooldown = 300
     max_daily = 8
-    
+
     cash = capital; pos = 0; ep = 0.0; e_date = None; e_atr = 0.0
     best_p = 0.0; sl_p = 0.0; trail_on = False; sl_pts = 0; bars_in = 0
     trades = []; daily = {}; last_tt = None
-    
+
     def _close(price, reason, date):
         nonlocal cash, pos, ep, e_date, best_p, sl_p, trail_on, e_atr, sl_pts, bars_in
         if pos == 0: return
@@ -220,7 +220,7 @@ def backtest(df, symbol, tf, strategy, *, capital=1_000_000.0):
         trades.append({"dir": "BUY" if pos == 1 else "SELL", "et": e_date, "xt": date,
                        "ep": ep, "xp": price, "pnl": pnl, "reason": reason, "bars": bars_in})
         pos = 0; ep = 0; best_p = 0; sl_p = 0; trail_on = False; bars_in = 0
-    
+
     def _open(d, price, date, cur_atr):
         nonlocal cash, pos, ep, e_date, best_p, sl_p, trail_on, e_atr, sl_pts, last_tt
         if pos != 0: return False
@@ -235,14 +235,14 @@ def backtest(df, symbol, tf, strategy, *, capital=1_000_000.0):
         sl_p = price - raw if pos == 1 else price + raw
         daily[dd] = daily.get(dd, 0) + 1; last_tt = date
         return True
-    
+
     for i, (date, row) in enumerate(df.iterrows()):
         price = float(row["close"]); high = float(row["high"]); low = float(row["low"])
         hour = int(row["hour"]); minute = int(row["minute"])
         cur_atr = float(atr.iloc[i]) if i > 0 and not pd.isna(atr.iloc[i]) else 0
-        
+
         if hour < START_HOUR or (hour == START_HOUR and minute < START_MINUTE): continue
-        
+
         if pos != 0:
             bars_in += 1
             if pos == 1: best_p = max(best_p, high)
@@ -265,10 +265,10 @@ def backtest(df, symbol, tf, strategy, *, capital=1_000_000.0):
             if hour > CLOSE_HOUR or (hour == CLOSE_HOUR and minute >= CLOSE_MINUTE):
                 _close(price, "1645", date); continue
             continue
-        
+
         if cur_atr <= 0: continue
         d = None
-        
+
         if strategy == "VWAP":
             cv = float(vwap.iloc[i]) if not pd.isna(vwap.iloc[i]) else 0
             ef = float(ema_f.iloc[i]) if not pd.isna(ema_f.iloc[i]) else 0
@@ -298,9 +298,9 @@ def backtest(df, symbol, tf, strategy, *, capital=1_000_000.0):
             bl = float(bbl.iloc[i]) if not pd.isna(bbl.iloc[i]) else 0
             cr = float(rsi.iloc[i]) if not pd.isna(rsi.iloc[i]) else 50
             d = check_bollinger(price, cr, bu, bl)
-        
+
         if d: _open(d, price, date, cur_atr)
-    
+
     if pos != 0: _close(float(df["close"].iloc[-1]), "FORCE", df.index[-1])
     return trades
 
@@ -313,32 +313,32 @@ def run():
         name = CONTRACT_SPECS[sym]["name"]
         print(f"    {sym} ({name}) → {strat}")
     print("═" * 95)
-    
+
     timeframes = ["M5", "M15", "M30", "H1"]
     tf_bars = {"M5": 500, "M15": 500, "M30": 300, "H1": 200}
     all_results = []
-    
+
     for symbol in CONTRACT_SPECS:
         spec = CONTRACT_SPECS[symbol]
         strategy = BEST_STRATEGY[symbol]
-        
+
         print(f"\n{'━' * 95}")
         print(f"  📡 {symbol} — {spec['name']} (margin R$ {spec['margin']}, mult R$ {spec['mult']}) → {strategy}")
         print(f"{'━' * 95}")
-        
+
         for tf in timeframes:
             n_bars = tf_bars[tf]
             df = fetch(symbol, tf, n_bars)
-            
+
             if df.empty:
                 print(f"  {tf:>3} │ ❌ Sem dados")
                 continue
-            
+
             n_days = df["date"].nunique()
             p0, p1 = float(df["close"].iloc[0]), float(df["close"].iloc[-1])
-            
+
             trades = backtest(df, symbol, tf, strategy)
-            
+
             if trades:
                 n = len(trades)
                 wins = sum(1 for t in trades if t["pnl"] > 0)
@@ -347,20 +347,20 @@ def run():
                 gw = sum(t["pnl"] for t in trades if t["pnl"] > 0)
                 gl = abs(sum(t["pnl"] for t in trades if t["pnl"] <= 0))
                 pf = gw / gl if gl > 0 else 999
-                
+
                 # PnL per day
                 pnl_per_day = pnl / n_days if n_days > 0 else pnl
-                
+
                 # Exit reasons
                 reasons = {}
                 for t in trades:
                     r = t["reason"]
                     reasons[r] = reasons.get(r, 0) + 1
                 reason_str = " ".join(f"{k}:{v}" for k, v in sorted(reasons.items()))
-                
+
                 icon = "🟢" if pnl > 0 else "🔴"
                 print(f"  {tf:>3} │ {icon} {n:>3}t │ WR {wr:>5.1f}% │ PF {pf:>5.2f} │ R$ {pnl:>+10.1f} │ R$/dia {pnl_per_day:>+8.1f} │ {n_days}d │ {reason_str}")
-                
+
                 all_results.append({
                     "symbol": symbol, "name": spec["name"], "tf": tf,
                     "strategy": strategy, "trades": n, "wr": wr, "pf": pf,
@@ -369,7 +369,7 @@ def run():
                 })
             else:
                 print(f"  {tf:>3} │ ⚪   0t │ sem trades")
-        
+
         # Per-symbol summary
         sym_results = [r for r in all_results if r["symbol"] == symbol]
         if sym_results:
@@ -378,18 +378,18 @@ def run():
             avg_pnl_day = sum(r["pnl_day"] for r in sym_results)
             icon = "🟢" if total_pnl > 0 else "🔴"
             print(f"  {'':>3} │ {icon} ─── TOTAL {symbol}: R$ {total_pnl:+.1f} ({total_trades} trades, ~R$ {avg_pnl_day:+.0f}/dia)")
-    
+
     # ─── GLOBAL SUMMARY ───
     print("\n\n" + "═" * 95)
     print("  📋 RESUMO GLOBAL — AGI v12 FULL (6 ativos × 4 TFs)")
     print("═" * 95)
-    
+
     # Per-symbol total
     print(f"\n  {'Ativo':<6} {'Nome':<16} │ {'Strategy':<16} │ {'Total PnL':>10} │ {'Trades':>6} │ {'R$/dia':>8} │ {'Margin':>7}")
     print("  " + "─" * 85)
-    
+
     grand_pnl = 0; grand_trades = 0; grand_margin = 0
-    
+
     seen = {}
     for r in all_results:
         if r["symbol"] not in seen:
@@ -397,21 +397,21 @@ def run():
         seen[r["symbol"]]["pnl"] += r["pnl"]
         seen[r["symbol"]]["trades"] += r["trades"]
         seen[r["symbol"]]["pnl_day"] += r["pnl_day"]
-    
+
     ranked = sorted(seen.items(), key=lambda x: x[1]["pnl"], reverse=True)
-    
+
     for sym, data in ranked:
         icon = "🟢" if data["pnl"] > 0 else "🔴"
         print(f"  {icon} {sym:<6} {data['name']:<16} │ {data['strategy']:<16} │ R$ {data['pnl']:>+8.1f} │ {data['trades']:>6} │ R$ {data['pnl_day']:>+6.0f} │ R$ {data['margin']:>5}")
         grand_pnl += data["pnl"]
         grand_trades += data["trades"]
         grand_margin += data["margin"]
-    
+
     print("  " + "─" * 85)
     print(f"  {'TOTAL':<6} {'':16} │ {'':16} │ R$ {grand_pnl:>+8.1f} │ {grand_trades:>6} │        │ R$ {grand_margin:>5}")
-    
+
     # Per-TF summary
-    print(f"\n\n  ⏱️  RESUMO POR TIMEFRAME:")
+    print("\n\n  ⏱️  RESUMO POR TIMEFRAME:")
     print("  " + "─" * 60)
     for tf in timeframes:
         tf_res = [r for r in all_results if r["tf"] == tf]
@@ -421,21 +421,21 @@ def run():
             profitable = sum(1 for r in tf_res if r["pnl"] > 0)
             icon = "🟢" if tf_pnl > 0 else "🔴"
             print(f"  {icon} {tf:>3}: R$ {tf_pnl:>+8.1f} ({tf_trades} trades, {profitable}/{len(tf_res)} ativos lucrativos)")
-    
+
     # ROI
     if grand_margin > 0:
         roi = grand_pnl / grand_margin * 100
         print(f"\n  💰 PnL total: R$ {grand_pnl:+.1f}")
         print(f"  💰 Margin total (1 contrato cada): R$ {grand_margin}")
         print(f"  💰 ROI: {roi:.1f}%")
-    
+
     # Recommendation
-    print(f"\n\n  💡 RECOMENDAÇÃO AGI v12:")
+    print("\n\n  💡 RECOMENDAÇÃO AGI v12:")
     print("  " + "─" * 60)
     for sym, data in ranked:
         if data["pnl"] > 0:
             print(f"  ✅ {sym} ({data['name']}) — {data['strategy']} — R$ {data['pnl_day']:+.0f}/dia")
-    
+
     print("\n" + "═" * 95 + "\n")
 
 

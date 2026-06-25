@@ -12,10 +12,8 @@ Uso:
 """
 
 import sys
-import os
 import sqlite3
 import subprocess
-import signal
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -63,7 +61,7 @@ def notify_telegram(msg):
     try:
         from vt_hermes_helper import hermes_send
         hermes_send(TELEGRAM_TARGET, msg)
-        log(f"Notificação enviada pro grupo")
+        log("Notificação enviada pro grupo")
     except Exception as e:
         log(f"[ERRO] Falha ao enviar notificação: {e}")
 
@@ -74,7 +72,6 @@ def notify_telegram_media(media_path, caption=""):
     O Hermes envia mídia inline com prefixo MEDIA: no texto (Telegram, Discord, etc).
     Caption é o texto que aparece junto.
     """
-    import subprocess
     try:
         # Caption curta (Telegram aceita 1024)
         body = f"MEDIA:{media_path}"
@@ -92,19 +89,18 @@ def notify_telegram_media(media_path, caption=""):
 
 def check_autotrader_health():
     """Verifica se o autotrader está rodando e com log fresco."""
-    import subprocess
-    
+
     # Verificar processo
     result = subprocess.run(
         ["pgrep", "-f", "vt_autotrader.py"],
         capture_output=True, text=True
     )
     pid = result.stdout.strip()
-    
+
     if not pid:
         log("[SAÚDE] Autotrader NÃO está rodando!")
         return {"running": False, "pid": None, "log_fresh": False}
-    
+
     # Verificar log freshness
     log_fresh = False
     if LOG_PATH.exists():
@@ -114,26 +110,25 @@ def check_autotrader_health():
         log(f"[SAÚDE] Autotrader PID {pid} rodando. Log: {age_min:.0f}min atrás")
     else:
         log(f"[SAÚDE] Autotrader PID {pid} rodando. Sem log encontrado")
-    
+
     return {"running": True, "pid": pid, "log_fresh": log_fresh}
 
 
 def restart_autotrader():
     """Reinicia o autotrader."""
-    import subprocess
     log("[AÇÃO] Reiniciando autotrader...")
-    
+
     # Matar processo atual
-    subprocess.run(["pkill", "-9", "-f", "vt_autotrader.py"], 
+    subprocess.run(["pkill", "-9", "-f", "vt_autotrader.py"],
                    capture_output=True, timeout=10)
-    
+
     # Matar processos MT5 pendurados
     subprocess.run(["pkill", "-9", "-f", "mt5_executor|mt5_resolve"],
                    capture_output=True, timeout=10)
-    
+
     import time
     time.sleep(3)
-    
+
     # Iniciar novo
     subprocess.Popen(
         ["python3", "vt_autotrader.py"],
@@ -142,9 +137,9 @@ def restart_autotrader():
         stderr=subprocess.STDOUT,
         start_new_session=True
     )
-    
+
     time.sleep(5)
-    
+
     # Verificar se iniciou
     result = subprocess.run(["pgrep", "-f", "vt_autotrader.py"],
                            capture_output=True, text=True)
@@ -159,7 +154,7 @@ def restart_autotrader():
 def reconcile_orphans():
     """Compara MT5 vs banco e reconcilia órfãos."""
     log("[RECONCILIAÇÃO] Verificando posições órfãs...")
-    
+
     # Posições no MT5
     try:
         mt5_data = mt5_status()
@@ -167,39 +162,39 @@ def reconcile_orphans():
     except Exception as e:
         log(f"[ERRO] Falha ao conectar MT5: {e}")
         return 0
-    
+
     mt5_tickets = {str(p["ticket"]) for p in mt5_positions}
-    
+
     # Trades abertos no banco
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
-    
+
     open_trades = conn.execute(
         "SELECT id, symbol, direction, timeframe, entry_price, entry_ticket "
         "FROM trades WHERE exit_time IS NULL"
     ).fetchall()
-    
+
     reconciled = 0
     for trade in open_trades:
         ticket = str(trade["entry_ticket"])
-        
+
         if ticket not in mt5_tickets:
             # Posição não existe mais no MT5 → marcar como fechada
             exit_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
+
             # Tentar pegar preço atual do símbolo pra calcular PnL
             try:
                 tick_data = _run_wine(EXECUTOR_WIN, "tick", trade["symbol"])
                 current_price = tick_data.get("bid", trade["entry_price"])
             except Exception:
                 current_price = trade["entry_price"]
-            
+
             # Calcular PnL básico
             if trade["direction"] == "BUY":
                 pnl_pts = current_price - trade["entry_price"]
             else:
                 pnl_pts = trade["entry_price"] - current_price
-            
+
             # Converter pra R$ usando get_multiplier (cobre todos ativos)
             try:
                 from vt_trade_log import get_multiplier
@@ -207,48 +202,48 @@ def reconcile_orphans():
             except Exception:
                 multiplier = 0.20 if "WIN" in trade["symbol"] else 1.00
             net_pnl = pnl_pts * multiplier * (trade["volume"] if trade["volume"] is not None else 1)
-            
+
             conn.execute("""
                 UPDATE trades 
                 SET exit_time=?, exit_price=?, net_pnl=?, 
                     exit_reason='ORFAO_FECHADO', exit_ticket='reconciled'
                 WHERE id=?
             """, (exit_time, current_price, net_pnl, trade["id"]))
-            
+
             log(f"  #{trade['id']} {trade['direction']} {trade['symbol']} "
                 f"{trade['timeframe']} → ORFAO_FECHADO (PnL R$ {net_pnl:+.2f})")
             reconciled += 1
-    
+
     # Trades no MT5 sem registro no banco (criar registro básico)
     for pos in mt5_positions:
         ticket = str(pos["ticket"])
         comment = pos.get("comment", "")
-        
+
         if comment == "VibeTrading":
             # Verificar se já existe no banco
             exists = conn.execute(
                 "SELECT id FROM trades WHERE entry_ticket=?", (ticket,)
             ).fetchone()
-            
+
             if not exists:
                 # Criar registro básico
                 symbol = pos["symbol"]
                 direction = "BUY" if pos["type"] in (0, "BUY") else "SELL"
                 entry_price = pos["price_open"]
                 entry_time = datetime.fromtimestamp(pos["time"]).strftime("%Y-%m-%d %H:%M:%S")
-                
+
                 conn.execute("""
                     INSERT INTO trades (symbol, direction, volume, timeframe, entry_price,
                                        entry_ticket, entry_time, strategy)
                     VALUES (?, ?, ?, 'M5', ?, ?, ?, 'VWAP')
                 """, (symbol, direction, pos.get("volume", 1), entry_price, ticket, entry_time))
-                
+
                 log(f"  Novo registro: {direction} {symbol} @ {entry_price} (ticket {ticket})")
                 reconciled += 1
-    
+
     conn.commit()
     conn.close()
-    
+
     log(f"[RECONCILIAÇÃO] {reconciled} posições reconciliadas")
     return reconciled
 
@@ -257,20 +252,20 @@ def check_wdo_activity():
     """Verifica por que WDO não está operando."""
     conn = sqlite3.connect(str(DB_PATH))
     today = datetime.now().strftime("%Y-%m-%d")
-    
+
     wdo_trades = conn.execute(
         "SELECT COUNT(*) FROM trades WHERE symbol LIKE '%WDO%' AND date(entry_time)=?",
         (today,)
     ).fetchone()[0]
-    
+
     conn.close()
-    
+
     if wdo_trades == 0:
         log("[WDO] Sem operações hoje. Investigando...")
-        
+
         # Símbolo mais líquido do config
         wdo_symbol = load_config().get("resolved_symbols", {}).get("WDO", "WDON26")
-        
+
         # Verificar se WDO tem dados
         try:
             bars = _run_wine(EXECUTOR_WIN, "bars", wdo_symbol, "M5", "30")
@@ -280,10 +275,10 @@ def check_wdo_activity():
                 atr = max(closes) - min(closes)
                 avg_price = sum(closes) / len(closes)
                 atr_pct = (atr / avg_price) * 100
-                
+
                 log(f"[WDO] ATR={atr:.2f} ({atr_pct:.3f}% do preço). "
                     f"Range: {min(closes):.2f}-{max(closes):.2f}")
-                
+
                 if atr_pct < 0.15:
                     log("[WDO] Mercado muito calmo (< 0.15%). Threshold adaptativo deve ajudar.")
                     return "calmo"
@@ -296,7 +291,7 @@ def check_wdo_activity():
         except Exception as e:
             log(f"[ERRO] Falha ao verificar WDO: {e}")
             return "erro"
-    
+
     log(f"[WDO] {wdo_trades} operações hoje")
     return "operando"
 
@@ -382,9 +377,9 @@ def _apply_pauses(paused_items: list, today: str):
         config["disabled_symbols"] = sorted(disabled_syms)
         config["disabled_timeframes"] = sorted(disabled_tfs)
         save_full_config(config, updated_by="copilot_pausa")
-        log(f"[PAUSA] Config atualizado. Autotrader fará hot-reload.")
+        log("[PAUSA] Config atualizado. Autotrader fará hot-reload.")
     else:
-        log(f"[PAUSA] Nenhuma alteração necessária")
+        log("[PAUSA] Nenhuma alteração necessária")
 
 
 def evaluate_and_pause():
@@ -624,7 +619,7 @@ def generate_report():
         )
         report.append(f"  Max drawdown: R$ {s['max_drawdown']:.2f}")
     else:
-        report.append(f"  Sem trades fechados hoje")
+        report.append("  Sem trades fechados hoje")
         if s["open_count"] > 0:
             report.append(
                 f"  PnL flutuante ({s['open_count']} abertas): R$ {s['open_pnl']:+.2f}"
@@ -679,7 +674,7 @@ def _restore_pauses_if_needed():
     config["disabled_symbols"] = []
     config["disabled_timeframes"] = []
     save_full_config(config, updated_by="copilot_restore")
-    log(f"[RESTORE] disabled_symbols/timeframes limpos. Autotrader fará hot-reload.")
+    log("[RESTORE] disabled_symbols/timeframes limpos. Autotrader fará hot-reload.")
     pause_file.write_text("{}")
 
 
@@ -688,12 +683,12 @@ def main():
     log("=" * 50)
     log("Vibe-Trading Copilot INICIADO")
     log("=" * 50)
-    
+
     # Determinar o que fazer
     mode = sys.argv[1] if len(sys.argv) > 1 else "--full"
-    
+
     actions = []
-    
+
     if mode == "--health":
         health = check_autotrader_health()
         if not health["running"]:
@@ -702,18 +697,18 @@ def main():
         elif not health["log_fresh"]:
             actions.append("Autotrader rodando mas log antigo (>5min)")
         return
-    
+
     elif mode == "--reconcile":
         reconciled = reconcile_orphans()
         if reconciled > 0:
             actions.append(f"{reconciled} órfãos reconciliados")
         return
-    
+
     elif mode == "--report":
         report = generate_report()
         notify_telegram(f"🤖 *Copilot {datetime.now().strftime('%Hh%M')}*\n\n{report}")
         return
-    
+
     else:  # --full (padrão)
         # 0. No primeiro run do dia (10h), restaurar pausas do dia anterior
         if datetime.now().hour == 10:
@@ -728,24 +723,24 @@ def main():
                 actions.append("❌ Falha ao reiniciar autotrader!")
         elif not health["log_fresh"]:
             actions.append("⚠️ Autotrader com log antigo")
-        
+
         # 2. Reconciliação de órfãos
         reconciled = reconcile_orphans()
         if reconciled > 0:
             actions.append(f"🔧 {reconciled} órfãos reconciliados")
-        
+
         # 3. Verificar WDO
         wdo = check_wdo_activity()
         if wdo == "calmo":
             actions.append("🟡 WDO: mercado calmo (threshold adaptativo ativo)")
         elif wdo == "sem_dados":
             actions.append("❌ WDO: sem dados de barras!")
-        
+
         # 4. Avaliar performance e pausar se necessário
         paused = evaluate_and_pause()
         if paused:
             actions.append(f"⏸️ Pausado: {', '.join(paused)}")
-        
+
         # 5. Gerar e enviar relatório + gráfico intraday
         report = generate_report()
         stats = check_intraday_stats()

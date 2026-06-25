@@ -17,7 +17,6 @@ Usage:
 
 import json
 import logging
-from typing import Optional
 
 log = logging.getLogger("agi_safety")
 

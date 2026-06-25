@@ -111,7 +111,17 @@ markers = [
 [tool.ruff]
 target-version = "py311"
 line-length = 120
-src = ["agent"]
+# src removido em 2026-06-25 — antes era ["agent"] (HKUDS legacy),
+# mas o agent/ não existe no projeto (refactor 2026-06-22 o moveu
+# pra archive/agent_project/). Default do ruff = raiz do projeto.
+extend-exclude = [
+    "archive",                    # código morto do refactor 2026-06-22
+    "learn-claude-code-main",     # tutorial clonado
+    "results",                    # saída de backtests
+    "node_modules",               # deps JS
+    ".venv",
+    "agent_project",              # redundante com archive/ mas explícito
+]
 
 [tool.coverage.run]
 source = ["agent"]
