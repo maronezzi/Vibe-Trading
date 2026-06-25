@@ -120,3 +120,6 @@ archive/prediction_project/.venv/
 archive/prediction_project/saved_models/
 archive/prediction_project/results/
 archive/frontend_project/node_modules/
+
+# Hermes Agent working dir (plan files, scratch, etc. — local to this machine)
+.hermes/

@@ -12,6 +12,7 @@ Uso:
 """
 
 import sys
+import json
 import sqlite3
 import subprocess
 from datetime import datetime, timedelta
@@ -393,7 +394,6 @@ def evaluate_and_pause():
 
     stats = check_performance()
     paused = []
-    import json
 
     # Carregar pausas ativas do arquivo
     pause_file = Path("/tmp/vt_paused_timeframes.json")

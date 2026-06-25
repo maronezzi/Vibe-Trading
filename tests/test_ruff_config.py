@@ -91,15 +91,17 @@ class TestRuffConfig(unittest.TestCase):
         )
 
     def test_ruff_undefined_name_error_flagged(self):
-        """F821 (undefined-name) é o único erro que NÃO fixamos automaticamente.
+        """F821 (undefined-name) deve ser ZERO no projeto ativo.
 
         Estado documentado (2026-06-25):
-          monitoring/vt_copilot.py:656 — `json.loads()` usado sem `import json`.
-          A função `load_paused_timeframes()` está quebrada se /tmp/vt_paused_timeframes.json
-          existir. CORRIGIR MANUALMENTE — fora do escopo deste commit (que é config ruff).
+          - Original: 1 F821 em monitoring/vt_copilot.py:656 (`json.loads()`
+            sem `import json` — quebrava se /tmp/vt_paused_timeframes.json
+            existisse).
+          - CONSERTADO no mesmo commit: adicionado `import json` no topo do
+            módulo e removido o `import json` local redundante.
 
-        Este teste documenta o F821 e falha se ele sumir (sinal de que alguém
-        consertou — bom — e este teste precisa ser atualizado).
+        Se este teste falhar no futuro (>0 erros F821), significa que um
+        novo undefined-name foi introduzido — investigar imediatamente.
         """
         result = subprocess.run(
             [RUFF, "check", ".", "--select", "F821"],
@@ -108,13 +110,15 @@ class TestRuffConfig(unittest.TestCase):
         )
         m = re.search(r"Found (\d+) errors?", result.stdout + result.stderr)
         count = int(m.group(1)) if m else 0
-        # esperado 1 (o bug documentado). Se 0, consertado (bom).
-        # Se > 1, novos bugs introduzidos (ruim).
+        # esperado 0 pós-fix. Se > 0, novo bug foi introduzido.
+        # se 0 mas o fix reverter, código quebra em runtime — alerta alto.
+        if "All checks passed" in (result.stdout + result.stderr):
+            count = 0
         self.assertEqual(
-            count, 1,
-            f"Esperado EXATAMENTE 1 erro F821 (json em vt_copilot.py:656). "
-            f"Encontrado {count}. Se 0, consertado — atualize este teste. "
-            f"Se > 1, novos bugs undefined-name — investigar.\n"
+            count, 0,
+            f"Esperado ZERO erros F821 (foi consertado em 2026-06-25). "
+            f"Encontrado {count}. Novo undefined-name foi introduzido — "
+            f"investigar antes de merge.\n"
             f"Output: {result.stdout[-500:]}",
         )
 
