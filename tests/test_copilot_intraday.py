@@ -16,14 +16,13 @@ Este teste:
   * gera grafico PNG
   * generate_report() NAO contem "5 dias"
 """
-import os
 import sys
 import unittest
 import sqlite3
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -49,6 +48,7 @@ class TestCheckIntradayStats(unittest.TestCase):
                 timeframe TEXT,
                 entry_time TEXT,
                 exit_time TEXT,
+                exit_reason TEXT DEFAULT 'TRAILING',
                 net_pnl REAL
             )
         """)

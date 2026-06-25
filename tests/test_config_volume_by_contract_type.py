@@ -140,16 +140,25 @@ def test_all_active_symbols_have_volume_configured():
 
 
 def test_resolved_symbols_only_minis():
-    """Apenas minis devem ter resolved_symbols (cheios fora de circulação)."""
+    """Apenas minis devem ter resolved_symbols (cheios fora de circulação).
+
+    Não hardcode o contrato exato (WINQ26/WDOQ26/...) — ele muda a cada roll
+    mensal. Checa apenas que os 4 minis têm um resolved e cada um começa com
+    a raiz do mini.
+    """
     cfg = load_config()
     resolved = cfg.get("resolved_symbols", {})
 
-    mini_expected = {"WIN": "WINQ26", "WDO": "WDON26", "BIT": "BITM26", "WSP": "WSPM26"}
-
-    for sym, expected in mini_expected.items():
-        assert resolved.get(sym) == expected, (
-            f"{sym} deve ser MINICONTRATO ({expected}), "
-            f"atual: {resolved.get(sym)}"
+    mini_roots = {"WIN", "WDO", "BIT", "WSP"}
+    assert set(resolved.keys()) == mini_roots, (
+        f"resolved_symbols deve conter exatamente os 4 minis. "
+        f"Esperado: {mini_roots}, Atual: {set(resolved.keys())}"
+    )
+    for root in mini_roots:
+        contract = resolved.get(root)
+        assert contract and contract.startswith(root), (
+            f"{root} resolved deveria começar com '{root}' (mini), "
+            f"atual: {contract!r}"
         )
 
     # E nenhum contrato cheio presente

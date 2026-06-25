@@ -11,7 +11,6 @@ Tests:
 """
 
 import json
-import os
 import sys
 import unittest
 from datetime import datetime, timedelta
@@ -548,7 +547,6 @@ class TestCLICompatibility(unittest.TestCase):
     def test_old_args_still_work(self):
         """Old CLI args should still parse."""
         sys.path.insert(0, str(PROJECT_DIR / "optimization"))
-        import agi_tuning_17h
         import argparse
 
         parser = argparse.ArgumentParser()
@@ -788,12 +786,46 @@ class TestParamBoundsSL(unittest.TestCase):
 # Exhaustive Strategy Search Integration Tests (v3.2)
 # ═══════════════════════════════════════════════════════════════════
 
+class _DoneFuture:
+    """Future já resolvido (resultado computado na hora)."""
+
+    def __init__(self, result):
+        self._r = result
+
+    def result(self, timeout=None):
+        return self._r
+
+
+class _SerialPool:
+    """Shim de ProcessPoolExecutor que executa submit() inline (mesmo processo).
+
+    O refactor de run_exhaustive_search para ProcessPoolExecutor tornou
+    impossível mockar via sys.modules (MagicMock não é picklável num pool de
+    processos separados). Este shim faz submit() rodar inline no teste.
+    """
+
+    def __init__(self, max_workers=None):
+        self.max_workers = max_workers
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def submit(self, fn, *args, **kwargs):
+        return _DoneFuture(fn(*args, **kwargs))
+
+
 class TestRunExhaustiveSearch(unittest.TestCase):
     """Test run_exhaustive_search integration with AGI flow."""
 
     def test_returns_best_strategy_per_pair(self):
-        """Should return best strategy per pair from exhaustive search."""
+        """Should return best strategy per pair (serial-execution shim)."""
         sys.path.insert(0, str(PROJECT_DIR / "optimization"))
+        import optimization.exhaustive_strategy_search as ess
+        import optimization.vt_forward_backtest as vfb
+        import optimization.agi_tuning_17h as agi_mod
 
         mock_bars = [{"time": 1, "open": 100, "high": 101, "low": 99, "close": 100}]
         mock_results = [
@@ -802,34 +834,28 @@ class TestRunExhaustiveSearch(unittest.TestCase):
             ("RSI_REVERSION", {"pnl": -100, "n_trades": 2, "wr": 20, "max_dd": 120}, {"rsi_period": 14}),
         ]
 
-        mock_exhaustive = MagicMock()
-        mock_exhaustive.test_all_strategies_for_pair.return_value = mock_results
-        mock_exhaustive.ALL_STRATEGIES = ["BOLLINGER", "VWAP", "RSI_REVERSION"]
-        mock_exhaustive.merge_params_by_tf_into_config.side_effect = lambda c: c
+        orig_strategies = ess.ALL_STRATEGIES
+        ess.ALL_STRATEGIES = ["BOLLINGER", "VWAP", "RSI_REVERSION"]
 
-        mock_fwd = MagicMock()
-        mock_fwd.fetch_bars_for_backtest.return_value = mock_bars
-        mock_fwd.BAR_COUNT_PER_TF = {"M5": 500}
-        mock_fwd.DEFAULT_BAR_COUNT = 300
+        def _fake_worker(item):
+            # item = (pair_key, sym, tf, bars, config); worker retorna (pair_key, results)
+            return item[0], mock_results
 
-        with patch.dict("sys.modules", {
-            "optimization.exhaustive_strategy_search": mock_exhaustive,
-        }), patch.dict("sys.modules", {
-            "optimization.vt_forward_backtest": mock_fwd,
-        }):
-            # Force reimport to pick up mocked modules
-            if "optimization.agi_tuning_17h" in sys.modules:
-                del sys.modules["optimization.agi_tuning_17h"]
-            import optimization.agi_tuning_17h as agi_mod
+        try:
+            with patch.object(ess, "_test_pair_worker", _fake_worker), \
+                 patch.object(vfb, "fetch_bars_for_backtest", return_value=mock_bars), \
+                 patch("concurrent.futures.ProcessPoolExecutor", _SerialPool), \
+                 patch("concurrent.futures.as_completed", lambda futures: list(futures)):
+                config = {"symbols": ["WIN"], "timeframes": ["M5"], "disabled_timeframes": []}
+                result = agi_mod.run_exhaustive_search(config)
+        finally:
+            ess.ALL_STRATEGIES = orig_strategies
 
-            config = {"symbols": ["WIN"], "timeframes": ["M5"], "disabled_timeframes": []}
-            result = agi_mod.run_exhaustive_search(config)
-
-            self.assertIn("best_per_pair", result)
-            self.assertIn("WIN_M5", result["best_per_pair"])
-            self.assertEqual(result["best_per_pair"]["WIN_M5"]["strategy"], "VWAP")
-            self.assertEqual(result["best_per_pair"]["WIN_M5"]["pnl"], 100)
-            self.assertEqual(result["strategies_tested"], 3)
+        self.assertIn("best_per_pair", result)
+        self.assertIn("WIN_M5", result["best_per_pair"])
+        self.assertEqual(result["best_per_pair"]["WIN_M5"]["strategy"], "VWAP")
+        self.assertEqual(result["best_per_pair"]["WIN_M5"]["pnl"], 100)
+        self.assertEqual(result["strategies_tested"], 3)
 
     def test_returns_all_negative_when_no_bars(self):
         """Should handle no bars gracefully."""

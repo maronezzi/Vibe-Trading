@@ -94,12 +94,12 @@ def test_validate_keeps_numeric_params_unchanged():
 
 def test_validate_mixed_strategy_and_numeric():
     """Params mistos (strategy + numeric) devem ser processados corretamente."""
-    cfg = {"win": {"strategy": "BOLLINGER", "sl_atr_mult": 0.6}}
-    params = {"strategy": "EMA_PULLBACK", "sl_atr_mult": 0.7}
+    cfg = {"win": {"strategy": "BOLLINGER", "sl_atr_mult": 1.5}}
+    params = {"strategy": "EMA_PULLBACK", "sl_atr_mult": 1.8}
     clamped, warnings = validate_and_clamp_change("WIN", params, cfg)
     assert clamped.get("strategy") == "EMA_PULLBACK"
-    # sl_atr_mult 0.6 → 0.7: +16% (dentro do limite 30%)
-    assert clamped.get("sl_atr_mult") == pytest.approx(0.7, abs=0.01)
+    # sl_atr_mult 1.5 → 1.8: +20% (dentro do limite 30% e dos bounds [1.0, 3.0])
+    assert clamped.get("sl_atr_mult") == pytest.approx(1.8, abs=0.01)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -109,8 +109,6 @@ def test_validate_mixed_strategy_and_numeric():
 
 def test_apply_changes_updates_strategy_field(tmp_path):
     """apply_changes deve aplicar mudança de strategy (não ignorar)."""
-    import json
-    from vt_config_loader import save_params
 
     cfg = {
         "win": {"strategy": "BOLLINGER", "sl_atr_mult": 0.6},

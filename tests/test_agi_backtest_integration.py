@@ -13,7 +13,7 @@ backtest signals. If a SYM_TF is failing in PnL but is "ok" in backtest
 """
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 sys.path.insert(0, "/home/bruno/Projects/Vibe-Trading")
 
@@ -36,7 +36,7 @@ class TestEvaluateForwardBacktest(unittest.TestCase):
             "params": {},
         }
         # Patch the function in vt_forward_backtest (where it's actually called from)
-        with patch("vt_forward_backtest.run_all_pairs_parallel") as mock_run:
+        with patch("optimization.vt_forward_backtest.run_all_pairs_parallel") as mock_run:
             mock_run.return_value = {
                 "WIN_M5": {"decision": "ok", "pnl": 100.0, "n_trades": 5},
                 "BIT_M5": {"decision": "negative", "pnl": -50.0, "n_trades": 3},
@@ -50,7 +50,7 @@ class TestEvaluateForwardBacktest(unittest.TestCase):
         """days and max_workers must be forwarded to run_all_pairs_parallel."""
         from agi_tuning_17h import evaluate_forward_backtest
         cfg = {"symbols": ["WIN"], "timeframes": ["M5"], "strategy": {"WIN": "BOLLINGER"}, "params": {}}
-        with patch("vt_forward_backtest.run_all_pairs_parallel") as mock_run:
+        with patch("optimization.vt_forward_backtest.run_all_pairs_parallel") as mock_run:
             mock_run.return_value = {"WIN_M5": {"decision": "ok"}}
             evaluate_forward_backtest(cfg, days=14, max_workers=4)
         mock_run.assert_called_once()
@@ -65,7 +65,7 @@ class TestEvaluateForwardBacktest(unittest.TestCase):
         """Empty symbols list returns empty dict, no crash."""
         from agi_tuning_17h import evaluate_forward_backtest
         cfg = {"symbols": [], "timeframes": ["M5"]}
-        with patch("vt_forward_backtest.run_all_pairs_parallel") as mock_run:
+        with patch("optimization.vt_forward_backtest.run_all_pairs_parallel") as mock_run:
             mock_run.return_value = {}
             result = evaluate_forward_backtest(cfg, days=7, max_workers=2)
         self.assertEqual(result, {})
@@ -74,7 +74,7 @@ class TestEvaluateForwardBacktest(unittest.TestCase):
         """Should log.info() at start and end."""
         from agi_tuning_17h import evaluate_forward_backtest
         cfg = {"symbols": ["WIN"], "timeframes": ["M5"], "strategy": {"WIN": "BOLLINGER"}, "params": {}}
-        with patch("vt_forward_backtest.run_all_pairs_parallel") as mock_run:
+        with patch("optimization.vt_forward_backtest.run_all_pairs_parallel") as mock_run:
             mock_run.return_value = {"WIN_M5": {"decision": "ok"}}
             evaluate_forward_backtest(cfg, days=7, max_workers=2)
         # At least 2 log.info calls (start + end) — check via the module's logger
@@ -150,7 +150,7 @@ class TestLowSampleGuard(unittest.TestCase):
 
     def test_low_trades_forward_ignored(self):
         """If forward backtest has < MIN_TRADES_FOR_DELTA trades, ignore its result."""
-        from agi_tuning_17h import merge_backtest_with_convergence, MIN_TRADES_FOR_DELTA
+        from agi_tuning_17h import merge_backtest_with_convergence
         # baseline -200, perf -180: reduction 10% (< 30%) → check_convergence FAILS
         perf = {"by_symbol_tf": {"BIT_M5": {"total_pnl": -180.0, "n_trades": 5}}}
         baseline = {"BIT_M5": {"pnl": -200.0, "n_trades": 5, "win_rate": 0.3}}

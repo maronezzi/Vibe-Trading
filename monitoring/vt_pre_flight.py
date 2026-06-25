@@ -35,6 +35,8 @@ STATE_PATH = Path("/tmp/vt_autotrader_state.json")
 LOG_PATH = Path("/tmp/vt_pre_flight.log")
 
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "core"))  # noqa: E402 — fixa ModuleNotFoundError para vt_calendar/vt_hermes_helper (espelha fix de vt_daily_report.py em 17/06/2026)
+sys.path.insert(0, str(ROOT / "mt5"))  # noqa: E402 — fixa ModuleNotFoundError para mt5_orchestrator (espelha tests/conftest.py)
 
 # Importações do projeto (com fallback se não disponível)
 try:
