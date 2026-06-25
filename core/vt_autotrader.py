@@ -1328,7 +1328,7 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                               "MACD_MOMENTUM": "MACD Momentum", "SMART_EMA": "Smart EMA"}
         strategy_label = strategy_label_map.get(strategy, strategy)
         _ts = datetime.now().strftime("%H:%M:%S")
-        _atr_mult = sl_pts / (atr * point_val * 100) if atr > 0 and point_val > 0 else 0
+        _atr_mult = sl_pts / (atr * point_val) if atr > 0 and point_val > 0 else 0
         notify_telegram(
             f"📊 *{direction} {symbol} {tf}* ({strategy_label})\n"
             f"• Entrada: {exec_price:.2f} | SL: {sl_label:.2f}\n"

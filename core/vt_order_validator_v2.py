@@ -87,23 +87,23 @@ def _cache_put(key: str, response: str):
 
 # Provedores LLM em ordem de prioridade: primário → fallback.
 # Nomes de provider conforme ~/.hermes/config.yaml e `hermes fallback list`.
-#   - minimax  → MiniMax-M3  (primário; OAuth via api.minimax.io/anthropic)
-#   - xiaomi   → mimo-v2.5-pro (fallback; token-plan-sgp.xiaomimimo.com)
+#   - minimax-oauth → MiniMax-M3  (primário; OAuth via api.minimax.io/anthropic)
+#   - xiaomi        → mimo-v2.5-pro (fallback; token-plan-sgp.xiaomimimo.com)
 # Nota: o hermes também tem fallback chain interno, mas o subprocess timeout
 # abaixo é o que realmente limita cada provedor (gateway_timeout interno = 7200s).
 _LLM_PROVIDERS = [
-    {"provider": "minimax", "model": "MiniMax-M3",   "timeout": 10},   # fail-fast: se não responde em 10s, não vai responder em 20
-    {"provider": "xiaomi",  "model": "mimo-v2.5-pro", "timeout": 25},   # mais budget pro fallback (provou funcionar)
+    {"provider": "minimax-oauth", "model": "MiniMax-M3",   "timeout": 10},   # fail-fast: se não responde em 10s, não vai responder em 20
+    {"provider": "xiaomi",        "model": "mimo-v2.5-pro", "timeout": 25},   # mais budget pro fallback (provou funcionar)
 ]
 MAX_TOTAL_LLM_TIMEOUT = 38  # hard cap: 10+25=35 + margem
 
-
 def _ask_llm_provider(prompt: str, provider: str, model: str, timeout: int) -> Optional[str]:
-    """Tenta um único provedor LLM via hermes CLI. Retorna resposta ou None.
+    """
+    Tenta um único provedor LLM via hermes CLI. Retorna resposta ou None.
 
     Logs de timing para diagnóstico de qual provedor respondeu.
     """
-    from vt_hermes_helper import find_hermes
+    from core.vt_hermes_helper import find_hermes
     hermes_bin = find_hermes()
     if not hermes_bin:
         _log(f"[LLM] {model}: hermes não encontrado no PATH")
@@ -138,7 +138,7 @@ def _ask_llm_with_fallback(prompt: str, timeout: int = 35) -> Optional[str]:
     próprio timeout (20s primário, 15s fallback); o deadline global garante que
     a soma nunca ultrapasse o limite aceitável para validação de trade.
     """
-    from vt_hermes_helper import find_hermes
+    from core.vt_hermes_helper import find_hermes
     if not find_hermes():
         _log("[LLM] hermes não encontrado no PATH — pulando validação LLM")
         return None
