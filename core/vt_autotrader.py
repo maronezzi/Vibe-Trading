@@ -643,7 +643,13 @@ def check_and_trade():
     if not _is_safe_time_window():
         return
 
-    for symbol_root in CONFIG["symbols"]:
+    # ── Filtrar símbolos desabilitados (kill switch por símbolo) ──
+    disabled_symbols = CONFIG.get("disabled_symbols", [])
+    active_symbols = [s for s in CONFIG["symbols"] if s not in disabled_symbols]
+    if disabled_symbols:
+        log(f"🚫 Símbolos desabilitados: {disabled_symbols} (ativos: {active_symbols})")
+
+    for symbol_root in active_symbols:
         # Se o config tem symbol resolvido (ex: "WDO": "WDON26"), usa direto
         # Caso contrário, resolve e cacheia no state
         today_str = datetime.now().strftime("%Y-%m-%d")
