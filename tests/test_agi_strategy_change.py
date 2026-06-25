@@ -111,15 +111,15 @@ def test_apply_changes_updates_strategy_field(tmp_path):
     """apply_changes deve aplicar mudança de strategy (não ignorar)."""
 
     cfg = {
-        "win": {"strategy": "BOLLINGER", "sl_atr_mult": 0.6},
+        "wsp": {"strategy": "BOLLINGER", "sl_atr_mult": 0.6},
         "_version": 1,
     }
     llm_result = {
         "changes": [
             {
-                "symbol": "WIN",
+                "symbol": "WSP",
                 "params": {"strategy": "EMA_PULLBACK"},
-                "reason": "BOLLINGER não lucrativo em WIN_M15, trocar para EMA_PULLBACK"
+                "reason": "BOLLINGER não lucrativo em WSP, trocar para EMA_PULLBACK"
             }
         ]
     }
@@ -147,7 +147,7 @@ def test_apply_changes_updates_strategy_field(tmp_path):
         f"Esperado exatamente 1 aplicação de strategy, achou {len(strategy_applied)}: {applied}"
     )
     assert strategy_applied[0]["params"]["strategy"] == "EMA_PULLBACK"
-    assert cfg["win"]["strategy"] == "EMA_PULLBACK"
+    assert cfg["wsp"]["strategy"] == "EMA_PULLBACK"
     # Verifica que save_params foi chamado com strategy
     assert any("strategy" in params for sym, params in saved_calls)
 

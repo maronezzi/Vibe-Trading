@@ -1478,12 +1478,44 @@ def apply_changes(llm_result: dict, config: dict, dry_run: bool = False) -> list
             log.info(line)
 
         if not dry_run:
-            ok = save_params(symbol.lower(), clamped_params, updated_by="agi_17h_llm")
-            status = "✅" if ok else "❌"
-            log.info(f"{status} {symbol} aplicado")
+            # ── EVIDÊNCIA REAL: gate contra dados do DB antes de salvar ──
+            try:
+                from optimization.agi_evidence_validator import validate_against_reality
+                ok_evidence, reason_evidence = validate_against_reality(
+                    symbol, clamped_params, str(DB_PATH)
+                )
+                if not ok_evidence:
+                    log.warning(f"🚫 {symbol} BLOQUEADO por evidência real: {reason_evidence}")
+                    all_warnings.append(f"{symbol}: {reason_evidence}")
+                    ok = False
+                    # Pula save_params — mudança NÃO é aplicada
+                    log.info(f"⛔ {symbol} NÃO aplicado (bloqueado por validate_against_reality)")
+                else:
+                    ok = save_params(symbol.lower(), clamped_params, updated_by="agi_17h_llm")
+                    status = "✅" if ok else "❌"
+                    log.info(f"{status} {symbol} aplicado")
+            except ImportError:
+                # Fallback se o módulo não existir (não deve acontecer)
+                ok = save_params(symbol.lower(), clamped_params, updated_by="agi_17h_llm")
+                log.info(f"{'✅' if ok else '❌'} {symbol} aplicado (validator ausente)")
+            except Exception as e:
+                log.warning(f"validate_against_reality falhou com exception: {e} — fail-open")
+                ok = save_params(symbol.lower(), clamped_params, updated_by="agi_17h_llm")
+                log.info(f"{'✅' if ok else '❌'} {symbol} aplicado (fail-open após erro)")
         else:
             ok = True
             log.info(f"🔍 [DRY-RUN] {symbol} não aplicado")
+            # No dry-run, mesmo assim rodar o validator pra logging
+            try:
+                from optimization.agi_evidence_validator import validate_against_reality
+                ok_ev, reason_ev = validate_against_reality(symbol, clamped_params, str(DB_PATH))
+                if not ok_ev:
+                    log.warning(f"🚫 [DRY-RUN] {symbol} SERIA BLOQUEADO por evidência: {reason_ev}")
+                    all_warnings.append(f"{symbol} (dry-run): {reason_ev}")
+                else:
+                    log.info(f"✅ [DRY-RUN] {symbol} passaria no validator de evidência")
+            except ImportError:
+                pass
 
         applied.append({
             "symbol": symbol,
