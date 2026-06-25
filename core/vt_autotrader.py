@@ -497,14 +497,32 @@ def _is_safe_time_window() -> bool:
         return False
     return True
 
-
 def _check_cooldown(symbol: str, params: dict, tf: str = "", direction: str = "") -> bool:
     """Retorna True se pode operar (cooldown ok).
+
     Cooldown por (symbol, tf, direction) para evitar reversões rápidas.
-    Falls back a cooldown por symbol se tf/direction vazios.
+
+    Ordem de resolução do cooldown_seconds (mais específica → menos):
+      1. params do caller (vindo de _get_params_for_tf: por symbol+TF)
+      2. CONFIG[symbol] (base do ativo)
+      3. CONFIG["win"] (fallback final)
+      4. 300s (default hardcoded)
     """
     now = datetime.now()
-    cd = params.get("cooldown_seconds", 300)
+
+    # Resolve cooldown_seconds em ordem de prioridade (FIX: respeita params_by_tf)
+    cd = None
+    if params and isinstance(params, dict):
+        cd = params.get("cooldown_seconds")
+    if cd is None:
+        _root = symbol[:3].lower() if len(symbol) >= 3 else symbol.lower()
+        _sym_params = CONFIG.get(_root, {})
+        cd = _sym_params.get("cooldown_seconds") if isinstance(_sym_params, dict) else None
+    if cd is None:
+        cd = CONFIG.get("win", {}).get("cooldown_seconds") if isinstance(CONFIG.get("win"), dict) else None
+    if cd is None or not isinstance(cd, (int, float)) or cd <= 0:
+        cd = 300  # default final
+
     if tf and direction:
         key = f"{symbol}_{tf}_{direction}"
         last_time = state.last_trade_time.get(key)

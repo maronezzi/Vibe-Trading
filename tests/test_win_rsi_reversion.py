@@ -94,18 +94,21 @@ class TestWinStrategyConsolidation(unittest.TestCase):
         self.assertLessEqual(rsi_os, 40, f"rsi_oversold={rsi_os} muito alto")
 
     def test_win_sl_atr_mult_at_current_validated_level(self):
-        """sl_atr_mult WIN no nível 1.0 (floor de safety; AGI evoluiu de 1.1→1.0).
+        """sl_atr_mult WIN no nível 1.5 (aumentado 2026-06-25 de 1.0 → 1.5).
 
-        O floor de sl_atr_mult foi elevado para 1.0 (commit 51820b064 —
-        stops abaixo disso são noise-level). WIN está em 1.0.
+        O sl_atr_mult WIN foi elevado de 1.0 para 1.5 em 2026-06-25 após
+        auditoria revelar que WIN M5 STRONG_TREND perdia -R$293 em 30 trades
+        com SL 1.0x ATR estopando por ruído de microestrutura (19/30 saíam
+        em <5min). Valor 1.5 dá mais espaço para o trade respirar sem
+        explodir loss máximo (max_native=800pts WIN = R$160 max).
         """
         from vt_config_loader import load_config
         config = load_config()
         win_params = config.get("win", {})
         sl = win_params.get("sl_atr_mult")
         self.assertEqual(
-            sl, 1.0,
-            f"WIN sl_atr_mult deveria estar em 1.0 (floor de safety). Achou {sl}."
+            sl, 1.5,
+            f"WIN sl_atr_mult deveria estar em 1.5 (aumentado 2026-06-25). Achou {sl}."
         )
 
 
