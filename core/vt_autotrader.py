@@ -1577,11 +1577,21 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         else:
             profit = (entry_price - current_price) * point_val
 
+        # Calcular preço teórico do SL que foi enviado pro broker — habilita
+        # diagnóstico de slippage real (exit_price - exit_sl_price). Sem isso,
+        # 100% dos SL_SERVIDOR ficam sem exit_sl_price gravado no DB
+        # (bug identificado 2026-06-26, 276/309 trades afetados).
+        if direction == "BUY":
+            exit_sl_price = entry_price - abs(pos.get("sl_pts", 0)) * point_val
+        else:
+            exit_sl_price = entry_price + abs(pos.get("sl_pts", 0)) * point_val
+
         exit_result = log_exit(
             trade_log_id,
             exit_price=current_price,
             exit_reason="SL_SERVIDOR",
             exit_ticket="server",
+            exit_sl_price=exit_sl_price,
             swap=0,
             notes=f"Posição fechada pelo servidor MT5. PnL estimado: R${profit:.2f}. Fees serão sincronizados no EOD.",
         )
