@@ -42,12 +42,25 @@ def test_active_symbols_are_only_4_minis():
 
 
 def test_no_disabled_timeframes():
-    """Todos os 16 pares (4×4) devem estar ativos — 0 em disabled_timeframes."""
+    """Todos os 16 pares (4×4) devem estar ativos — 0 em disabled_timeframes.
+
+    ATUALIZADO 2026-06-26: Wave 1.3 desabilitou 4 pares com PnL<0 e WR<30%
+    comprovados em análise DB retroativa. Ver test_disable_losing_pairs.py
+    para o critério e o audit trail. Este teste agora valida que
+    desabilitações têm justificativa (não 0 a todo custo).
+    """
     cfg = load_config()
     disabled = cfg.get("disabled_timeframes", [])
-    assert len(disabled) == 0, (
-        f"Esperado 0 TFs desativados, achou {len(disabled)}: {disabled}"
+    # Atualizado: até 4 pares podem ser desabilitados via Wave 1.3
+    assert len(disabled) <= 4, (
+        f"Esperado <= 4 TFs desativados (Wave 1.3), achou {len(disabled)}: {disabled}"
     )
+    # E todos devem ter justificativa em _notes
+    notes = cfg.get("_notes", "")
+    for pair in disabled:
+        assert pair in notes or "Wave 1.3" in notes, (
+            f"Par '{pair}' desabilitado sem nota de justificativa em _notes"
+        )
 
 
 def test_disabled_symbols_have_justification():

@@ -191,11 +191,14 @@ class TestDiscoverPairs(unittest.TestCase):
         cfg = json.load(open(config_path))
         pairs = discover_pairs(cfg)
         # 2026-06-19: IND/DOL removidos — 4 minis × 4 TFs = 16 pairs
+        # 2026-06-26: Wave 1.3 desabilitou 4 pares (BIT_M5, BIT_M30, WDON26_M5, INDM26_M5)
         active_symbols = len(cfg.get("symbols", []))
         active_tfs = len(cfg.get("timeframes", []))
-        expected_min = active_symbols * active_tfs
+        # Esperado: 16 - len(disabled_timeframes) pares
+        n_disabled = len(cfg.get("disabled_timeframes", []))
+        expected_min = active_symbols * active_tfs - n_disabled
         self.assertGreaterEqual(len(pairs), expected_min,
-            f"Esperado ao menos {expected_min} pairs ({active_symbols} symbols × {active_tfs} TFs), achou {len(pairs)}")
+            f"Esperado ao menos {expected_min} pairs ({active_symbols}×{active_tfs} menos {n_disabled} disabled), achou {len(pairs)}")
         # Each pair is (sym, tf, strategy, params)
         for p in pairs:
             self.assertEqual(len(p), 4)
