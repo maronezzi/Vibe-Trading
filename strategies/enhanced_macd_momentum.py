@@ -135,9 +135,13 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
         return None
 
     # ENHANCED: Volume confirmation — require above-average volume
+    # Wave 2.5 (2026-06-26): ordem do fallback padronizada para
+    # tick_volume PRIMEIRO (consistente com outras 5 estratégias).
+    # MT5 retorna 'tick_volume' em barras; 'volume' é frequentemente
+    # 0 ou None, causando vol_ratio subdimensionado.
     if bars and len(bars) >= 20:
-        recent_vol = sum(float(b.get("volume", b.get("tick_volume", 1)) or 1) for b in bars[:5]) / 5
-        avg_vol = sum(float(b.get("volume", b.get("tick_volume", 1)) or 1) for b in bars[:20]) / 20
+        recent_vol = sum(float(b.get("tick_volume", b.get("volume", 1)) or 1) for b in bars[:5]) / 5
+        avg_vol = sum(float(b.get("tick_volume", b.get("volume", 1)) or 1) for b in bars[:20]) / 20
         if avg_vol > 0:
             vol_ratio = recent_vol / avg_vol
             # v3: Require volume above 70% of average (was 20% in v2)

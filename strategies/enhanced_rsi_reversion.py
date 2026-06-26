@@ -101,9 +101,11 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
             return None  # Price not near enough to upper band
 
     # ENHANCED: Volume confirmation
+    # Wave 2.5 (2026-06-26): ordem do fallback padronizada para
+    # tick_volume PRIMEIRO (consistente com outras estratégias).
     if bars and len(bars) >= 20:
-        recent_vol = sum(float(b.get("volume", b.get("tick_volume", 1)) or 1) for b in bars[:5]) / 5
-        avg_vol = sum(float(b.get("volume", b.get("tick_volume", 1)) or 1) for b in bars[:20]) / 20
+        recent_vol = sum(float(b.get("tick_volume", b.get("volume", 1)) or 1) for b in bars[:5]) / 5
+        avg_vol = sum(float(b.get("tick_volume", b.get("volume", 1)) or 1) for b in bars[:20]) / 20
         if avg_vol > 0:
             vol_ratio = recent_vol / avg_vol
             # Require at least 80% of average volume
