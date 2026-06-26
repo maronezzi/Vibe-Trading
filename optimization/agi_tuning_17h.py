@@ -2027,14 +2027,41 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
             source = "optimizer"
 
     if bt_n_trades == 0:
-        # Fallback: usar DB real (perf["by_symbol"] tem PnL + n_trades)
-        # Isso é o que Bruno quer ver — expectativa baseada no que
-        # JÁ aconteceu, projetada pra 30 dias à frente.
-        for sym_data in perf.get("by_symbol", {}).values():
-            bt_total_pnl += sym_data.get("total_pnl", 0)
-            bt_n_trades += sym_data.get("n_trades", 0)
-        if bt_n_trades > 0:
-            source = "DB real (últimos 30d)"
+        # Fallback: usar PnL HOJE (não 30d históricos que incluem bugs antigos)
+        # Bruno: "nunca mostrar PnL histórico ruim. Sempre progresso forward."
+        # Wave 6.3.1.2: priorizar PnL de hoje (após todas as Waves aplicadas)
+        # e só se vazio, usar últimos 7d (semana atual).
+        today_data = perf.get("today", {})
+        if today_data and any(d.get("n_trades", 0) > 0 for d in today_data.values()):
+            for sym_data in today_data.values():
+                bt_total_pnl += sym_data.get("total_pnl", 0)
+                bt_n_trades += sym_data.get("n_trades", 0)
+            if bt_n_trades > 0:
+                source = "DB real (HOJE — pós-Waves)"
+        else:
+            # Sem dados de hoje — usar últimos 7d (não 30d)
+            cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+            for sym_data in perf.get("by_symbol", {}).values():
+                bt_total_pnl += sym_data.get("total_pnl", 0)  # base, mas filtramos depois
+                bt_n_trades += sym_data.get("n_trades", 0)
+            if bt_n_trades > 0:
+                # Fallback: usar últimos 7d do DB
+                try:
+                    conn = sqlite3.connect(str(DB_PATH))
+                    conn.row_factory = sqlite3.Row
+                    bt_total_pnl = 0
+                    bt_n_trades = 0
+                    for r in conn.execute("""
+                        SELECT COALESCE(SUM(net_pnl), 0), COUNT(*)
+                        FROM trades WHERE entry_time >= ? AND exit_time IS NOT NULL
+                    """, (cutoff,)).fetchall():
+                        bt_total_pnl = r[0] or 0
+                        bt_n_trades = r[1] or 0
+                    conn.close()
+                    if bt_n_trades > 0:
+                        source = "DB real (últimos 7d)"
+                except Exception:
+                    source = "DB real (últimos 30d — fallback final)"
 
     # Calcular expectativa forward-looking
     expectation = calculate_daily_expectation(
