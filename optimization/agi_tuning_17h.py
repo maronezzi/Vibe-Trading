@@ -1259,7 +1259,11 @@ def build_llm_prompt(perf: dict, issues: list, config: dict, web_intel: dict = N
             prompt += f"  {{\"symbol\": \"{sym}\", \"params\": {{"
             params_json = []
             if opt.get('best_sl_atr_mult'):
-                params_json.append(f'"sl_atr_mult": {opt["best_sl_atr_mult"]}')
+                # Wave 8.8.2 (2026-06-26): snap para SL_ATR_GRID antes
+                # de virar sugestão. AGI best_sl_atr_mult pode ser
+                # número "mágico" (1.006448) — sem snap, vira overfit.
+                snapped_sl = _round_sl_atr_to_grid(opt["best_sl_atr_mult"])
+                params_json.append(f'"sl_atr_mult": {snapped_sl}')
             if opt.get('best_cooldown_seconds'):
                 params_json.append(f'"cooldown_seconds": {opt["best_cooldown_seconds"]}')
             if opt.get('best_bb_std'):
