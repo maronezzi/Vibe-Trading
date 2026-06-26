@@ -181,7 +181,9 @@ class TestDiscoverPairs(unittest.TestCase):
     def test_current_vt_config_loads_correctly(self):
         """Integration test: real vt_config.json should load all active pairs.
 
-        2026-06-19: IND e DOL foram removidos. Esperado: 4 symbols × 4 TFs = 16 pairs.
+        2026-06-19: IND e DOL foram removidos. 4 symbols × 4 TFs = 16 pairs.
+        2026-06-26: Wave 9 reativou IND_M15 BOLLINGER.
+        Esperado: 5 symbols × 4 TFs = 20 pairs (menos 3 disabled = 17).
         """
         from vt_forward_backtest import discover_pairs
         import json
@@ -204,9 +206,10 @@ class TestDiscoverPairs(unittest.TestCase):
             self.assertEqual(len(p), 4)
             sym, tf, strategy, params = p
             self.assertIsInstance(sym, str)
-            # 2026-06-19: IND/DOL não devem mais aparecer nos pairs ativos
-            self.assertNotIn(sym, ["IND", "DOL"],
-                f"{sym} foi removido da config em 19/06/2026 — não deveria estar em discover_pairs")
+            # 2026-06-19: DOL removido. IND reativado Wave 9 (M15 BOLLINGER).
+            # Então em 26/06/2026: DOL não deve aparecer, IND SIM.
+            self.assertNotIn(sym, ["DOL"],
+                f"{sym} removido da config em 19/06/2026 — não deveria estar em discover_pairs")
             self.assertIn(tf, ["M5", "M15", "M30", "H1"])
             self.assertIsInstance(strategy, str)
             self.assertIsInstance(params, dict)

@@ -20,7 +20,7 @@ from pathlib import Path
 CONFIG_PATH = Path(__file__).parent.parent / "vt_config.json"
 
 # Símbolos ativos a partir de 2026-06-19 (4 minis)
-ACTIVE_SYMBOLS = ["WIN", "BIT", "WSP", "WDO"]
+ACTIVE_SYMBOLS = ["WIN", "BIT", "WSP", "WDO", "IND"]  # Wave 9: IND_M15 BOLLINGER reativado
 ACTIVE_TIMEFRAMES = ["M5", "M15", "M30", "H1"]
 
 
@@ -106,16 +106,21 @@ def test_no_ind_dol_residual_in_known_keys():
             )
 
     # 2. Chaves simples conhecidas (volume_by_symbol, resolved_symbols, etc.)
+    #    Wave 9 (2026-06-26): IND_M15 BOLLINGER reativado (edge de elite,
+    #    PnL HOJE +R$ 609, WR 80%). IND permitido em symbols/
+    #    volume_by_symbol/resolved_symbols. DOL continua 100% removido.
     for key in ["symbols", "volume_by_symbol", "resolved_symbols", "contract_specs"]:
         entries = cfg.get(key, {})
         if isinstance(entries, list):
             for s in entries:
-                if s in {"IND", "DOL"}:
-                    raise AssertionError(f"Resíduo de IND/DOL em '{key}': {s}")
+                if s == "DOL":
+                    raise AssertionError(f"Resíduo de DOL em '{key}': {s}")
+                # IND permitido (Wave 9)
         elif isinstance(entries, dict):
             for k in entries:
-                if k in {"IND", "DOL", "IND$", "DOL$"}:
-                    raise AssertionError(f"Resíduo de IND/DOL em '{key}.{k}'")
+                if k in {"DOL", "DOL$"}:
+                    raise AssertionError(f"Resíduo de DOL em '{key}.{k}'")
+                # IND permitido
 
     # 3. Validação de contagem: todos os 16 pares ativos (4 minis × 4 TFs)
     #    DEVEM estar presentes em cada dict. Extras são tolerados porque

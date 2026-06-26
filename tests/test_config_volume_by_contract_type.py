@@ -60,14 +60,16 @@ def test_dol_out_of_circulation():
 
 
 def test_ind_out_of_circulation():
-    """IND (índice cheio) foi removido por decisão do Bruno em 2026-06-19."""
+    """IND M15 reativado Wave 9 (BOLLINGER edge, PnL HOJE +R$ 609, WR 80%).
+
+    Volume deve estar configurado para IND.
+    """
     cfg = load_config()
-    assert "IND" not in cfg.get("symbols", []), (
-        "IND foi removido por decisão do Bruno em 19/06/2026. "
-        "Para reativar, confirme com ele e ajuste este teste."
+    assert "IND" in cfg.get("symbols", []), (
+        "IND_M15 BOLLINGER reativado Wave 9 (deve estar em symbols)"
     )
-    assert "IND" not in cfg.get("volume_by_symbol", {}), (
-        "IND fora de circulação — não deve ter volume configurado."
+    assert "IND" in cfg.get("volume_by_symbol", {}), (
+        "IND reativado — deve ter volume configurado"
     )
 
 
@@ -124,43 +126,49 @@ def test_wsp_is_mini_contract_with_volume_1():
 # ─── Cobertura total ──────────────────────────────────────────────────────────
 
 def test_all_active_symbols_have_volume_configured():
-    """Todos os symbols ativos (4 minis) devem ter volume_by_symbol explícito."""
+    """Cada symbol ativo deve ter volume_by_symbol configurado.
+
+    Wave 9 (2026-06-26): IND reativado (M15 BOLLINGER edge de elite).
+    """
     cfg = load_config()
     vol_by_sym = cfg.get("volume_by_symbol", {})
     active = set(cfg.get("symbols", []))
-    expected = {"WIN", "WDO", "BIT", "WSP"}
+    expected = {"WIN", "WDO", "BIT", "WSP", "IND"}  # Wave 9: IND reativado
 
     assert active == expected, (
         f"símbolos ativos esperados: {expected}, atual: {active}"
     )
     assert set(vol_by_sym.keys()) == expected, (
-        f"volume_by_symbol deve cobrir apenas os 4 minis ativos. "
+        f"volume_by_symbol deve cobrir todos os símbolos ativos. "
         f"Esperado: {expected}, Atual: {set(vol_by_sym.keys())}"
     )
 
 
 def test_resolved_symbols_only_minis():
-    """Apenas minis devem ter resolved_symbols (cheios fora de circulação).
+    """Apenas WIN/WDO/BIT/WSP e IND devem ter resolved_symbols.
 
-    Não hardcode o contrato exato (WINQ26/WDOQ26/...) — ele muda a cada roll
-    mensal. Checa apenas que os 4 minis têm um resolved e cada um começa com
-    a raiz do mini.
+    Wave 9: IND reativado com M15 BOLLINGER.
+    Não hardcode o contrato exato (WINQ26/INDM26/...) — ele muda a cada roll
+    mensal. Checa apenas que os 5 symbols têm um resolved e cada um começa com
+    a raiz correta.
     """
     cfg = load_config()
     resolved = cfg.get("resolved_symbols", {})
 
-    mini_roots = {"WIN", "WDO", "BIT", "WSP"}
-    assert set(resolved.keys()) == mini_roots, (
-        f"resolved_symbols deve conter exatamente os 4 minis. "
-        f"Esperado: {mini_roots}, Atual: {set(resolved.keys())}"
+    # Wave 9: IND reativado (4 minis + IND)
+    expected_roots = {"WIN", "WDO", "BIT", "WSP", "IND"}
+    assert set(resolved.keys()) == expected_roots, (
+        f"resolved_symbols deve conter os 4 minis + IND (Wave 9). "
+        f"Esperado: {expected_roots}, Atual: {set(resolved.keys())}"
     )
-    for root in mini_roots:
+    for root in expected_roots:
         contract = resolved.get(root)
         assert contract and contract.startswith(root), (
-            f"{root} resolved deveria começar com '{root}' (mini), "
+            f"{root} resolved deveria começar com '{root}', "
             f"atual: {contract!r}"
         )
 
     # E nenhum contrato cheio presente
     assert "DOL" not in resolved, "DOL fora de circulação — não deve ter resolved_symbol"
-    assert "IND" not in resolved, "IND fora de circulação — não deve ter resolved_symbol"
+    # Wave 9: IND reativado (M15 BOLLINGER edge de elite, PnL HOJE +R$ 609)
+    # IND AGORA é permitido em resolved_symbols (mas só IND, não DOL).
