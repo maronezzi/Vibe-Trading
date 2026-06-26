@@ -29,12 +29,12 @@ sys.path.insert(0, PROJECT_ROOT)
 
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "vt_config.json")
 
-# Pares desabilitados pelo Wave 1.3 (análise DB 2026-06-26, retroativo 30d)
+# Pares desabilitados pelo Wave 1.3 (análise DB 2026-06-26, retroativo 30d).
+# ATUALIZADO 2026-06-26: WDON26_M5 e INDM26_M5 são contratos INVÁLIDOS
+# (não existem no MT5). Removidos da lista Wave 8.8 cleanup.
 LOSING_PAIRS_TO_DISABLE = [
     "BIT_M5",
     "BIT_M30",
-    "WDON26_M5",
-    "INDM26_M5",
 ]
 
 

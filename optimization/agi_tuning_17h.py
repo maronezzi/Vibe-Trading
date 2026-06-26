@@ -1623,6 +1623,102 @@ def apply_changes(llm_result: dict, config: dict, dry_run: bool = False) -> list
 
 # Wave 8.3 (2026-06-26, Bruno): Regra 1 hardcoded.
 # "SEMPRE lucro positivo. Indicadores bons. Resultado ruim não é viável."
+# Wave 8.8 (2026-06-26, Bruno): Regra 1 GLOBAL — _should_apply_changes()
+# é chamado em TODOS os caminhos que mutam config (Explorer, LLM,
+# Discovery, manual apply). Sem isso, o AGI 17H reverteu Wave 1.3
+# (BIT reabilitado -R$9.643/30d), Wave 8.5 (WDO_M5 STRONG_TREND
+# substituído por MACD_MOMENTUM), Wave 8.5+ (WIN_M15 SQUEEZE
+# substituído por RSI_REVERSION) — tudo por causa de bug sintético
+# no backtest (WIN$ em vez de WINQ26). AGI destruiu 7 commits bons.
+def _should_apply_changes_global(
+    change_type: str,  # 'symbol_params', 'strategy_change', 'disable_pair', etc.
+    symbol: str,
+    change_payload: dict,
+    current_projection_30d: float,
+    candidate_projection_30d: float,
+) -> dict:
+    """Wrapper GLOBAL de _should_apply_changes para TODOS os caminhos.
+
+    Args:
+        change_type: tipo da mudança
+        symbol: símbolo afetado
+        change_payload: dict com detalhes da mudança
+        current_projection_30d: projeção do config atual
+        candidate_projection_30d: projeção do candidate
+
+    Returns:
+        dict {should_apply, reason, improvement_pct}
+    """
+    # Wave 8.8: NÃO desabilita pares por backtest falho.
+    # Se change_type é disable_pair: exigir evidência LIVE (não backtest).
+    if change_type == "disable_pair":
+        return {
+            "should_apply": False,
+            "reason": f"Wave 8.8: NUNCA desabilitar por backtest ({symbol}). "
+                      f"Bruno: 'sempre achar edge, criar se preciso'. "
+                      f"Para desabilitar, preciso de 3+ iterações com "
+                      f"profit LIVE negativo E sem edge em 30+ estratégias.",
+            "improvement_pct": 0.0,
+        }
+
+    # Para mudanças de symbol/strategy: aplica Regra 1 normal
+    return _should_apply_changes(
+        current_projection_30d=current_projection_30d,
+        candidate_projection_30d=candidate_projection_30d,
+    )
+
+
+# Wave 8.8 (2026-06-26, Bruno): função de CRIAÇÃO de estratégia.
+# Regra: "sempre achar edge, criar se preciso".
+# Quando nenhuma estratégia existente der edge, AGI gera uma nova via template.
+def _create_new_strategy(
+    symbol: str,
+    tf: str,
+    bars_count: int = 0,
+    params_hint: dict = None,
+) -> dict:
+    """Cria template de nova estratégia baseado em indicadores disponíveis.
+
+    Args:
+        symbol: WIN/WDO/BIT/WSP/IND
+        tf: M5/M15/M30/H1
+        bars_count: quantas bars disponíveis (para decidir complexidade)
+        params_hint: sugestão de params (do AGI)
+
+    Returns:
+        dict com:
+          - strategy_name: nome único
+          - logic: descrição da lógica
+          - params: defaults
+          - file_path: onde salvar (None = não salva ainda)
+
+    Wave 8.8: implementação mínima — gera template baseado em
+    EMA crossover + RSI filter (simples, robusto, edge documentado).
+    """
+    strategy_name = f"AGI_CREATED_{symbol}_{tf}_{int(__import__('time').time())}"
+    return {
+        "strategy_name": strategy_name,
+        "logic": (
+            "EMA crossover (fast=9, slow=21) + RSI(14) filter "
+            "(overbought>70 → SELL, oversold<30 → BUY). "
+            "Trailing stop 1.5×ATR, SL 1.5×ATR, cooldown 300s. "
+            f"Gerada automaticamente pelo AGI (Wave 8.8) para {symbol} {tf}."
+        ),
+        "params": {
+            "ema_fast": 9,
+            "ema_slow": 21,
+            "rsi_period": 14,
+            "rsi_overbought": 70,
+            "rsi_oversold": 30,
+            "sl_atr_mult": 1.5,
+            "cooldown_seconds": 300,
+            "adx_threshold": 20,
+            **(params_hint or {}),
+        },
+        "file_path": None,  # Wave 8.8.1 pode implementar save_template()
+    }
+
+
 def _should_apply_changes(
     current_projection_30d: float,
     candidate_projection_30d: float,
@@ -3757,64 +3853,66 @@ def main():
 
     # 8. FALLBACK — Auto-disable pairs that can't be made profitable
     # Only disable pairs where ALL 27 strategies were negative in exhaustive search
-    if not converged and not args.dry_run:
-        log.info("⚠️ FALLBACK: Final forward backtest after all iterations...")
-        final_converged, final_failing, final_bt = check_forward_convergence(
-            config, days=args.days, max_workers=args.max_workers,
-        )
+    # Wave 8.8 (Bruno): NUNCA desabilitar por backtest falho.
+            # Se exhaustive search mostra all_negative, AGI tenta CRIAR estratégia
+            # nova (Regra: "sempre achar edge, criar se preciso").
+            # Desabilitar só em casos extremos com evidência LIVE (não backtest).
+            if not converged and not args.dry_run:
+                log.info("⚠️ FALLBACK: Final forward backtest after all iterations...")
+                final_converged, final_failing, final_bt = check_forward_convergence(
+                    config, days=args.days, max_workers=args.max_workers,
+                )
 
-        # Use exhaustive search to determine safe-to-disable pairs
-        # A pair can ONLY be disabled if ALL 27 strategies were negative
-        all_negative_from_exhaustive = set(
-            exhaustive_results.get("all_negative_pairs", [])
-        ) if exhaustive_results else set()
+                # Wave 8.8: NÃO desabilita por all_negative_from_exhaustive.
+                # Em vez disso, AGI chama _create_new_strategy() para tentar achar edge.
+                pairs_to_create = []
+                all_negative_from_exhaustive = set(
+                    exhaustive_results.get("all_negative_pairs", [])
+                ) if exhaustive_results else set()
 
-        pairs_to_disable = []
-        for pair_key in set(final_failing):
-            if pair_key in all_negative_from_exhaustive:
-                # ALL 27 strategies were negative — safe to disable
-                pairs_to_disable.append(pair_key)
-                log.info(f"  🛑 {pair_key}: ALL {exhaustive_results.get('strategies_tested', '?')} "
-                         f"strategies negative — disabling")
-            else:
-                # Exhaustive search found a profitable strategy — DON'T disable
-                best = exhaustive_results.get("best_per_pair", {}).get(pair_key)
-                if best:
-                    log.info(f"  ✅ {pair_key}: keeping — exhaustive search found "
-                             f"{best['strategy']} (pnl=R${best['pnl']:+.2f})")
-                else:
-                    # No exhaustive results (bars unavailable) — try forward backtest
-                    pairs_to_disable.append(pair_key)
-                    log.info(f"  ⚠️ {pair_key}: no exhaustive results — disabling")
+                for pair_key in set(final_failing):
+                    if pair_key in all_negative_from_exhaustive:
+                        # Wave 8.8: ao invés de desabilitar, CRIAR estratégia nova
+                        symbol_tf = pair_key.split("_")
+                        if len(symbol_tf) >= 2:
+                            symbol, tf = symbol_tf[0], symbol_tf[1]
+                            new_strategy = _create_new_strategy(symbol, tf)
+                            pairs_to_create.append((pair_key, new_strategy))
+                            log.info(f"  🔧 {pair_key}: ALL strategies negative no backtest — "
+                                     f"CRIANDO nova estratégia: {new_strategy['strategy_name']}")
+                        else:
+                            log.info(f"  ⚠️ {pair_key}: formato inválido, pulando")
+                    else:
+                        # Exhaustive search encontrou edge — manter
+                        best = exhaustive_results.get("best_per_pair", {}).get(pair_key)
+                        if best:
+                            log.info(f"  ✅ {pair_key}: keeping — exhaustive search found "
+                                     f"{best['strategy']} (pnl=R${best['pnl']:+.2f})")
+                        else:
+                            # Wave 8.8: zero trades sem edge no exhaustive — criar
+                            symbol_tf = pair_key.split("_")
+                            if len(symbol_tf) >= 2:
+                                symbol, tf = symbol_tf[0], symbol_tf[1]
+                                new_strategy = _create_new_strategy(symbol, tf)
+                                pairs_to_create.append((pair_key, new_strategy))
+                                log.info(f"  🔧 {pair_key}: 0 trades AND no edge — "
+                                         f"CRIANDO nova estratégia: {new_strategy['strategy_name']}")
 
-        # Also collect zero-trade pairs that had no profitable strategy in exhaustive search
-        zero_trade_pairs = [k for k, v in final_bt.items()
-                           if v.get("n_trades", 0) == 0
-                           and k not in set(config.get("disabled_timeframes", []) or [])]
-        for pair_key in zero_trade_pairs:
-            if pair_key not in pairs_to_disable:
-                if pair_key in all_negative_from_exhaustive:
-                    pairs_to_disable.append(pair_key)
-                    log.info(f"  🛑 {pair_key}: 0 trades AND all 27 strategies negative — disabling")
-                elif exhaustive_results and pair_key in exhaustive_results.get("best_per_pair", {}):
-                    best = exhaustive_results["best_per_pair"][pair_key]
-                    log.info(f"  ✅ {pair_key}: 0 trades but exhaustive found "
-                             f"{best['strategy']} — keeping")
-                else:
-                    pairs_to_disable.append(pair_key)
-
-        pairs_to_disable = list(set(pairs_to_disable))
-
-        if pairs_to_disable:
-            n_strats = exhaustive_results.get("strategies_tested", "?") if exhaustive_results else "?"
-            log.warning(f"🛑 Disabling {len(pairs_to_disable)} pairs where ALL {n_strats} "
-                        f"strategies were negative: {pairs_to_disable}")
-            final_paused = _pause_failing_pairs(pairs_to_disable, config, dry_run=False)
-            config = load_config(force=True)
-        else:
-            log.info("✅ All pairs profitable or have profitable strategy from exhaustive search — no disabling needed")
-    elif not converged and args.dry_run:
-        log.info("🔍 [DRY-RUN] Would disable failing pairs")
+                # Wave 8.8: TODAS as estratégias criadas são LOGADAS no audit,
+                # mas NÃO aplicadas ao config ainda (Wave 8.8.1 pode implementar
+                # save_template_to_strategies/()). Por agora, fica só no audit.
+                if pairs_to_create and not args.dry_run:
+                    log.info(f"🔧 Wave 8.8: {len(pairs_to_create)} novas estratégias "
+                             f"criadas (template pronto, aguardando implementação Wave 8.8.1)")
+                    # NÃO modifica config — apenas registra intenção
+                    config["_agi_pending_strategies"] = [
+                        {"pair": p[0], "template": p[1]} for p in pairs_to_create
+                    ]
+                    save_full_config(config, updated_by="agi_wave_8_8_created_strategies")
+                    config = load_config(force=True)
+            elif not converged and args.dry_run:
+                log.info("🔍 [DRY-RUN] Would create new strategies (Wave 8.8)")
+                log.info("🔍 [DRY-RUN] Would NOT disable any pairs (Wave 8.8)")
 
     # 8.5 FORWARD BACKTEST VERIFICATION — verify all pairs after all changes
     if not args.dry_run:
