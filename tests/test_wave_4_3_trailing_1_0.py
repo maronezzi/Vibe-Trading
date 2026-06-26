@@ -55,9 +55,8 @@ class TestTrailActivateAt1(unittest.TestCase):
         )
 
     def test_updated_by_is_wave_4_3(self):
-        """_updated_by deve indicar Wave 4.3 (ou wave_8_4+ posterior)."""
+        """_updated_by deve indicar Wave 4.3 (ou wave_8_6+ posterior)."""
         updated_by = self.config.get("_updated_by", "")
-        # Aceita wave_4_3 (original) ou wave_8_4 (Wave 8.4 sobrescreveu)
         self.assertTrue(
             "wave_4" in updated_by.lower() or "wave_8" in updated_by.lower(),
             f"_updated_by deve indicar 'wave_4' ou 'wave_8', está '{updated_by}'"

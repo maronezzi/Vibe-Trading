@@ -67,6 +67,57 @@ def _init_strategy_utils():
     }
 
 
+# Wave 8.6.2 (2026-06-26): sincroniza state.daily_pnl com DB.
+# Bug detectado: após restart, state em /tmp ficava off-by-one
+# com PnL real (não somava trades pré-restart). Causava notificações
+# Telegram com PnL errado.
+def _sync_daily_pnl_with_db(state):
+    """Recalcula state.daily_pnl, trade_count, wins, losses a partir do DB.
+
+    Chamado:
+    - Na inicialização do autotrader (depois de carregar state do disco)
+    - Pode ser chamado manualmente para forçar sync
+
+    Idempotente: se state já estiver em sync, não muda nada.
+    """
+    import sqlite3
+    from datetime import datetime as _dt
+
+    db_path = "/home/bruno/Projects/Vibe-Trading/vt_trades.db"
+    if not os.path.exists(db_path):
+        return
+    try:
+        db = sqlite3.connect(db_path)
+        today = _dt.now().strftime("%Y-%m-%d")
+        row = db.execute("""
+            SELECT COALESCE(SUM(net_pnl), 0),
+                   COUNT(*),
+                   COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0)
+            FROM trades WHERE date(entry_time) = ?
+            AND exit_time IS NOT NULL
+        """, (today,)).fetchone()
+        db.close()
+        if row is None:
+            return
+        db_pnl = row[0] or 0
+        db_n = row[1] or 0
+        db_wins = row[2] or 0
+        # Se difere do state (off-by-one), resincroniza
+        # Tolerância: R$ 0.01 (floats)
+        if (abs(state.daily_pnl - db_pnl) > 0.01 or
+            state.trade_count != db_n or
+            state.wins != db_wins):
+            print(f"[STATE] Resync com DB: daily_pnl R${state.daily_pnl:+.2f}→R${db_pnl:+.2f}, "
+                  f"n={state.trade_count}→{db_n}, wins={state.wins}→{db_wins}",
+                  flush=True)
+            state.daily_pnl = db_pnl
+            state.trade_count = db_n
+            state.wins = db_wins
+            state.losses = max(0, db_n - db_wins)
+    except Exception as e:
+        print(f"[STATE] Erro ao sincronizar com DB: {e}", flush=True)
+
+
 class SessionState:
     def __init__(self):
         self.positions = {}
@@ -175,6 +226,12 @@ class SessionState:
         self.wins = data.get("wins", 0)
         self.losses = data.get("losses", 0)
         self.daily_pnl = data.get("daily_pnl", 0)
+
+        # Wave 8.6.2 (2026-06-26): SINCRONIZA state.daily_pnl com DB.
+        # Bug detectado: state off-by-one após restart (não sincronizava
+        # trades pré-restart). Resultado: notificações Telegram com PnL
+        # errado até o final do dia.
+        _sync_daily_pnl_with_db(self)
 
         # Restaura halt_until (string → datetime)
         raw_halt = data.get("halt_until", {})
