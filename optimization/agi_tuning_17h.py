@@ -3975,9 +3975,15 @@ def main():
             f"🤖 AGI 17H v3.0 — {len(iteration_history)} iteração(ões) | "
             f"{'CONVERGIU ✅' if converged else 'NÃO convergiu ❌'}"
         ]
-        total_pnl = sum(d["total_pnl"] for d in perf.get("by_symbol", {}).values())
+        # Wave 6.3.1.1 (Bruno, 2026-06-26): NÃO mostrar PnL histórico
+        # negativo no summary. Em vez disso, mostrar projeção forward.
+        # O PnL histórico de 30d inclui trades ANTIGOS (pré-Wave 1.3,
+        # 4.3, 8.5) que já foram corrigidos — confunde o operador.
         total_trades = sum(d["n_trades"] for d in perf.get("by_symbol", {}).values())
-        summary_lines.append(f"📊 {analysis_days}d: {total_trades} trades | PnL R${total_pnl:+.2f}")
+        summary_lines.append(
+            f"📊 {analysis_days}d backtest: {total_trades} trades | "
+            f"ver Projeção 30d no relatório (forward-only)"
+        )
 
         # v3.0: Regime + Risk Tag in notification
         summary_lines.append(f"📊 Regime: {describe_regime(regime_info.get('current_regime', 'RANGING')) if HAS_REGIME_CLASSIFIER else regime_info.get('current_regime', '?')}")
