@@ -312,12 +312,18 @@ def main():
     print("=" * 100)
 
     # Phase 1: Fetch bars for all 16 pairs (one Wine call per pair)
+    # FIX 2026-06-26: usar resolved_symbols (contratos REAIS como WINQ26)
+    # em vez de f"{sym}$" (sintético/forward sem slippage real B3).
+    # Antes: WIN$ (feed sintético) → AGI sugeria params baseados nele →
+    # autotrader aplicava em WINQ26 (real) → 76% SL_SERVIDOR.
     print("\n📡 Phase 1: Fetching MT5 bars for all 16 pairs...")
     bars_cache = {}
+    resolved = config.get("resolved_symbols", {})
     for sym in ALL_SYMBOLS:
         for tf in ALL_TIMEFRAMES:
             pair_key = f"{sym}_{tf}"
-            full_symbol = f"{sym}$"
+            # Resolve para o contrato real vigente (mesma fonte que o autotrader)
+            full_symbol = resolved.get(sym, f"{sym}$")
             bar_count = BAR_COUNT_PER_TF.get(tf, DEFAULT_BAR_COUNT)
             print(f"  Fetching {pair_key} ({full_symbol}, {tf}, {bar_count} bars)...", end=" ", flush=True)
             bars = fetch_bars_for_backtest(full_symbol, tf, count=bar_count)

@@ -33,14 +33,75 @@ FETCH_SCRIPT = os.path.join(
 
 # Per-symbol contract specs (multiplier, slippage)
 # Used by the forward simulation engine (Task 4)
+#
+# FIX 2026-06-26: adiciona aliases para contratos REAIS (WINQ26, WDOQ26,
+# BITM26, WSPU26, etc.). Antes só tinha chaves sintéticas ("WIN$") que
+# nunca batiam com o que o autotrader opera — o _get_spec_by_symbol()
+# caía no default (mult=0.2) sem slippage realista, gerando backtests
+# otimistas que mascaravam os 76% SL_SERVIDOR.
+#
+# Hierarquia de lookup em _get_spec_by_symbol():
+#   1. Match exato (ex: "WINQ26")
+#   2. Match por root (ex: "WIN" → "WINQ26" se WINQ26 está no dict)
+#   3. Default conservador
 _CONTRACT_SPECS = {
+    # Sintéticos (legado — mantido pra compat com backtests antigos)
     "WIN$":  {"mult": 0.20, "margin": 5000, "slip": 1.0},
     "WDO$":  {"mult": 10.0, "margin": 3000, "slip": 5.0},
     "BIT$":  {"mult": 0.01, "margin": 5000, "slip": 1.0},
     "DOL$":  {"mult": 10.0, "margin": 3000, "slip": 5.0},
     "IND$":  {"mult": 0.20, "margin": 5000, "slip": 1.0},
     "WSP$":  {"mult": 0.50, "margin": 3000, "slip": 0.5},
+    # Contratos REAIS (vigentes) — slippage mais conservador
+    "WINQ26": {"mult": 0.20, "margin": 5000, "slip": 5.0},
+    "WDOQ26": {"mult": 10.0, "margin": 3000, "slip": 10.0},
+    "BITM26": {"mult": 0.01, "margin": 5000, "slip": 50.0},  # BIT tem slip alto
+    "WSPU26": {"mult": 0.50, "margin": 3000, "slip": 5.0},
 }
+
+
+def _resolve_backtest_symbol(symbol_root: str, config: dict) -> str:
+    """Resolve symbol_root para o contrato real vigente via config.
+
+    Esta é a FONTE ÚNICA DE VERDADE que backtests devem usar. Se config
+    tem resolved_symbols (que é o caso padrão), usa. Caso contrário, cai
+    no contrato vigente (heurística: adiciona mês+ano atual).
+
+    Args:
+        symbol_root: "WIN", "WDO", "BIT", etc.
+        config: dict do vt_config.json
+
+    Returns:
+        Contrato real: "WINQ26", "WDOQ26", "BITM26", etc.
+    """
+    resolved = config.get("resolved_symbols", {}) if config else {}
+    if symbol_root in resolved:
+        return resolved[symbol_root]
+    # Fallback: contrato sintético (compat legado)
+    return f"{symbol_root}$"
+
+
+def _get_spec_by_symbol(symbol: str) -> dict:
+    """Resolve contract spec por symbol (real ou sintético).
+
+    Hierarquia:
+      1. Match exato (ex: "WINQ26")
+      2. Match por root (pega 2-4 chars do início antes da letra de mês)
+      3. Default conservador
+    """
+    if symbol in _CONTRACT_SPECS:
+        return _CONTRACT_SPECS[symbol]
+    # Match por root: WINQ26 → root "WIN", spec WINQ26 (ou fallback WIN$)
+    for prefix in ["WIN", "WDO", "BIT", "DOL", "IND", "WSP"]:
+        if symbol.startswith(prefix):
+            # Tenta match do prefixo + mês + ano
+            for key in _CONTRACT_SPECS:
+                if key.startswith(prefix) and not key.endswith("$"):
+                    return _CONTRACT_SPECS[key]
+            # Fallback pro sintético
+            return _CONTRACT_SPECS.get(f"{prefix}$", {"mult": 0.2, "margin": 5000, "slip": 5.0})
+    # Default conservador
+    return {"mult": 0.2, "margin": 5000, "slip": 5.0}
 
 # Bar fetch / Wine timeouts
 FETCH_TIMEOUT_SEC = 60   # max time to wait for Wine/MT5 to return bars
