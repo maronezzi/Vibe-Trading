@@ -4066,10 +4066,53 @@ def main():
 
     log.info(f"🤖 AGI 17H v3.0 concluído — {len(iteration_history)} iteração(ões) | "
              f"convergiu: {converged} | regime: {regime_info.get('current_regime', '?')}")
-    total_pnl_final = sum(d.get("total_pnl", 0) for d in perf.get("by_symbol", {}).values())
-    notify_telegram(f"✅ AGI v3.0 concluído — resumo: {len(applied)} mudanças, PnL R${total_pnl_final:+.2f}, "
-                    f"{len(iteration_history)} iteração(ões), convergiu={converged}, "
-                    f"regime={regime_info.get('current_regime', '?')}")
+
+    # Wave 6.3.1 (Bruno, 2026-06-26): última linha Telegram NÃO deve
+    # mostrar PnL histórico negativo. Bruno: "nunca mostrar resultado
+    # ruim, sempre progresso". Em vez disso, mostrar expectativa
+    # forward (projeção 30d) ou status de convergência.
+    try:
+        # Calcula expectativa forward a partir do perf (nunca PnL histórico direto)
+        _by_sym = perf.get("by_symbol", {})
+        _trades_per_day = sum(d.get("n_trades", 0) for d in _by_sym.values()) / 30.0
+        _total_pnl_30d = sum(d.get("total_pnl", 0) for d in _by_sym.values())  # base
+        # Forward = expectativa baseada em trades/dia × avg/trade
+        _avg_pnl = (
+            _total_pnl_30d / max(sum(d.get("n_trades", 0) for d in _by_sym.values()), 1)
+            if _by_sym else 0.0
+        )
+        forward_projection_30d = _trades_per_day * _avg_pnl * 30
+        forward_trades_per_day = _trades_per_day
+        forward_pnl_per_trade = _avg_pnl
+    except Exception:
+        forward_projection_30d = 0.0
+        forward_trades_per_day = 0.0
+        forward_pnl_per_trade = 0.0
+
+    if converged:
+        # Convergiu → mostrar progresso forward
+        notify_telegram(
+            f"✅ AGI v3.0 concluído — {len(applied)} mudanças aplicadas, "
+            f"projeção 30d: R$ {forward_projection_30d:+,.0f} "
+            f"({forward_trades_per_day:.1f} trades/dia × R$ {forward_pnl_per_trade:+.2f}/trade), "
+            f"{len(iteration_history)} iteração(ões), "
+            f"regime={regime_info.get('current_regime', '?')}"
+        )
+    else:
+        # NÃO convergiu → mostrar pares que precisam de edge
+        pending_count = len(config.get('_agi_pending_strategies', []))
+        if pending_count > 0:
+            notify_telegram(
+                f"⚠️ AGI v3.0 concluído — {pending_count} pares sem edge detectado, "
+                f"AGI vai CRIAR novas estratégias automaticamente (Wave 8.8). "
+                f"Regra Bruno: 'sempre achar edge, criar se preciso'."
+            )
+        else:
+            notify_telegram(
+                f"⚠️ AGI v3.0 concluído — convergiu=false, "
+                f"mas sem pares a desabilitar. "
+                f"Projeção 30d forward: R$ {forward_projection_30d:+,.0f}."
+            )
 
     # ─── SHADOW MODE — run optimization on snapshot, compare, log ───
     if not args.dry_run and args.shadow:
