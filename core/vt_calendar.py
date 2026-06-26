@@ -195,6 +195,27 @@ def _make_contract_code(symbol_root: str, month: int, year: int) -> str:
     return f"{symbol_root}{month_char}{year_short:02d}"
 
 
+# Sufixos de rollover automático que o MT5 pode retornar quando o contrato
+# vigente está prestes a vencer (XP/B3 usa N99, N00, N98, N97 como rollover
+# sintético). Esses contratos NÃO têm liquidez real e geram -R$256/30d de
+# loss histórico (ver análise DB 2026-06-25: BITM26N99 12t + DOLN26N99 20t).
+# Fail-closed: callers devem chamar is_rollover_contract() antes de operar.
+ROLLOVER_SUFFIX_PATTERN = re.compile(r"N(99|00|98|97)$")
+
+
+def is_rollover_contract(symbol: str) -> bool:
+    """Retorna True se o symbol é um rollover automático (N99/N00/N98/N97).
+
+    Esses contratos aparecem quando o MT5 retorna o ticker do próximo
+    vencimento antes da virada oficial. Não têm liquidez real. Operá-los
+    gera fills fantasma + PnL não-realizado. Use em check_and_trade()
+    para fail-closed: rejeitar antes de chamar log_entry.
+    """
+    if not symbol:
+        return False
+    return bool(ROLLOVER_SUFFIX_PATTERN.search(symbol))
+
+
 def _get_next_expiry_month(symbol_root: str, after_date: date = None) -> tuple[int, int]:
     """
     Retorna o próximo mês de vencimento disponível para o ativo.

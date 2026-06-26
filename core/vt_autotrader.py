@@ -41,7 +41,7 @@ from core.vt_emergency import safe_modify_sl_with_emergency_close
 from core.vt_config_loader import load_config
 from core.vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
 from core.vt_order_validator_v2 import validate_order
-from core.vt_calendar import is_trading_day, resolve_all_symbols, get_contract_expiry, _parse_contract_code
+from core.vt_calendar import is_trading_day, resolve_all_symbols, get_contract_expiry, _parse_contract_code, is_rollover_contract
 
 # ===== CONFIGURAÇÃO =====
 # Config carregada do vt_config.json com hot reload
@@ -682,6 +682,14 @@ def check_and_trade():
 
         if not symbol:
             log(f"[WARN] Não resolveu símbolo {symbol_root}")
+            continue
+
+        # Fail-closed: rejeita contratos com sufixo de rollover (N99/N00/...).
+        # Esses contratos NÃO têm liquidez real e geram fills fantasma
+        # (-R$256/30d histórico, ver análise DB 2026-06-25). Ver doc em
+        # core.vt_calendar.is_rollover_contract.
+        if is_rollover_contract(symbol):
+            log(f"[ROLLOVER] Rejeitado {symbol_root} → {symbol} (sufixo rollover automático)")
             continue
 
         # Coletar snapshot + anomalias
