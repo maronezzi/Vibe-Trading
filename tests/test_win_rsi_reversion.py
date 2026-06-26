@@ -36,14 +36,20 @@ class TestWinStrategyConsolidation(unittest.TestCase):
         )
 
     def test_win_per_tf_strategies(self):
-        """strategy_by_tf por TF (estado atual pós AGI 867+)."""
+        """strategy_by_tf por TF (estado atual pós AGI 867+).
+
+        ATUALIZADO 2026-06-26: WIN_M30 trocado de PIVOT_POINTS para
+        MACD_MOMENTUM via Wave 2.1 (DB+backtest confirmam: 5t WR 40% +R$352
+        vs PIVOT_POINTS 3t WR 33% -R$6). Ver tests/test_strategy_changes_v899.py
+        para justificativa completa.
+        """
         from vt_config_loader import load_config
         config = load_config()
         sb = config.get("strategy_by_tf", {})
         expected = {
             "WIN_M5": "STRONG_TREND",
             "WIN_M15": "PIVOT_POINTS",
-            "WIN_M30": "PIVOT_POINTS",
+            "WIN_M30": "MACD_MOMENTUM",  # Wave 2.1: era PIVOT_POINTS
             "WIN_H1": "RSI_REVERSION",
         }
         for pair, expected_strat in expected.items():
