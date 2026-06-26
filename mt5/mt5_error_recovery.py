@@ -611,7 +611,50 @@ def _notify_fix(msg: str):
     if not NOTIFY_ALL_FIXES:
         return
     try:
-        from vt_hermes_helper import hermes_send
+        from core.vt_hermes_helper import hermes_send
         hermes_send("telegram:-1004284773048", msg, timeout=15)
     except Exception:
         pass
+
+
+# Wave 8.7 (2026-06-26, Bruno): race condition detection.
+# Bug: safe_sell retornou REJEITADO (timeout NO_CONNECTION) mas o MT5
+# aceitou a ordem mesmo assim (ticket 2464876092 WSPU26 SELL ficou
+# orfão no MT5, sem DB nem state). Causa: race condition entre o
+# wrapper Python (que reportou timeout) e o MT5 broker (que executou).
+#
+# FIX: quando safe_buy/safe_sell retorna REJEITADO, validar com MT5
+# status() se a posição foi aberta mesmo assim. Se sim, retornar
+# status FILLED com o ticket real (recuperação transparente).
+def _verify_position_after_reject(symbol: str, direction: str, expected_volume: float = 1.0):
+    """Consulta MT5 status() para verificar se uma ordem REJEITADA
+    pelo wrapper acabou sendo executada pelo broker (race condition).
+
+    Returns:
+        dict com {status: 'FILLED', ticket, price, ...} se a posição existe
+        None se a posição NÃO está no MT5 (REJEITADO foi real)
+
+    Wave 8.7 (2026-06-26): adicionada após detecção de orfão #2464876092.
+    """
+    try:
+        from mt5_orchestrator import status as mt5_status
+        st = mt5_status()
+        for pos in st.get("positions", []):
+            # Match por symbol + direction
+            if pos.get("symbol") != symbol:
+                continue
+            mt5_type = pos.get("type", 0)  # 0=BUY, 1=SELL
+            if (direction == "BUY" and mt5_type == 0) or (direction == "SELL" and mt5_type == 1):
+                # Encontrou a posição mesmo após REJEITADO
+                return {
+                    "status": "FILLED",
+                    "ticket": pos.get("identifier"),
+                    "price": pos.get("price_open"),
+                    "volume": pos.get("volume"),
+                    "sl": pos.get("sl"),
+                    "_recovered_from_reject": True,
+                }
+        return None
+    except Exception as e:
+        # Se não consegue verificar, retorna None (fail-safe)
+        return None

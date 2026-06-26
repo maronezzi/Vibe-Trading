@@ -28,6 +28,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "core"))  # noqa: E402 — garante import de vt_hermes_helper (espelha fix de vt_daily_report.py em 17/06/2026)
 
 from mt5.mt5_orchestrator import status as mt5_status
 from core.vt_config_loader import load_config
@@ -47,7 +48,7 @@ def log(msg):
 
 def notify_telegram(msg):
     try:
-        from vt_hermes_helper import hermes_send
+        from core.vt_hermes_helper import hermes_send  # CORRIGIDO 2026-06-26: usar caminho qualificado
 
         hermes_send(TELEGRAM_TARGET, msg)
     except Exception as e:
