@@ -512,6 +512,44 @@ DEFAULT_BLOCKED_DAY_DIRECTIONS = [
 ]
 
 
+# Wave 8.4 (2026-06-26): time_blocks - bloqueia combinações
+# (symbol, hour_range) baseado em evidência DB.
+# Achado do sub-agente DB (RELATORIO_OPORTUNIDADES_LUCRATIVAS.md):
+#   - BITM26 STRONG_TREND 09h-11h: -R$3.234 em 12 trades
+#   - WINQ26 VWAP (todos TFs): 52 SL_SERVIDOR, 23.1% WR
+#   - Total: corta ~R$2.8k/mês
+def _is_blocked_time(symbol: str, hour: int) -> bool:
+    """Retorna True se (symbol, hour) está em time_blocks.
+
+    Wave 8.4 (2026-06-26): corta loss direto via bloqueio horário.
+
+    Schema time_blocks (em CONFIG['time_blocks']):
+      {
+        "BITM26": [{"start": 9, "end": 11, "reason": "..."}],
+        "WINQ26": [{"start": 0, "end": 24, "strategy": "VWAP"}],
+      }
+
+    Fail-open: se CONFIG não tem time_blocks, retorna False.
+    """
+    try:
+        time_blocks = CONFIG.get("time_blocks", {}) or {}
+    except Exception:
+        return False
+    if symbol not in time_blocks:
+        return False
+    blocks = time_blocks[symbol]
+    if not isinstance(blocks, list):
+        return False
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        start = block.get("start", 0)
+        end = block.get("end", 24)
+        if start <= hour <= end:
+            return True
+    return False
+
+
 def _is_blocked_day_direction(direction: str) -> bool:
     """Retorna True se (weekday_atual, direction) está em block_list.
 
@@ -802,6 +840,11 @@ def check_and_trade():
                         # Bloqueia ANTES de qualquer defesa custosa.
                         if _is_blocked_day_direction(result["direction"]):
                             log(f"[DAY-DIR BLOQUEADO] {symbol} {tf} {result['direction']} em {datetime.now().strftime('%A')}")
+                            continue
+                        # Wave 8.4 (2026-06-26): bloqueio time_block (symbol+hora).
+                        # Achado DB: BITM26 09h-11h -R$3.234; WINQ26 VWAP 23% WR.
+                        if _is_blocked_time(symbol, datetime.now().hour):
+                            log(f"[TIME-BLOK] {symbol} {tf} hora={datetime.now().hour}")
                             continue
                         # DEFESAS: plugins não chamam _defenses_ok — validar aqui
                         if not _defenses_ok(symbol, tf, result["direction"], last_bar_ts):

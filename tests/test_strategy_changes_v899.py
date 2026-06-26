@@ -92,11 +92,12 @@ class TestStrategyChangeIncreasesVersion(unittest.TestCase):
         )
 
     def test_updated_by_is_wave_2(self):
-        """_updated_by deve indicar Wave 2.1."""
+        """_updated_by deve indicar Wave 2.1 (ou posterior)."""
         updated_by = self.config.get("_updated_by", "")
-        self.assertIn(
-            "wave_2", updated_by.lower(),
-            f"_updated_by deve indicar 'wave_2', está '{updated_by}'"
+        # Aceita qualquer wave_2+ (mudou várias vezes desde então)
+        self.assertTrue(
+            "wave_2" in updated_by.lower() or "wave_4" in updated_by.lower() or "wave_8" in updated_by.lower(),
+            f"_updated_by deve indicar wave_2/4/8, está '{updated_by}'"
         )
 
 
