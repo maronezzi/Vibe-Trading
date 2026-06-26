@@ -518,7 +518,7 @@ DEFAULT_BLOCKED_DAY_DIRECTIONS = [
 #   - BITM26 STRONG_TREND 09h-11h: -R$3.234 em 12 trades
 #   - WINQ26 VWAP (todos TFs): 52 SL_SERVIDOR, 23.1% WR
 #   - Total: corta ~R$2.8k/mês
-def _is_blocked_time(symbol: str, hour: int) -> bool:
+def _is_blocked_time(symbol: str, hour: int, tf: str = "M5") -> bool:
     """Retorna True se (symbol, hour) está em time_blocks.
 
     Wave 8.4 (2026-06-26): corta loss direto via bloqueio horário.
@@ -535,18 +535,37 @@ def _is_blocked_time(symbol: str, hour: int) -> bool:
         time_blocks = CONFIG.get("time_blocks", {}) or {}
     except Exception:
         return False
-    if symbol not in time_blocks:
+    if not time_blocks:
         return False
-    blocks = time_blocks[symbol]
-    if not isinstance(blocks, list):
-        return False
-    for block in blocks:
-        if not isinstance(block, dict):
+    # Extrai root do symbol (ex: 'WINQ26' → 'WIN', 'WIN$26' → 'WIN')
+    symbol_root = symbol[:3] if len(symbol) >= 3 else symbol
+
+    # BUG FIX 2026-06-26: a lógica antiga comparava sb (ex: 'WINQ26') com
+    # contract (ex: 'WINQ26') — match sempre True. Resultado: WINQ26 VWAP
+    # block (9h-17h) BLOQUEAVA WIN INTEIRO, não só WIN VWAP.
+    # FIX: itera pelos time_blocks, compara por ROOT (sb[:3]).
+    for sb, blocks_list in time_blocks.items():
+        if not isinstance(blocks_list, list):
             continue
-        start = block.get("start", 0)
-        end = block.get("end", 24)
-        if start <= hour <= end:
-            return True
+        sb_root = sb[:3] if len(sb) >= 3 else sb
+        if symbol_root != sb_root and not symbol.startswith(sb_root):
+            continue
+        for block in blocks_list:
+            if not isinstance(block, dict):
+                continue
+            start = block.get("start", 0)
+            end = block.get("end", 24)
+            # FIX: se block tem 'strategy', só bloqueia se a estratégia ativa
+            # do par é a bloqueada. Se não tem, bloqueia TUDO do symbol.
+            block_strategy = block.get("strategy")
+            if block_strategy is not None:
+                active_strategy = CONFIG.get("strategy_by_tf", {}).get(
+                    f"{symbol_root}_{tf}", "?"
+                )
+                if active_strategy != block_strategy:
+                    continue
+            if start <= hour <= end:
+                return True
     return False
 
 
@@ -843,7 +862,7 @@ def check_and_trade():
                             continue
                         # Wave 8.4 (2026-06-26): bloqueio time_block (symbol+hora).
                         # Achado DB: BITM26 09h-11h -R$3.234; WINQ26 VWAP 23% WR.
-                        if _is_blocked_time(symbol, datetime.now().hour):
+                        if _is_blocked_time(symbol, datetime.now().hour, tf):
                             log(f"[TIME-BLOK] {symbol} {tf} hora={datetime.now().hour}")
                             continue
                         # DEFESAS: plugins não chamam _defenses_ok — validar aqui
