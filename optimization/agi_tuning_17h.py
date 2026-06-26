@@ -1621,6 +1621,79 @@ def apply_changes(llm_result: dict, config: dict, dry_run: bool = False) -> list
 # 5. NOTIFICAÇÃO TELEGRAM
 # ═══════════════════════════════════════════════════════════════════
 
+# Wave 8.3 (2026-06-26, Bruno): Regra 1 hardcoded.
+# "SEMPRE lucro positivo. Indicadores bons. Resultado ruim não é viável."
+def _should_apply_changes(
+    current_projection_30d: float,
+    candidate_projection_30d: float,
+    current_pnl: float = 0.0,
+    candidate_pnl: float = 0.0,
+) -> dict:
+    """Regra 1: aplica SÓ se candidate 30d > baseline 30d E > 0.
+
+    Args:
+        current_projection_30d: projeção forward 30d do config ATUAL (baseline)
+        candidate_projection_30d: projeção forward 30d do config CANDIDATO
+        current_pnl: avg PnL/trade baseline
+        candidate_pnl: avg PnL/trade candidato
+
+    Returns:
+        dict com:
+          - should_apply: bool (True só se passa Regra 1)
+          - reason: str (motivo da decisão)
+          - improvement_pct: float (% de melhora sobre baseline, se aplicável)
+    """
+    # Regra 1.1: candidate NUNCA pode ter projeção negativa
+    if candidate_projection_30d < 0:
+        return {
+            "should_apply": False,
+            "reason": f"Regra 1: projeção 30d negativa (R${candidate_projection_30d:.0f}) — não aplica. "
+                      f"Bruno: 'sempre positivo'.",
+            "improvement_pct": 0.0,
+        }
+    # Regra 1.2: baseline pode ser negativo — nesse caso, qualquer candidate >= 0 já é melhoria
+    if current_projection_30d < 0:
+        if candidate_projection_30d >= 0:
+            return {
+                "should_apply": True,
+                "reason": f"Regra 1: baseline negativo (R${current_projection_30d:.0f}) → "
+                          f"candidate positivo (R${candidate_projection_30d:.0f}). Sair do vermelho é prioridade.",
+                "improvement_pct": float("inf"),
+            }
+        else:
+            return {
+                "should_apply": False,
+                "reason": f"Regra 1: ambos negativos (baseline R${current_projection_30d:.0f}, "
+                          f"candidate R${candidate_projection_30d:.0f}). Não aplica, "
+                          f"pior que baseline.",
+                "improvement_pct": 0.0,
+            }
+    # Regra 1.3: baseline positivo — candidate TEM que ser MELHOR (não só >= 0)
+    if candidate_projection_30d > current_projection_30d:
+        improvement_pct = (
+            (candidate_projection_30d - current_projection_30d)
+            / abs(current_projection_30d) * 100
+            if current_projection_30d != 0 else 0.0
+        )
+        return {
+            "should_apply": True,
+            "reason": f"Regra 1: candidate melhor que baseline "
+                      f"(+{improvement_pct:.0f}% sobre R${current_projection_30d:.0f}/30d).",
+            "improvement_pct": round(improvement_pct, 1),
+        }
+    # Regra 1.4: baseline positivo mas candidate <= baseline
+    return {
+        "should_apply": False,
+        "reason": f"Regra 1: candidate (R${candidate_projection_30d:.0f}) não é melhor que "
+                  f"baseline (R${current_projection_30d:.0f}). Não aplica, "
+                  f"regressão detectada.",
+        "improvement_pct": round(
+            ((candidate_projection_30d - current_projection_30d) / abs(current_projection_30d) * 100)
+            if current_projection_30d != 0 else 0.0, 1
+        ),
+    }
+
+
 # Wave 6.3 (2026-06-26): expectativa forward-looking.
 # Constantes empíricas do mercado B3:
 TRADING_DAYS_PER_MONTH = 22   # ~22 pregões em 30 dias corridos
