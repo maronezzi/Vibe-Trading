@@ -497,6 +497,39 @@ def _is_safe_time_window() -> bool:
         return False
     return True
 
+
+# Wave 3.1 (2026-06-26): bloqueio de combinações (weekday, direction) perdedoras.
+# Lista configurável via CONFIG["blocked_day_directions"].
+# Default se não houver config: fail-open (retorna False, permite).
+#
+# Combinações validadas pela análise DB 30d:
+#   - Quarta BUY: 38t | WR 42% | PnL R$ -6.775,70
+#   - Terça  SELL: 65t | WR 29% | PnL R$ -2.946,45
+#   Total estimado: -R$9.722/30d (single-day drawdown evitável)
+DEFAULT_BLOCKED_DAY_DIRECTIONS = [
+    (2, "BUY"),   # Quarta (0=Seg, 1=Ter, 2=Qua) BUY
+    (1, "SELL"),  # Terça SELL
+]
+
+
+def _is_blocked_day_direction(direction: str) -> bool:
+    """Retorna True se (weekday_atual, direction) está em block_list.
+
+    Wave 3.1 (2026-06-26): padrão claro de "dia da semana ruim pra direção X"
+    na análise DB 30d. Filtro simples, retorno alto, baixo risco de regressão.
+
+    Fail-open: se config não tem blocked_day_directions, retorna False.
+    """
+    try:
+        blocked = CONFIG.get("blocked_day_directions", DEFAULT_BLOCKED_DAY_DIRECTIONS)
+    except Exception:
+        blocked = DEFAULT_BLOCKED_DAY_DIRECTIONS
+    now = datetime.now()
+    weekday = now.weekday()
+    return (weekday, direction) in blocked
+
+
+
 def _check_cooldown(symbol: str, params: dict, tf: str = "", direction: str = "") -> bool:
     """Retorna True se pode operar (cooldown ok).
 
