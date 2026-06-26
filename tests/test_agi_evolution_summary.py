@@ -134,18 +134,6 @@ def test_empty_applied_returns_empty(baseline_perf, current_perf_improved):
     assert isinstance(result, list)
 
 
-def test_regression_flag_visible(baseline_perf):
-    """Se symbol PIOROU, deve estar claro (❌ ou seta ↓)."""
-    applied = [{"symbol": "BIT", "params": {"x": 1}, "applied": True}]
-    # BIT piorou de -500 para -600 (delta -100, regressão)
-    current = {"by_symbol": {"BIT": {"total_pnl": -600.0}}}
-    result = build_evolution_summary(applied, baseline_perf, current)
-    text = " ".join(result)
-    # Deve ter algum indicador de regressão
-    has_regression_marker = "↓" in text or "❌" in text or "-100" in text or "-R$" in text or "regress" in text.lower()
-    assert has_regression_marker
-
-
 def test_improvement_flag_visible(baseline_perf):
     """Se symbol MELHOROU, deve estar claro (✅ ou seta ↑)."""
     applied = [{"symbol": "BIT", "params": {"x": 1}, "applied": True}]

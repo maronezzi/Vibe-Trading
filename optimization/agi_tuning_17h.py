@@ -1621,16 +1621,78 @@ def apply_changes(llm_result: dict, config: dict, dry_run: bool = False) -> list
 # 5. NOTIFICAÇÃO TELEGRAM
 # ═══════════════════════════════════════════════════════════════════
 
+# Wave 6.3 (2026-06-26): expectativa forward-looking.
+# Constantes empíricas do mercado B3:
+TRADING_DAYS_PER_MONTH = 22   # ~22 pregões em 30 dias corridos
+TRADING_HOURS_PER_DAY = 7     # 09:00-16:45 (sem lunch 12-13:30 = 6.25h)
+
+
+def calculate_daily_expectation(
+    total_pnl: float,
+    n_trades: int,
+    period_days: int = 30,
+    trading_days_per_month: int = TRADING_DAYS_PER_MONTH,
+) -> dict:
+    """Calcula expectativa forward-looking (PnL/dia + projeção 30d).
+
+    Wave 6.3 (2026-06-26): Bruno quer ver o que ESPERAR nos próximos
+    dias, não o que aconteceu. Esta função transforma PnL histórico
+    em expectativa futura.
+
+    Args:
+        total_pnl: PnL total no período (do backtest ou projeção forward)
+        n_trades: número de trades no período
+        period_days: dias do período (padrão 30)
+        trading_days_per_month: ~22 dias úteis B3
+
+    Returns:
+        dict com:
+          - pnl_per_trade: avg PnL por trade
+          - pnl_per_day: PnL médio por dia (assume distribuição uniforme)
+          - projection_30d: PnL projetado para 30 dias (próximo mês)
+          - confidence: 'high' se n_trades>=30, 'medium' se 10-30, 'low' se <10
+    """
+    if n_trades <= 0 or period_days <= 0:
+        return {
+            "pnl_per_trade": 0.0,
+            "pnl_per_day": 0.0,
+            "projection_30d": 0.0,
+            "trades_per_day": 0.0,
+            "confidence": "low",
+        }
+
+    pnl_per_trade = total_pnl / n_trades
+    trades_per_day = n_trades / period_days
+    pnl_per_day = pnl_per_trade * trades_per_day
+    projection_30d = pnl_per_day * 30  # 30 dias corridos
+
+    if n_trades >= 30:
+        confidence = "high"
+    elif n_trades >= 10:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {
+        "pnl_per_trade": round(pnl_per_trade, 2),
+        "pnl_per_day": round(pnl_per_day, 2),
+        "projection_30d": round(projection_30d, 2),
+        "trades_per_day": round(trades_per_day, 2),
+        "confidence": confidence,
+    }
+
 
 def build_evolution_summary(
     applied: list[dict],
     baseline_perf: dict,
     current_perf: dict,
 ) -> list[str]:
-    """Gera linhas de evolução (delta PnL + %) por symbol aplicado.
+    """Gera linhas de evolução — APENAS melhorias (delta positivo).
 
-    Regra Bruno 17/06: usuário precisa ver quanto cada mudança impactou.
-    Formato por linha: "BIT: sl_atr_mult 0.6→0.78 (✅ R$ -500→-200, +R$ 300, +60%)"
+    Wave 6.3 (2026-06-26): Bruno quer SINAL DE PROGRESSO, não auditoria.
+    Mudanças com delta ZERO (clipped, no real change) são marcadas
+    como "sem mudança efetiva". Mudanças com delta NEGATIVO são
+    FILTRADAS — Bruno não quer ver o que piorou.
 
     Args:
         applied: lista de mudanças aplicadas (saída de apply_changes)
@@ -1638,7 +1700,7 @@ def build_evolution_summary(
         current_perf: perf["by_symbol"] DEPOIS do loop (PnL atual)
 
     Returns:
-        list[str] — linhas formatadas (inclui cabeçalho se houver mudanças)
+        list[str] — linhas formatadas (apenas deltas >= 0)
     """
     if not applied:
         return []
@@ -1646,7 +1708,10 @@ def build_evolution_summary(
     base_syms = (baseline_perf or {}).get("by_symbol", {}) or {}
     curr_syms = (current_perf or {}).get("by_symbol", {}) or {}
 
-    lines = ["📈 *Evolução por symbol*"]
+    lines = ["📈 *O que mudou*"]
+
+    improvements = []
+    no_change = []
 
     for a in applied:
         sym = a.get("symbol", "?").upper()
@@ -1654,43 +1719,39 @@ def build_evolution_summary(
         applied_ok = a.get("applied", False)
         marker = "✅" if applied_ok else "🔍"
 
-        # Pegar PnL baseline + current
         base_pnl = base_syms.get(sym, {}).get("total_pnl")
         curr_pnl = curr_syms.get(sym, {}).get("total_pnl")
-
-        # Params diff (curto)
         params_str = ", ".join(f"{k}={v}" for k, v in params.items())
 
-        # Construir linha base
         line = f"  {marker} *{sym}*: {params_str}"
 
-        # Se temos PnL, anexar evolução
-        if base_pnl is not None and curr_pnl is not None:
-            delta = curr_pnl - base_pnl
-            # % evolução (evitar divisão por zero)
-            if abs(base_pnl) > 0.01:
-                pct = (delta / abs(base_pnl)) * 100
-                pct_str = f"{pct:+.0f}%"
-            elif curr_pnl > 0:
-                # Baseline = 0, agora positivo = "novo lucro"
-                pct_str = "novo"
-            elif curr_pnl < 0:
-                pct_str = "novo"
-            else:
-                pct_str = "0%"
+        if base_pnl is None or curr_pnl is None:
+            # Sem dados de PnL, mas tem mudança aplicada
+            improvements.append(line)
+            continue
 
-            # Indicador visual de direção
-            if delta > 0.01:
-                trend = "↑"
-            elif delta < -0.01:
-                trend = "↓"
-            else:
-                trend = "→"
+        delta = curr_pnl - base_pnl
+        if delta > 0.01:
+            # MELHOROU — incluir com indicador
+            pct = (delta / abs(base_pnl)) * 100 if abs(base_pnl) > 0.01 else 0
+            line += f" | ↑ PnL R${delta:+,.0f} ({pct:+.0f}%)"
+            improvements.append(line)
+        elif delta < -0.01:
+            # PIOROU — filtrar (Bruno não quer ver ruim)
+            continue
+        else:
+            # DELTA = 0 — sem mudança efetiva (clipped, etc)
+            line += f" | (sem mudança efetiva — clipped/inalterado)"
+            no_change.append(line)
 
-            line += f" | {trend} PnL R${base_pnl:+,.0f}→R${curr_pnl:+,.0f}"
-            line += f" (Δ R${delta:+,.0f}, {pct_str})"
+    # Saída: só progressos. Se nada melhorou, mensagem honesta.
+    if improvements:
+        lines.extend(improvements)
+    if no_change:
+        lines.append(f"  ⚪ {len(no_change)} mudança(s) sem efeito (clipped ou inalterada)")
 
-        lines.append(line)
+    if not improvements and not no_change:
+        lines.append("  ℹ️  Nenhuma melhoria líquida no período")
 
     return lines
 
@@ -1723,113 +1784,89 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
                  optimization: dict = None, iterations: list = None,
                  converged: bool = False, paused: dict = None,
                  exhaustive_results: dict = None):
-    """Imprime relatório consolidado."""
+    """Imprime relatório — APENAS progresso + expectativa forward-looking.
+
+    Wave 6.3 (2026-06-26, Bruno):
+      "O AGI deve só mostrar o que melhorou e a expectativa dos
+      novos valores, por dia e nos próximos 30 dias."
+
+      Antes: auditoria contábil (PERFORMANCE 30d, STREAKS, EXIT REASONS)
+      Agora: SINAL DE PROGRESSO (O que mudou, Expectativa diária, 30d)
+    """
     web_intel = web_intel or {}
     optimization = optimization or {}
     iterations = iterations or []
     paused = paused or {"paused": [], "skipped": []}
     print("\n" + "=" * 60)
-    print(f"🤖 AGI 17H TUNING — {TODAY} {'[DRY-RUN]' if dry_run else ''}")
+    print(f"🤖 AGI 17H — {'[DRY-RUN] ' if dry_run else ''}relatório de progresso")
     print("=" * 60)
 
-    # Performance
-    print(f"\n📊 PERFORMANCE ({perf['period_days']} dias):")
-    total_pnl = 0
-    total_trades = 0
-    for sym, data in sorted(perf.get("by_symbol", {}).items(), key=lambda x: x[1]["total_pnl"]):
-        wr = data["win_rate"]
-        pnl = data["total_pnl"]
-        n = data["n_trades"]
-        total_pnl += pnl
-        total_trades += n
-        icon = "🔴" if wr < 30 else ("🟡" if wr < 45 else "🟢")
-        print(f"  {icon} {sym}: {n}t | WR {wr:>5.1f}% | PnL R${pnl:>+10.2f} | avg R${data['avg_pnl']:>+8.2f}")
-
-    print(f"\n  TOTAL: {total_trades} trades | PnL R${total_pnl:+.2f}")
-
-    # Wave 6 (2026-06-26): ALERTA quando converged=True com PnL real < 0.
-    # O check_forward_convergence reporta convergência baseada em backtest
-    # (pula pares no_signal). Se o PnL real (DB) ainda é negativo, é
-    # teatro de otimização — Bruno precisa saber.
-    if converged and total_pnl < 0:
-        print(f"\n⚠️  ATENÇÃO: 'convergiu' (backtest) MAS PnL real = R${total_pnl:+.2f}.")
-        print(f"   O check_forward_convergence pula pares no_signal do failing.")
-        print(f"   Cruzamento DB real (acima) vs backtest (convergiu) = DIVERGÊNCIA.")
-        print(f"   O AGI NÃO convergiu de fato no live. Rever before commit.")
-    elif converged and total_pnl >= 0:
-        print(f"\n✅ Convergência confirmada: PnL real R${total_pnl:+.2f} (não só backtest).")
-
-    # Exit reasons
-    print("\n🚪 EXIT REASONS:")
-    for reason, data in perf.get("exit_reasons", {}).items():
-        print(f"  {reason}: {data['count']}x | avg R${data['avg_pnl']:+.2f}")
-
-    # Issues
-    if issues:
-        print(f"\n⚠️ PROBLEMAS ({len(issues)}):")
-        for issue in issues:
-            sev_icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡"}.get(issue.get("severity", ""), "⚪")
-            print(f"  {sev_icon} [{issue['type']}] {issue['symbol']}: {issue['detail']}")
-
-    # LLM analysis
-    if llm_result and llm_result.get("analysis"):
-        print("\n🧠 ANÁLISE LLM:")
-        print(f"  {llm_result['analysis']}")
-
-    # Web intelligence
-    if web_intel:
-        print("\n🌐 INTELIGÊNCIA TÉCNICA (tinyfish):")
-        for sym, intel in web_intel.items():
-            n_st = len(intel.get("strategy_tips", ""))
-            n_ind = len(intel.get("indicator_settings", ""))
-            n_sl = len(intel.get("sl_trail_tactics", ""))
-            n_pat = len(intel.get("patterns", ""))
-            n_sources = len(intel.get("sources", []))
-            n_queries = len(intel.get("queries_made", []))
-            strat = intel.get("strategy", "?")
-            print(f"  {sym} [{strat}]: strategy_tips={n_st}ch, indicators={n_ind}ch, "
-                  f"sl_tactics={n_sl}ch, patterns={n_pat}ch | {n_queries} queries / {n_sources} fontes")
-            # Mostrar queries feitas
-            for q in intel.get("queries_made", [])[:3]:
-                print(f"    🔍 {q[:75]}")
-
-    # Strategy Explorer
-    if optimization:
-        print("\n🔬 STRATEGY EXPLORER (configs lucrativas encontradas):")
-
-        # Show strategy switches first
-        strategy_switches = optimization.get("_strategy_switches", [])
-        if strategy_switches:
-            print("\n  🔄 TROCAS DE ESTRATÉGIA RECOMENDADAS:")
-            for sw in strategy_switches:
-                bs = sw.get("best_stats", {})
-                print(f"    📊 {sw['pair']}: {sw['from']} → {sw['to']}")
-                print(f"       PnL R${bs.get('pnl', 0):+.2f} | WR {bs.get('wr', 0)}% | PF {bs.get('profit_factor', 0)}")
-
+    # ─── 1. SINAL DE PROGRESSO: o que mudou ───
+    # Calcular expectation a partir do backtest
+    bt_total_pnl = 0.0
+    bt_n_trades = 0
+    if exhaustive_results:
+        for info in exhaustive_results.get("best_per_pair", {}).values():
+            bt_total_pnl += info.get("pnl", 0)
+            bt_n_trades += info.get("n_trades", 0)
+    elif optimization:
         for sym, opt in optimization.items():
-            if sym.startswith("_"):
-                continue
-            cur_pnl = opt.get("current_pnl", 0)
-            best_pnl = opt.get("best_pnl", 0)
-            delta = best_pnl - cur_pnl
-            emoji = "🟢" if best_pnl > 0 else "🔴"
-            print(f"  {emoji} {sym}: atual R$ {cur_pnl:+.2f} → melhor R$ {best_pnl:+.2f} (Δ R$ {delta:+.2f}, PF {opt.get('best_pf', 0)})")
-            print(f"     Config: SL={opt.get('best_sl_atr_mult')} CD={opt.get('best_cooldown_seconds')}s WR={opt.get('best_wr', 0)}%")
+            if not sym.startswith("_"):
+                bt_total_pnl += opt.get("best_pnl", 0)
+                bt_n_trades += opt.get("n_trades", 0)
 
-    # Changes applied
-    if applied:
-        print(f"\n✏️ MUDANÇAS {'APLICADAS' if not dry_run else 'SUGERIDAS (DRY-RUN)'}:")
-        for a in applied:
-            status = "✅" if a.get("applied", False) else "❌"
-            print(f"  {status} {a['symbol']}: {list(a['params'].keys())}")
-            print(f"     {a['reason']}")
-            for k, v in a["params"].items():
-                print(f"     {k} = {v}")
-            if a["warnings"]:
-                for w in a["warnings"]:
-                    print(f"     ⚠️ {w}")
+    # Calcular expectativa forward-looking
+    expectation = calculate_daily_expectation(
+        total_pnl=bt_total_pnl,
+        n_trades=bt_n_trades,
+        period_days=perf.get("period_days", 30),
+    )
+
+    # ─── 2. EVOLUÇÃO: só melhorias (Bruno: "não mostrar ruim") ───
+    evolution_lines = build_evolution_summary(
+        applied or [],
+        perf,  # baseline
+        perf,  # current (mesmo perf pois DB real é o "estado atual")
+    )
+    if evolution_lines:
+        print()
+        for line in evolution_lines:
+            print(line)
+
+    # ─── 3. EXPECTATIVA DIÁRIA (forward-looking) ───
+    if bt_n_trades > 0:
+        print()
+        print("🎯 *Expectativa diária*")
+        conf_icon = {"high": "🟢", "medium": "🟡", "low": "⚪"}.get(
+            expectation["confidence"], "⚪"
+        )
+        print(f"  {conf_icon} Trades/dia: {expectation['trades_per_day']:.1f} "
+              f"(confiança: {expectation['confidence']})")
+        print(f"  💵 PnL/trade: R$ {expectation['pnl_per_trade']:+.2f}")
+        print(f"  📊 PnL/dia: R$ {expectation['pnl_per_day']:+.2f}")
+
+    # ─── 4. PROJEÇÃO 30 DIAS ───
+    print()
+    print("📅 *Projeção 30 dias*")
+    if expectation["projection_30d"] >= 0:
+        print(f"  🟢 PnL projetado: R$ {expectation['projection_30d']:+,.0f}")
     else:
-        print(f"\n✏️ Nenhuma mudança {'aplicada' if not dry_run else 'sugerida'}")
+        print(f"  🔴 PnL projetado: R$ {expectation['projection_30d']:+,.0f} (negativo — reverter config)")
+    print(f"  📈 Base: {expectation['trades_per_day']:.1f} trades/dia × R$ {expectation['pnl_per_trade']:+.2f}/trade × 30 dias")
+
+    # ─── 5. CONTEXTO MÍNIMO (só se útil) ───
+    # Mantém só o que Bruno pode usar pra decidir, não auditoria.
+    print()
+    print(f"📌 Config atual: v{config.get('_version', '?')} by {config.get('_updated_by', '?')[:30]}")
+    if applied and not evolution_lines:
+        print("ℹ️  Nenhuma mudança efetiva aplicada neste run")
+    if not applied:
+        print("ℹ️  Nenhuma mudança sugerida neste run")
+
+    # ─── LEGACY: mantido para compat (Telegram) ───
+    # O notify_telegram() ainda usa o formato antigo com PnL, EXIT REASONS.
+    # Mantido fora do print_report() — separado em build_telegram_summary().
+    return None
 
     # Iteration history (loop de convergência)
     if iterations and len(iterations) > 1:

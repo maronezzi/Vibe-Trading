@@ -82,44 +82,28 @@ def _make_perf(by_symbol):
 
 
 class TestPrintReportEmitsPnLWarning(unittest.TestCase):
-    """print_report() deve alertar quando converged=True mas pnl_real<0."""
+    """print_report() deve alertar quando converged=True mas pnl_real<0.
 
-    def test_report_alerts_when_converged_but_pnl_negative(self):
-        """
-        print_report() com converged=True e PnL real < 0 deve
-        emitir ALERTA/ATENÇÃO no output.
-        """
-        perf = _make_perf({
-            "WIN": {"n_trades": 100, "win_rate": 30, "total_pnl": -321.40, "avg_pnl": -3.21},
-            "BIT": {"n_trades": 40, "win_rate": 27, "total_pnl": -7240.80, "avg_pnl": -181.02},
-            "WDO": {"n_trades": 35, "win_rate": 34, "total_pnl": -1134.00, "avg_pnl": -32.40},
-        })
-        applied = []  # nenhuma mudança aplicada
-        output = _capture_print_report(perf, applied, converged=True, dry_run=True)
+    Wave 6.3 (2026-06-26): print_report() foi reescrito para mostrar
+    APENAS progresso. O ALERTA 'PnL real < 0 com converged=True' já
+    não cabe (o relatório não tem mais seção PnL histórico). O
+    ALERTA foi MOVIDO para projection_30d negativa: '🔴 PnL
+    projetado negativo — reverter config'. Ver test_agi_progress_only.
+    """
 
-        # PnL total é negativo
-        pnl_total = -321.40 - 7240.80 - 1134.00  # -8696.20
-
-        # DEVE emitir alerta/atenção sobre pnl negativo com converged
-        has_alert = bool(
-            re.search(r"⚠️|ALERTA|ATENÇÃO|PnL.*?NEGATIVO|NÃO.*?CONVERGIU|⚠️", output)
+    def test_report_does_not_show_historical_pnl_section(self):
+        """Validação da Wave 6.3: sem seção PERFORMANCE (30 dias) com PnL histórico."""
+        from optimization.agi_tuning_17h import print_report
+        import inspect
+        src = inspect.getsource(print_report)
+        # Procura por string LITERAL "PERFORMANCE" DENTRO de print()
+        # (não em docstring de outras funções como build_llm_prompt)
+        has_historical = bool(re.search(r'print\([^)]*"[^"]*PERFORMANCE', src, re.DOTALL))
+        self.assertFalse(
+            has_historical,
+            "print_report() ainda imprime 'PERFORMANCE (N dias)' com PnL histórico. "
+            "Wave 6.3 removeu — só progresso + expectativa."
         )
-        self.assertTrue(
-            has_alert,
-            f"print_report() NÃO alerta quando converged=True com PnL "
-            f"total=R${pnl_total:.2f}. Output:\n{output[:1500]}"
-        )
-
-    def test_report_does_not_alert_when_converged_and_pnl_positive(self):
-        """Se converged=True E PnL>0, não precisa alertar (situação legítima)."""
-        perf = _make_perf({
-            "WIN": {"n_trades": 100, "win_rate": 60, "total_pnl": 500, "avg_pnl": 5.0},
-            "BIT": {"n_trades": 30, "win_rate": 55, "total_pnl": 200, "avg_pnl": 6.67},
-        })
-        applied = []
-        output = _capture_print_report(perf, applied, converged=True, dry_run=True)
-        # Output deve ter PnL (legítimo)
-        self.assertIn("PnL", output)
 
 
 class TestPrintReportHonestDelta(unittest.TestCase):
@@ -169,7 +153,7 @@ class TestBuildEvolutionSummaryHonest(unittest.TestCase):
         # Verifica que tem alguma indicação de 'sem mudança' ou 'no delta'
         result_text = "\n".join(result)
         has_no_change_marker = bool(
-            re.search(r"sem.*?mudança|no.*?change|sem.*?delta|Δ.*?0", result_text, re.IGNORECASE)
+            re.search(r"sem.*?(mudança|efeito)|no.*?change|sem.*?delta|Δ.*?0|inalterado|clipped", result_text, re.IGNORECASE)
         )
         self.assertTrue(
             has_no_change_marker,
