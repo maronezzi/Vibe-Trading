@@ -148,6 +148,38 @@ MAX_CHANGE_PCT = {
 }
 
 
+# Wave 4.1 (2026-06-26): grid razoável para sl_atr_mult, eliminando
+# "magic numbers" bayesianos (1.006, 1.0009, 1.2345 etc.) que são overfit.
+# Antes: AGI podia produzir valores como 1.006448641952834 que infla PF
+# no treino e desmonta no live. Agora: snap to nearest grid point.
+SL_ATR_GRID = [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
+
+
+def _round_sl_atr_to_grid(value):
+    """Arredonda sl_atr_mult para o grid razoável mais próximo.
+
+    Wave 4.1 (2026-06-26): proteção contra overfit bayesiano. Magic numbers
+    (1.006, 1.0009) viram grid values defensivos. O AGI ainda
+    otimiza entre 1.0 e 3.0 (param bounds), mas o resultado final é
+    snapped ao grid antes de ser aplicado.
+
+    Args:
+        value: float (1.0 a 3.0 tipicamente) ou None.
+
+    Returns:
+        Valor do grid mais próximo. Se None ou fora do range, retorna 1.5
+        (default seguro).
+    """
+    if value is None:
+        return 1.5
+    if value < SL_ATR_GRID[0]:
+        return SL_ATR_GRID[0]
+    if value > SL_ATR_GRID[-1]:
+        return SL_ATR_GRID[-1]
+    return min(SL_ATR_GRID, key=lambda g: abs(g - float(value)))
+
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 1. COLETA DE DADOS
 # ═══════════════════════════════════════════════════════════════════
