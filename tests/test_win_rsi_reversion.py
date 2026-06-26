@@ -48,7 +48,7 @@ class TestWinStrategyConsolidation(unittest.TestCase):
         sb = config.get("strategy_by_tf", {})
         expected = {
             "WIN_M5": "STRONG_TREND",
-            "WIN_M15": "PIVOT_POINTS",
+            "WIN_M15": "SQUEEZE_BREAKOUT",  # Wave 8.5+: era PIVOT_POINTS
             "WIN_M30": "MACD_MOMENTUM",  # Wave 2.1: era PIVOT_POINTS
             "WIN_H1": "RSI_REVERSION",
         }

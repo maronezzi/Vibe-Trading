@@ -66,12 +66,17 @@ class TestStrategyChangesV899(unittest.TestCase):
         )
 
     def test_win_m15_unchanged_pivot_points(self):
-        """WIN_M15 PIVOT_POINTS é mantida (DB não tem BOLLINGER histórico)."""
+        """WIN_M15 PIVOT_POINTS é mantida (DB não confirma BOLLINGER).
+
+        ATUALIZADO 2026-06-26: WIN_M15 trocada para SQUEEZE_BREAKOUT
+        (Wave 8.5+). PIVOT_POINTS tinha 19.5% WR, -R$291 em 30d.
+        SQUEEZE substitui com filtro de chop + release de volatilidade.
+        """
         strat = self.config.get("strategy_by_tf", {}).get("WIN_M15")
-        # Decisão defensiva: NÃO trocar WIN_M15 (DB não confirma BOLLINGER)
-        self.assertEqual(
-            strat, "PIVOT_POINTS",
-            f"WIN_M15 deve ser PIVOT_POINTS (DB não confirma BOLLINGER), "
+        # Decisão defensiva: aceita PIVOT_POINTS (legado) ou SQUEEZE_BREAKOUT (Wave 8.5+)
+        self.assertIn(
+            strat, ["PIVOT_POINTS", "SQUEEZE_BREAKOUT"],
+            f"WIN_M15 deve ser PIVOT_POINTS (legado) ou SQUEEZE_BREAKOUT (Wave 8.5+), "
             f"está '{strat}'"
         )
 
