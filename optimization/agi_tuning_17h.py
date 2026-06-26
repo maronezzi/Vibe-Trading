@@ -3461,10 +3461,25 @@ def main():
                     })
                     log.info(f"🔬 [DRY-RUN] AUTO-APPLY {sym}: {params_to_apply} (PF={best_pf:.2f}, Δ={improvement_pct:+.0f}%)")
                 else:
+                    # Wave 8.6 (2026-06-26, Bruno): Regra 1 hardcoded.
+                    # NÃO aplica mudança se projeção forward for negativa
+                    # ou pior que baseline. Bruno: "sempre positivo".
+                    decision = _should_apply_changes(
+                        current_projection_30d=0.0,  # baseline unknown aqui
+                        candidate_projection_30d=pnl_improvement,  # delta do Explorer
+                    )
+                    if not decision["should_apply"]:
+                        log.warning(f"🛑 [REGRA 1] Rejeitado {sym}: {decision['reason']}")
+                        explorer_applied.append({
+                            "symbol": sym, "params": params_to_apply, "applied": False,
+                            "reason": f"🛑 [REGRA 1] {decision['reason']}",
+                            "warnings": ["regra_1_violation"],
+                        })
+                        continue
                     ok = _save_params(sym_lower, params_to_apply, updated_by="agi_explorer_auto")
                     explorer_applied.append({
                         "symbol": sym, "params": params_to_apply, "applied": ok,
-                        "reason": f"Explorer auto: PF={best_pf:.2f} ΔPnL=R${pnl_improvement:+.0f} ({improvement_pct:+.0f}%)",
+                        "reason": f"✅ Explorer auto (Regra 1 ✓): PF={best_pf:.2f} ΔPnL=R${pnl_improvement:+.0f} ({improvement_pct:+.0f}%)",
                         "warnings": [],
                     })
                     log.info(f"🔬 AUTO-APPLY {sym}: {params_to_apply} (PF={best_pf:.2f}, Δ={improvement_pct:+.0f}%)")
