@@ -139,6 +139,11 @@ class SessionState:
         self.resolved_symbols = {}        # cache: {"WDO": "WDON26", "WIN": "WINM26"}
         self.resolved_day = ""            # dia do cache (reseta a cada dia)
 
+        # Wave 8.6.2 (2026-06-26): sincroniza com DB mesmo na construção
+        # inicial (state vazio). Sem isso, restart zera state.daily_pnl
+        # mesmo que DB tenha trades do dia.
+        _sync_daily_pnl_with_db(self)
+
     STATE_FILE = "/tmp/vt_autotrader_state.json"
 
     @staticmethod
