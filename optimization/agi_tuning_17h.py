@@ -1747,6 +1747,18 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
 
     print(f"\n  TOTAL: {total_trades} trades | PnL R${total_pnl:+.2f}")
 
+    # Wave 6 (2026-06-26): ALERTA quando converged=True com PnL real < 0.
+    # O check_forward_convergence reporta convergência baseada em backtest
+    # (pula pares no_signal). Se o PnL real (DB) ainda é negativo, é
+    # teatro de otimização — Bruno precisa saber.
+    if converged and total_pnl < 0:
+        print(f"\n⚠️  ATENÇÃO: 'convergiu' (backtest) MAS PnL real = R${total_pnl:+.2f}.")
+        print(f"   O check_forward_convergence pula pares no_signal do failing.")
+        print(f"   Cruzamento DB real (acima) vs backtest (convergiu) = DIVERGÊNCIA.")
+        print(f"   O AGI NÃO convergiu de fato no live. Rever before commit.")
+    elif converged and total_pnl >= 0:
+        print(f"\n✅ Convergência confirmada: PnL real R${total_pnl:+.2f} (não só backtest).")
+
     # Exit reasons
     print("\n🚪 EXIT REASONS:")
     for reason, data in perf.get("exit_reasons", {}).items():
