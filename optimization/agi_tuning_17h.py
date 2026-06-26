@@ -1802,18 +1802,35 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
     print("=" * 60)
 
     # ─── 1. SINAL DE PROGRESSO: o que mudou ───
-    # Calcular expectation a partir do backtest
+    # Calcular expectation a partir do backtest OU do DB real
     bt_total_pnl = 0.0
     bt_n_trades = 0
+    source = "n/a"
+
     if exhaustive_results:
         for info in exhaustive_results.get("best_per_pair", {}).values():
             bt_total_pnl += info.get("pnl", 0)
             bt_n_trades += info.get("n_trades", 0)
-    elif optimization:
+        if bt_n_trades > 0:
+            source = "backtest"
+
+    if bt_n_trades == 0 and optimization:
         for sym, opt in optimization.items():
             if not sym.startswith("_"):
                 bt_total_pnl += opt.get("best_pnl", 0)
                 bt_n_trades += opt.get("n_trades", 0)
+        if bt_n_trades > 0:
+            source = "optimizer"
+
+    if bt_n_trades == 0:
+        # Fallback: usar DB real (perf["by_symbol"] tem PnL + n_trades)
+        # Isso é o que Bruno quer ver — expectativa baseada no que
+        # JÁ aconteceu, projetada pra 30 dias à frente.
+        for sym_data in perf.get("by_symbol", {}).values():
+            bt_total_pnl += sym_data.get("total_pnl", 0)
+            bt_n_trades += sym_data.get("n_trades", 0)
+        if bt_n_trades > 0:
+            source = "DB real (últimos 30d)"
 
     # Calcular expectativa forward-looking
     expectation = calculate_daily_expectation(
@@ -1852,7 +1869,9 @@ def print_report(perf: dict, issues: list, llm_result: dict | None,
         print(f"  🟢 PnL projetado: R$ {expectation['projection_30d']:+,.0f}")
     else:
         print(f"  🔴 PnL projetado: R$ {expectation['projection_30d']:+,.0f} (negativo — reverter config)")
-    print(f"  📈 Base: {expectation['trades_per_day']:.1f} trades/dia × R$ {expectation['pnl_per_trade']:+.2f}/trade × 30 dias")
+    print(f"  📈 Base: {expectation['trades_per_day']:.1f} trades/dia × "
+          f"R$ {expectation['pnl_per_trade']:+.2f}/trade × 30 dias "
+          f"(fonte: {source})")
 
     # ─── 5. CONTEXTO MÍNIMO (só se útil) ───
     # Mantém só o que Bruno pode usar pra decidir, não auditoria.
