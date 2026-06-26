@@ -1653,6 +1653,37 @@ def _should_apply_changes_global(
     Returns:
         dict {should_apply, reason, improvement_pct}
     """
+    # Wave 8.8.3 (Bruno, 2026-06-26): proteção contra REGRESSÃO de params.
+    # AGI best_sl_atr_mult=0.6 (Bayesian) vira 1.0 (snapped), mas
+    # config atual tem sl=1.5+. AGI sugeria REGRESSÃO.
+    # Se candidate_sl < current_sl: REJEITAR (clipping overfit).
+    # Se candidate_cd < current_cd: REJEITAR (regressão).
+    if change_type == "symbol_params":
+        current_sl = change_payload.get("current_sl", None)
+        candidate_sl = change_payload.get("sl_atr_mult", None)
+        current_cd = change_payload.get("current_cd", None)
+        candidate_cd = change_payload.get("cooldown_seconds", None)
+
+        if current_sl is not None and candidate_sl is not None:
+            if candidate_sl < current_sl:
+                return {
+                    "should_apply": False,
+                    "reason": f"Wave 8.8.3: REGRESSÃO sl_atr_mult "
+                              f"{current_sl}→{candidate_sl} (mais curto = mais SL hits). "
+                              f"Bruno: 'sempre positivo, resultado ruim não é viável'. "
+                              f"Config atual é mais conservador.",
+                    "improvement_pct": 0.0,
+                }
+        if current_cd is not None and candidate_cd is not None:
+            if candidate_cd < current_cd:
+                return {
+                    "should_apply": False,
+                    "reason": f"Wave 8.8.3: REGRESSÃO cooldown "
+                              f"{current_cd}s→{candidate_cd}s (mais curto = mais trades). "
+                              f"Config atual é mais conservador.",
+                    "improvement_pct": 0.0,
+                }
+
     # Wave 8.8: NÃO desabilita pares por backtest falho.
     # Se change_type é disable_pair: exigir evidência LIVE (não backtest).
     if change_type == "disable_pair":
