@@ -18,16 +18,24 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     """
     Verifica sinal de entrada PIVOT_POINTS.
 
+    Filtro de regime (Wave 2.4, 2026-06-26):
+      PIVOT_POINTS é mean-reversion puro. Funciona em RANGING (ADX<25).
+      Em TRENDING (ADX>=25), suportes S1/S2 são quebrados consecutivamente
+      e a "reversão" não vem — entradas viram loss. Rejeita se ADX >= threshold.
+
     Returns:
         None (sem sinal) ou {"direction": "BUY"/"SELL", "sl_pts": int, "info": {...}}
     """
     calc_sl = utils["calc_sl"]
     calculate_rsi = utils["calculate_rsi"]
+    # ADX filter: só opera em ranging
+    calculate_adx = utils.get("calculate_adx")
 
     rsi_period = params.get("rsi_period", 14)
     rsi_ob = params.get("rsi_overbought", 70)
     rsi_os = params.get("rsi_oversold", 30)
     touch_pct = params.get("touch_pct", 0.002)  # 0.2% proximity to level
+    adx_threshold = params.get("adx_threshold", 25)  # ranging-only por default
 
     if not bars or len(bars) < 2:
         return None
@@ -53,6 +61,13 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     rsi = calculate_rsi(bars, rsi_period)
     if rsi is None or rsi == 0:
         return None
+
+    # Filtro de regime: rejeita se ADX >= threshold (trending confirmado)
+    # PIVOT_POINTS é mean-reversion — não opera contra trend.
+    if calculate_adx is not None:
+        adx = calculate_adx(bars, params.get("adx_period", 14))
+        if adx is not None and adx >= adx_threshold:
+            return None
 
     direction = None
 
