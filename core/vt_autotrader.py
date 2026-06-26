@@ -797,6 +797,12 @@ def check_and_trade():
                         # Sem isso, spread **info causa "got multiple values for argument X".
                         for k in ("strategy", "atr", "sl_pts", "direction", "price", "symbol", "tf", "bar_ts"):
                             info.pop(k, None)
+                        # Wave 3.2 (2026-06-26): bloqueio day+direction perdedor.
+                        # Padrão claro do DB 30d: quarta-BUY (-R$6.776), terça-SELL (-R$2.946).
+                        # Bloqueia ANTES de qualquer defesa custosa.
+                        if _is_blocked_day_direction(result["direction"]):
+                            log(f"[DAY-DIR BLOQUEADO] {symbol} {tf} {result['direction']} em {datetime.now().strftime('%A')}")
+                            continue
                         # DEFESAS: plugins não chamam _defenses_ok — validar aqui
                         if not _defenses_ok(symbol, tf, result["direction"], last_bar_ts):
                             continue
