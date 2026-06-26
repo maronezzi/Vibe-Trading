@@ -65,9 +65,14 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     # Filtro de regime: rejeita se ADX >= threshold (trending confirmado)
     # PIVOT_POINTS é mean-reversion — não opera contra trend.
     if calculate_adx is not None:
-        adx = calculate_adx(bars, params.get("adx_period", 14))
-        if adx is not None and adx >= adx_threshold:
-            return None
+        # FIX Wave 8.6 (2026-06-26): calculate_adx retorna tupla (adx, +DI, -DI).
+        # Wave 2.4 esqueceu de desempacotar — autotrader crashava com
+        # TypeError em produção. Agora correto:
+        adx_result = calculate_adx(bars, params.get("adx_period", 14))
+        if adx_result is not None:
+            adx = adx_result[0] if isinstance(adx_result, tuple) else adx_result
+            if adx is not None and adx >= adx_threshold:
+                return None
 
     direction = None
 
