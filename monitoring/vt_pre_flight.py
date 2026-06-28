@@ -190,8 +190,25 @@ def check_mt5() -> tuple[bool, str]:
         from mt5_orchestrator import status
         s = status()
         if "error" in s:
-            log(f"❌ MT5 erro: {s['error']}")
-            return False, f"MT5 erro: {s['error']}"
+            # Wave 10 (2026-06-26, Bruno): tentar iniciar MT5 em background
+            # se ainda não estiver rodando. start_mt5linux.sh é idempotente.
+            log(f"⚠️ MT5 erro: {s['error']} — tentando iniciar em background...")
+            import subprocess
+            result = subprocess.run(
+                ["bash", "/home/bruno/Projects/Vibe-Trading/scripts/start_mt5linux.sh"],
+                capture_output=True, text=True, timeout=60
+            )
+            if result.returncode != 0:
+                log(f"❌ start_mt5linux.sh falhou: {result.stderr[:200]}")
+                return False, f"MT5 erro: {s['error']}"
+            log("🔁 Aguardando 8s para MT5 inicializar...")
+            import time
+            time.sleep(8)
+            # Tenta conectar de novo
+            s = status()
+            if "error" in s:
+                log(f"❌ MT5 ainda com erro após start: {s['error']}")
+                return False, f"MT5 erro: {s['error']}"
         account = s.get("account", {})
         log(f"Conta: {account.get('login', '?')} | Servidor: {account.get('server', '?')}")
         log(f"Saldo: R$ {account.get('balance', 0):.2f}")
@@ -202,6 +219,13 @@ def check_mt5() -> tuple[bool, str]:
         for p in pos[:10]:
             log(f"  • {p.get('symbol')} {p.get('type')} vol={p.get('volume')} "
                 f"PNL=R$ {p.get('profit', 0):.2f}")
+        # Wave 10: nota que MT5 está em background (invisível)
+        import subprocess as sp
+        xvfb_running = sp.run(["pgrep", "-f", "Xvfb :99"],
+                             capture_output=True).returncode == 0
+        if xvfb_running:
+            log("🖥️  MT5 rodando em Xvfb :99 (background invisível). "
+                "Para ver: bash scripts/mt5_show.sh")
         return True, "OK"
     except Exception as e:
         log(f"❌ Falha ao conectar MT5: {e}")

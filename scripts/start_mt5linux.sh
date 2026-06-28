@@ -2,16 +2,20 @@
 # start_mt5linux.sh — Inicia o bridge mt5linux (Wine + RPyC + MT5)
 #
 # Arquitetura:
-#   1. Xvfb display :99 (servidor X virtual)
+#   1. Xvfb display :99 (servidor X virtual) — invisível, sempre background
 #   2. Wine: MT5 (terminal64.exe) + Python Windows (python.exe) com MetaTrader5
 #   3. RPyC server: roda o rpyc_classic.py via Python Windows no Wine
 #   4. mt5linux client (Python Linux): conecta em localhost:5001
 #
 # Uso:
 #   bash start_mt5linux.sh [login] [senha] [servidor]
-#   ex: bash start_mt5linux.sh 12345678 minhasenha "Rico-Investidor"
+#   bash start_mt5linux.sh --background  # Wave 10: modo background (default)
+#   bash scripts/mt5_show.sh             # ver MT5 (VNC)
 #
 # Deixa rodando em background. Pra parar: pkill -f Xvfb ; pkill -f terminal64
+#
+# Wave 10 (2026-06-26, Bruno): MT5 SEMPRE em background (Xvfb invisível).
+# Para visualizar, use scripts/mt5_show.sh que inicia x11vnc.
 
 set -e
 export WINEPREFIX="$HOME/.wine64"
@@ -24,28 +28,63 @@ MT5_PATH="$WINEPREFIX/drive_c/Program Files/MetaTrader 5/terminal64.exe"
 PYWIN="$WINEPREFIX/drive_c/Program Files/Python311/python.exe"
 RPYC_PORT="${RPYC_PORT:-5001}"
 
+# Wave 10: parse flags. --background é default (compatibilidade retroativa)
+MODE="background"
+LOGIN=""
+PASSWORD=""
+SERVER=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --background|--bg)
+            MODE="background"
+            shift
+            ;;
+        --show|--gui)
+            # Mantido por compat — em Wave 10 sempre background. Use mt5_show.sh
+            MODE="background"
+            echo "ℹ️  --show deprecated. Use: bash scripts/mt5_show.sh"
+            shift
+            ;;
+        --help|-h)
+            echo "Uso: $0 [--background] [login senha servidor]"
+            echo ""
+            echo "MT5 sempre roda em background (Xvfb invisível)."
+            echo "Para visualizar: bash scripts/mt5_show.sh"
+            exit 0
+            ;;
+        *)
+            # Primeiro arg é login, segundo senha, terceiro servidor
+            if [ -z "$LOGIN" ]; then
+                LOGIN="$1"
+            elif [ -z "$PASSWORD" ]; then
+                PASSWORD="$1"
+            elif [ -z "$SERVER" ]; then
+                SERVER="$1"
+            fi
+            shift
+            ;;
+    esac
+done
+
 # 1) Inicia Xvfb (se não estiver rodando)
 if ! pgrep -f "Xvfb :99" >/dev/null; then
-    echo "🖥️  Iniciando Xvfb display :99..."
-    Xvfb :99 -screen 0 1024x768x24 &
+    echo "🖥️  Iniciando Xvfb display :99 (invisível)..."
+    Xvfb :99 -screen 0 1280x800x24 &
     sleep 2
 fi
 
 # 2) Inicia MT5 (se não estiver rodando)
 if ! pgrep -f "terminal64.exe" >/dev/null; then
-    echo "📈 Iniciando MetaTrader 5..."
-    wine "$MT5_PATH" &
+    echo "📈 Iniciando MetaTrader 5 em background..."
+    wine "$MT5_PATH" /portable &
     sleep 8
+else
+    echo "✅ MT5 já está rodando (PID $(pgrep -f 'terminal64.exe'))"
 fi
 
 # 3) Login (se credenciais fornecidas)
-if [ $# -ge 3 ]; then
-    LOGIN="$1"
-    PASSWORD="$2"
-    SERVER="$3"
+if [ -n "$LOGIN" ] && [ -n "$PASSWORD" ] && [ -n "$SERVER" ]; then
     echo "🔐 Fazendo login: $LOGIN @ $SERVER..."
-
-    # Pequeno script Python que faz login
     LOGIN_SCRIPT=$(cat <<EOF
 import MetaTrader5 as mt5
 mt5.initialize()
@@ -63,45 +102,30 @@ EOF
     sleep 2
 else
     echo "ℹ️  Sem credenciais — você precisa logar manualmente no MT5"
-    echo "   Uso: bash start_mt5linux.sh <login> <senha> <servidor>"
+    echo "   Para ver: bash scripts/mt5_show.sh"
 fi
 
 # 4) Inicia RPyC server (bridge pro Linux)
 if ! pgrep -f "rpyc_classic" >/dev/null; then
     echo "🌉 Iniciando bridge RPyC na porta $RPYC_PORT..."
-    # Server é um Python module — usar Python do Windows no Wine
     wine "$PYWIN" -m mt5linux --port "$RPYC_PORT" &
     sleep 3
+else
+    echo "✅ RPyC já está rodando (PID $(pgrep -f 'rpyc_classic'))"
 fi
 
-# 5) Testa conexão do lado Linux
-echo ""
-echo "🧪 Testando conexão do Python Linux..."
-PYTHONPATH=./agent ./agent/venv/bin/python -c "
-import sys
-sys.path.insert(0, './agent')
-try:
-    from backtest.loaders.mt5_loader import account_info
-    acc = account_info(port=$RPYC_PORT)
-    if acc:
-        print(f'✅ Conectado: {acc[\"login\"]} @ {acc[\"server\"]}, saldo {acc[\"balance\"]} {acc[\"currency\"]}')
-    else:
-        print('❌ Não conectado')
-except Exception as e:
-    print(f'❌ Erro: {e}')
-"
-
 echo ""
 echo "============================================================"
-echo "✅ MT5 + RPyC rodando!"
+echo "✅ MT5 + RPyC rodando em BACKGROUND (Xvfb :99 invisível)"
 echo "============================================================"
+echo ""
 echo "Próximos passos:"
-echo "  1. cd ~/Projects/Vibe-Trading"
-echo "  2. PYTHONPATH=./agent ./agent/venv/bin/python backtest_futures.py WIN M5 sma"
-echo "  3. Para parar tudo: pkill -f Xvfb ; pkill -f terminal64 ; pkill -f rpyc_classic"
+echo "  • Ver MT5 na tela: bash scripts/mt5_show.sh"
+echo "  • Parar tudo: pkill -f Xvfb ; pkill -f terminal64 ; pkill -f rpyc_classic"
 echo ""
 echo "📊 Status atual:"
 echo "   Xvfb:     $(pgrep -f 'Xvfb :99' >/dev/null && echo '✅ rodando' || echo '❌ parado')"
 echo "   MT5:      $(pgrep -f 'terminal64.exe' >/dev/null && echo '✅ rodando' || echo '❌ parado')"
 echo "   RPyC:     $(pgrep -f 'rpyc_classic' >/dev/null && echo '✅ rodando' || echo '❌ parado')"
+echo "   VNC:      $(pgrep -f 'x11vnc' >/dev/null && echo '✅ exposto (mt5_show)' || echo '⚪ não exposto (use mt5_show)')"
 echo "   Porta:    $RPYC_PORT"
