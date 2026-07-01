@@ -1,7 +1,7 @@
 {
-  "_version": 955,
-  "_updated_at": "2026-07-01T10:05:13",
-  "_updated_by": "bruno_wave1_3_audit_2026_07_01",
+  "_version": 957,
+  "_updated_at": "2026-07-01T13:15:26",
+  "_updated_by": "bruno_reactivate_bit_v2_post_reconcile_fix",
   "_notes": "auto-resolve vencimento: WDO: WDOQ26 → WDOU26\n\n[2026-07-01 10:06 Wave 1.3 REAPPLY após restore do v945] BIT_M5/BIT_M30 re-adicionados a disabled_timeframes. Justificativa Wave 1.3 original (26/06 06:50, commit eb1c516d): BIT_M5 14t WR 28.6% PnL -R$5.395,60 (pior loss absoluto 30d); BIT_M30 6t WR 16.7% PnL -R$2.849,60. Total estimado: -R$9.643,40. Critério: PnL<0 E (WR<30% E n>=5). Restaurado após incident 09:30 que comeu kill switches.",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
@@ -223,7 +223,6 @@
     "strategy": "RSI_REVERSION"
   },
   "disabled_symbols": [
-    "BIT",
     "IND"
   ],
   "disabled_timeframes": [
