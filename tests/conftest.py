@@ -9,6 +9,7 @@ para corrigir ModuleNotFoundError: No module named 'vt_hermes_helper'.
 Runs before any test collection.
 """
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -80,3 +81,89 @@ def _isolate_vt_config(request, monkeypatch, tmp_path):
     # automaticamente pelo monkeypatch).
     vt_config_loader._config = None
     vt_config_loader._mtime = 0
+
+
+# ─── Isolamento do DB de trades (2026-07-01) ───────────────────────────────
+# BUG HISTÓRICO (commit dc447fd6): mt5_orchestrator._persist_close_to_db()
+# escreve em TRADES_DB = PROJECT / "vt_trades.db" (path de PRODUÇÃO). Sem
+# isolamento autouse no conftest, qualquer teste que chamasse close() vazava
+# trades fake no DB de produção — exemplo real: test_orchestrator_close_
+# updates_db.py criou o trade #2072 fake (ticket=2467899999, PnL=+R$ 200)
+# que teve que ser removido manualmente.
+#
+# FIX: monkeypatch de TRADES_DB no módulo mt5_orchestrator para um tmp DB
+# com schema mínimo (espelha _TRADES_SCHEMA do orchestrator). Como o patch
+# é revertido automaticamente pelo monkeypatch ao final do teste, o path
+# de produção nunca é tocado. Testes que PRECISAM do DB real (caso raro)
+# podem optar out com @pytest.mark.uses_real_db.
+#
+# NOTA: tests/test_orchestrator_close_updates_db.py já tinha um _TmpDBMixin
+# próprio, mas como o problema raiz é o orchestrator, mover o isolamento
+# para o conftest torna o fix FAIL-SAFE — qualquer teste novo que chamar
+# close() também fica protegido automaticamente.
+
+
+@pytest.fixture(autouse=True)
+def _isolate_trades_db(request, monkeypatch, tmp_path):
+    """Redireciona mt5_orchestrator.TRADES_DB para tmp por padrão (fail-safe)."""
+    if request.node.get_closest_marker("uses_real_db"):
+        return
+
+    from mt5 import mt5_orchestrator
+
+    # tmp DB isolado por teste (tmp_path é único por teste)
+    tmp_db = tmp_path / "vt_trades.db"
+
+    # Schema mínimo — espelha _TRADES_SCHEMA de mt5_orchestrator.py.
+    # Idempotente: testes que sobrescrevem (close já faz CREATE IF NOT EXISTS)
+    # continuam funcionando.
+    _TRADES_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_ticket TEXT,
+        exit_ticket TEXT,
+        magic_number INTEGER DEFAULT 555501,
+        symbol TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        volume REAL NOT NULL,
+        timeframe TEXT DEFAULT 'M5',
+        entry_time TEXT NOT NULL,
+        entry_price REAL NOT NULL,
+        entry_sl REAL,
+        exit_time TEXT,
+        exit_price REAL,
+        exit_reason TEXT,
+        exit_sl_price REAL,
+        gross_pnl REAL DEFAULT 0,
+        fees REAL DEFAULT 0,
+        swap REAL DEFAULT 0,
+        net_pnl REAL DEFAULT 0,
+        is_day_trade INTEGER DEFAULT 1,
+        asset_type TEXT DEFAULT 'FUTURE',
+        multiplier REAL DEFAULT 0.20,
+        strategy TEXT DEFAULT 'VWAP',
+        signal_detail TEXT,
+        raw_entry_json TEXT,
+        raw_exit_json TEXT,
+        notes TEXT,
+        close_source TEXT,
+        created_at TEXT DEFAULT (datetime('now', 'localtime')),
+        updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_trades_entry_ticket ON trades(entry_ticket);
+    """
+    conn = sqlite3.connect(str(tmp_db), timeout=30.0)
+    conn.executescript(_TRADES_SCHEMA)
+    conn.commit()
+    conn.close()
+
+    # Monkeypatch: redireciona TRADES_DB no módulo orchestrator.
+    # monkeypatch reverte automaticamente ao final do teste — produção intocado.
+    monkeypatch.setattr(mt5_orchestrator, "TRADES_DB", tmp_db)
+
+    yield
+
+    # Sem cleanup manual necessário — tmp_path é auto-cleaned pelo pytest
+    # e monkeypatch reverte o atributo. Mas garantimos que o schema/registros
+    # não vazem entre testes (cada teste ganha tmp_path NOVO, então já estão
+    # isolados por construção).
