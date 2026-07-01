@@ -17,6 +17,8 @@ Uso típico:
 import subprocess
 import json
 import os
+import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +26,49 @@ PROJECT = Path("/home/bruno/Projects/Vibe-Trading")
 WINE_PYTHON = os.path.expanduser("~/.wine/drive_c/Python311/python.exe")
 EXECUTOR_WIN = "Z:\\home\\bruno\\Projects\\Vibe-Trading\\mt5\\mt5_executor.py"
 RESOLVE_WIN = "Z:\\home\\bruno\\Projects\\Vibe-Trading\\mt5_resolve.py"
+
+# DB de trades — mesmo path usado por core.vt_trade_log
+TRADES_DB = PROJECT / "vt_trades.db"
+
+# Schema mínimo necessário para _persist_close_to_db() — espelha o que
+# core.vt_trade_log.init_db() cria (somente as colunas que tocamos aqui).
+# Mantido localmente porque o orchestrator não importa o módulo inteiro
+# só para ler uma conexão (e para deixar este módulo self-contained).
+_TRADES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_ticket TEXT,
+    exit_ticket TEXT,
+    magic_number INTEGER DEFAULT 555501,
+    symbol TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    volume REAL NOT NULL,
+    timeframe TEXT DEFAULT 'M5',
+    entry_time TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    entry_sl REAL,
+    exit_time TEXT,
+    exit_price REAL,
+    exit_reason TEXT,
+    exit_sl_price REAL,
+    gross_pnl REAL DEFAULT 0,
+    fees REAL DEFAULT 0,
+    swap REAL DEFAULT 0,
+    net_pnl REAL DEFAULT 0,
+    is_day_trade INTEGER DEFAULT 1,
+    asset_type TEXT DEFAULT 'FUTURE',
+    multiplier REAL DEFAULT 0.20,
+    strategy TEXT DEFAULT 'VWAP',
+    signal_detail TEXT,
+    raw_entry_json TEXT,
+    raw_exit_json TEXT,
+    notes TEXT,
+    close_source TEXT,
+    created_at TEXT DEFAULT (datetime('now', 'localtime')),
+    updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_trades_entry_ticket ON trades(entry_ticket);
+"""
 
 
 def _run_wine(script: str, *args, timeout=30) -> dict:
@@ -109,9 +154,203 @@ def sell(symbol: str, volume: float = 1.0, sl_pts: Optional[int] = None,
     return result
 
 
+def _persist_close_to_db(symbol: str, details: list) -> dict:
+    """
+    Persiste o PnL de cada close em vt_trades.db.
+
+    Para cada detail (um dict com ticket/symbol/close_price/profit/swap/...):
+      - Procura trade existente pelo entry_ticket (= detail.ticket).
+      - Se achar E exit_time IS NULL → UPDATE (trade legit).
+      - Se achar E exit_time IS NOT NULL → UPDATE de novo (replay-safe; preserva
+        exit original se já estava preenchido mas permite reconciliação).
+      - Se NÃO achar → INSERT novo trade como orphan (server-close que o bot
+        nunca viu entrar).
+      - Se detail vier com chave 'error' (retcode != DONE) → pula.
+
+    Nunca lança: qualquer erro de DB é capturado e logado, mas a chamada
+    `close()` SEMPRE retorna o JSON do executor para o caller.
+    """
+    stats = {"updated": 0, "orphans_inserted": 0, "skipped": 0, "errors": 0}
+    if not details:
+        return stats
+
+    # Garante que o schema existe (idempotente). Se o DB não existir ainda,
+    # cria com a schema mínima — produção já tem o DB completo, mas isso
+    # também deixa o módulo utilizável em testes com tmp_path.
+    db_path = TRADES_DB
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(_TRADES_SCHEMA)
+        conn.commit()
+    except Exception as e:
+        _log(f"DB_UNAVAILABLE ao abrir {db_path}: {e}")
+        stats["errors"] += 1
+        return stats
+
+    try:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        for detail in details:
+            try:
+                # Pula detalhes com erro (retcode != DONE no executor)
+                if "error" in detail and "ticket" not in detail.get("error", ""):
+                    # detalhe de falha do MT5 não tem profit; ignora
+                    stats["skipped"] += 1
+                    continue
+
+                ticket = str(detail.get("ticket", "") or "")
+                if not ticket:
+                    stats["skipped"] += 1
+                    continue
+
+                profit = float(detail.get("profit", 0) or 0)
+                close_price = float(detail.get("close_price", 0) or 0)
+                swap = float(detail.get("swap", 0) or 0)
+                direction = detail.get("type", "BUY")
+                volume = float(detail.get("volume", 0) or 0)
+                entry_price = float(detail.get("entry_price", 0) or 0)
+                magic = int(detail.get("magic", 555501) or 555501)
+
+                # 1) Procura trade existente pelo entry_ticket
+                row = conn.execute(
+                    "SELECT id, exit_time FROM trades WHERE entry_ticket = ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (ticket,),
+                ).fetchone()
+
+                if row is not None:
+                    # UPDATE trade existente
+                    if row["exit_time"]:
+                        # Já tinha exit_time → reescreve só se profit novo
+                        # for diferente (reconciliação). Não sobrescreve exit_time.
+                        conn.execute(
+                            """
+                            UPDATE trades SET
+                                exit_price = ?,
+                                gross_pnl = ?,
+                                swap = ?,
+                                net_pnl = ?,
+                                exit_reason = COALESCE(exit_reason, 'MANUAL_CLOSE_OR_ORPHAN'),
+                                close_source = COALESCE(close_source, 'mt5_orchestrator_close'),
+                                updated_at = datetime('now', 'localtime')
+                            WHERE id = ?
+                            """,
+                            (close_price, profit, swap, profit, row["id"]),
+                        )
+                        _log(
+                            f"[ORCHESTRATOR_CLOSE] Re-reconciled trade id={row['id']} "
+                            f"ticket={ticket} PnL=R${profit:+.2f}"
+                        )
+                    else:
+                        # Trade legit sem exit → UPDATE completo
+                        conn.execute(
+                            """
+                            UPDATE trades SET
+                                exit_time = ?,
+                                exit_price = ?,
+                                gross_pnl = ?,
+                                swap = ?,
+                                net_pnl = ?,
+                                exit_reason = 'MANUAL_CLOSE_OR_ORPHAN',
+                                close_source = 'mt5_orchestrator_close',
+                                updated_at = datetime('now', 'localtime')
+                            WHERE id = ?
+                            """,
+                            (now_str, close_price, profit, swap, profit, row["id"]),
+                        )
+                        _log(
+                            f"[ORCHESTRATOR_CLOSE] Updated trade id={row['id']} "
+                            f"ticket={ticket} PnL=R${profit:+.2f}"
+                        )
+                    stats["updated"] += 1
+                else:
+                    # 2) ORPHAN genuíno — MT5 fechou algo que o DB não conhecia
+                    #    (pode ser manual close via MT5 GUI, ou trade criado
+                    #    pelo reconcile antes do entry_ticket chegar aqui).
+                    conn.execute(
+                        """
+                        INSERT INTO trades (
+                            entry_ticket, exit_ticket, magic_number,
+                            symbol, direction, volume, timeframe,
+                            entry_time, entry_price, entry_sl,
+                            exit_time, exit_price, exit_reason,
+                            gross_pnl, fees, swap, net_pnl,
+                            strategy, raw_exit_json, notes, close_source
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
+                                  ?, ?, ?, ?, 0, ?, ?,
+                                  'MANUAL_ORPHAN', ?, ?, ?)
+                        """,
+                        (
+                            ticket, ticket, magic,
+                            detail.get("symbol", symbol), direction, volume, "M5",
+                            now_str, entry_price,
+                            now_str, close_price, "MANUAL_CLOSE_OR_ORPHAN",
+                            profit, swap, profit,
+                            json.dumps(detail, default=str),
+                            f"[orchestrator_close] orphan ingested ticket={ticket}",
+                            "mt5_orchestrator_close",
+                        ),
+                    )
+                    stats["orphans_inserted"] += 1
+                    _log(
+                        f"[ORCHESTRATOR_CLOSE] Inserted orphan ticket={ticket} "
+                        f"symbol={detail.get('symbol', symbol)} PnL=R${profit:+.2f}"
+                    )
+            except Exception as e:
+                # Nunca quebra o close por causa de 1 detail problemático
+                stats["errors"] += 1
+                _log(
+                    f"[ORCHESTRATOR_CLOSE] ERROR processing detail "
+                    f"{detail.get('ticket', '?')}: {e}"
+                )
+                continue
+
+        conn.commit()
+    except Exception as e:
+        stats["errors"] += 1
+        _log(f"[ORCHESTRATOR_CLOSE] DB transaction error: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return stats
+
+
 def close(symbol: str) -> dict:
-    """Fecha posição do símbolo."""
-    return _run_wine(EXECUTOR_WIN, "close", symbol)
+    """
+    Fecha posição do símbolo.
+
+    IMPORTANTE: após MT5 retornar sucesso (status='ok', closed>=1),
+    persiste o PnL no DB (vt_trades.db). Sem isso, MT5 fecha o trade mas
+    o DB fica com gross_pnl=0 e net_pnl=0 — bug histórico (2026-07-01).
+    """
+    result = _run_wine(EXECUTOR_WIN, "close", symbol)
+
+    # Side-effect: persistir no DB se MT5 fechou algo
+    if isinstance(result, dict) and result.get("status") == "ok":
+        details = result.get("details") or []
+        closed = result.get("closed", 0)
+        if details and closed >= 1:
+            try:
+                db_stats = _persist_close_to_db(symbol, details)
+                result["db_persist"] = db_stats
+                _log(
+                    f"CLOSE {symbol} → {closed} fechado(s); "
+                    f"DB updated={db_stats['updated']} "
+                    f"orphans={db_stats['orphans_inserted']} "
+                    f"errors={db_stats['errors']}"
+                )
+            except Exception as e:
+                # Nunca crashar o close por causa do DB update
+                result["db_persist_error"] = str(e)
+                _log(f"CLOSE {symbol} DB persist falhou: {e}")
+
+    _log(f"CLOSE {symbol} → {result.get('status', result.get('error', '?'))}")
+    return result
 
 
 def close_all() -> dict:
