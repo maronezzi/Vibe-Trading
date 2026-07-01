@@ -44,6 +44,12 @@ from core.vt_config_loader import load_config, load_effective_config
 from core.vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
 from core.vt_order_validator_v2 import validate_order
 from core.vt_calendar import is_trading_day, resolve_all_symbols, get_contract_expiry, _parse_contract_code, is_rollover_contract
+# Fase 2.5 (architecture_proposal_2026_07_01.md, secao 3.2): centraliza acesso
+# MT5 + truth layer. validate_order_pre_send() daqui e re-export da fonte
+# autoritativa em core.vt_truth (toda chamada MT5 sensivel passa por la).
+# Mantemos validate_order_pre_send local como thin wrapper que delega, para
+# nao quebrar callers externos (tests, scripts) que importam daqui.
+from core import vt_truth as _truth
 # Bruno 30/06 (defesa drift DB↔MT5): reconciliação proativa via MT5 history.
 # Import lazy para não crashar autotrader se módulo tem bug — mas módulo é
 # razoavelmente isolado (sem dependências pesadas).
@@ -1568,35 +1574,16 @@ VT_BOT_MAGIC = 555501  # magic do bot, ver mt5/mt5_executor.py L231/L341
 def validate_order_pre_send(symbol: str, direction: str, magic: int = VT_BOT_MAGIC) -> bool:
     """Consulta MT5 status() antes de enviar BUY/SELL. Bloqueia duplicacao.
 
-    Args:
-        symbol:  contrato MT5 (ex.: "BITN26", "WINM26").
-        direction: "BUY" ou "SELL".
-        magic: magic number do bot (default 555501).
+    DELEGADO para core.vt_truth.validate_order_pre_send (Fase 2.5 — truth layer
+    autoritativo). Mantido como thin wrapper aqui para nao quebrar callers
+    existentes (tests, scripts) que importam de core.vt_autotrader.
 
-    Returns:
-        True  -> seguro enviar ordem.
-        False -> bloqueado: ja existe pos aberta com mesmo magic+symbol.
+    Comportamento preservado:
+      - Retorna False se ja existe pos aberta com mesmo magic+symbol.
+      - FAIL-SAFE: MT5 indisponivel -> True (permite envio, mesma politica
+        do codigo original; ver logica em core.vt_truth.validate_order_pre_send).
     """
-    try:
-        s = status()
-    except Exception as e:
-        # FAIL-SAFE: se MT5 nao responde, NAO bloquear. Assumir broker
-        # offline e deixar o caminho normal tratar (safe_buy/safe_sell tem
-        # retry proprio). Bloquear por defeito de leitura = lockup.
-        log(f"[validate_order_pre_send] status() falhou ({type(e).__name__}: {e}) — FAIL-SAFE: permite envio")
-        return True
-
-    positions = (s or {}).get("positions", []) or []
-    for pos in positions:
-        if pos.get("magic") == magic and pos.get("symbol") == symbol:
-            log(
-                f"[BLOCKED-DUPLICATE] {symbol} ja tem pos aberta "
-                f"ticket={pos.get('ticket')} type={pos.get('type')} "
-                f"magic={pos.get('magic')} volume={pos.get('volume', '?')} "
-                f"— bloqueando novo {direction}"
-            )
-            return False
-    return True
+    return _truth.validate_order_pre_send(symbol=symbol, direction=direction, magic=magic)
 
 
 def _execute_entry(symbol: str, tf: str, direction: str, price: float,
@@ -2085,10 +2072,9 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         except Exception as e:
             log(f"[TRAIL] Erro modify SL: {e}")
 
-    # Verificar se posição ainda existe no MT5
-    status_data = status()
-    mt5_positions = status_data.get("positions", [])
-    mt5_tickets = [str(p["ticket"]) for p in mt5_positions]
+    # Verificar se posição ainda existe no MT5 (Fase 2.5 — via truth layer)
+    _open_pos = _truth.get_open_positions()
+    mt5_tickets = [str(p.ticket) for p in _open_pos]
 
     if str(pos["entry_ticket"]) not in mt5_tickets:
         log(f"[FECHADO PELO SERVIDOR] {symbol} | Ticket {pos['entry_ticket']}")
@@ -2096,20 +2082,19 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         # Bruno 2026-06-30: pegar PnL REAL do MT5 (broker-truth) ao invés de calcular
         # localmente. Se histórico disponível, usar profit do deal out. Fallback para
         # cálculo local só se histórico indisponível. Defesa contra DB lock que perde PnL.
+        # Fase 2.5: via truth layer (cache 2s) ao inves de chamar orchestrator direto.
         profit = None
         try:
-            from mt5_orchestrator import history as _mt5_history
-            # History do símbolo (último deal "out" deste entry_ticket)
-            _hist = _mt5_history(symbol=symbol, days=1)
-            for d in _hist.get("deals", []):
+            _deals = _truth.get_position_history(symbol=symbol, days=1)
+            for d in _deals:
                 # position_id == entry_ticket (MT5 concept)
-                if str(d.get("position_id")) == str(pos["entry_ticket"]) and d.get("type") in (1, "SELL", "BUY"):
+                if str(d.position_id) == str(pos["entry_ticket"]) and d.direction in ("BUY", "SELL"):
                     # O último deal "out" para esse position
-                    profit = d.get("profit", 0) + d.get("commission", 0) + d.get("swap", 0)
+                    profit = float(d.profit) + float(d.commission) + float(d.swap)
                     # usa exit_price do deal também
-                    if d.get("price"):
-                        current_price = d["price"]
-                    log(f"[FECHADO PELO SERVIDOR] MT5 history: profit=R$ {profit:.2f} price={d.get('price')}")
+                    if d.price:
+                        current_price = float(d.price)
+                    log(f"[FECHADO PELO SERVIDOR] MT5 history: profit=R$ {profit:.2f} price={d.price}")
                     break
         except Exception as _he:
             log(f"[HISTORY FAIL] usando PnL local: {_he}")
@@ -2299,8 +2284,17 @@ def close_all_and_report():
     msg += f"\n{pnl_emoji} *PnL Líquido: R$ {net_pnl_db:+.2f}*\n"
 
     try:
-        mt5_status = status()
-        mt5_positions = mt5_status.get("positions", [])
+        # Fase 2.5: via truth layer (cache 2s) ao inves de status() direto.
+        # get_truth_from_mt5() ja usa status() internamente, mas truth layer
+        # adiciona contrato tipado e centralizacao.
+        _open_now = _truth.get_open_positions()
+        mt5_positions = [
+            {
+                "ticket": p.ticket, "symbol": p.symbol, "type": p.direction,
+                "volume": p.volume, "price_open": p.price_open, "profit": p.profit,
+            }
+            for p in _open_now
+        ]
     except Exception:
         mt5_positions = []
 

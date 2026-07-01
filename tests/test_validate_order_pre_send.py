@@ -17,6 +17,17 @@ log [BLOCKED-DUPLICATE]. Chamada em _execute_entry() (unico call site live).
 
 Forense: data/architecture_audit_2026_07_01.md secao 4.2 mapeou write paths
 sem validate. Proposta: data/architecture_proposal_2026_07_01.md L350.
+
+Fase 2.5 (Bruno 2026-07-01): refactor — validate_order_pre_send agora delega
+para core.vt_truth.validate_order_pre_send (truth layer autoritativo).
+Os testes continuam assertando o COMPORTAMENTO PUBLICO (True/False + marker
+[BLOCKED-DUPLICATE]), mas patcham o lado correto:
+  - core.vt_truth._mt5_status (nao core.vt_autotrader.status) — pq a fonte
+    autoritativa virou o truth layer.
+  - core.vt_truth._log (nao core.vt_autotrader.log) — pq o log do truth layer
+    usa print direto (logger append-only isolado, ver data/architecture_proposal
+    secao 3.2).
+  - Limpar TTL cache entre testes (modulo-level, nao unittest mock-friendly).
 """
 import sys
 import unittest
@@ -40,12 +51,24 @@ def _make_pos(ticket=2468137734, symbol="BITN26", magic=555501, ptype="BUY", vol
     }
 
 
+def _reset_truth_caches():
+    """Limpa TTL cache do truth layer entre testes."""
+    from core import vt_truth
+    vt_truth._reset_caches_for_testing()
+
+
 class TestValidateOrderPreSend(unittest.TestCase):
     """validate_order_pre_send() bloqueia duplicacao baseado em MT5 status()."""
 
+    def setUp(self):
+        _reset_truth_caches()
+
+    def tearDown(self):
+        _reset_truth_caches()
+
     def test_blocks_when_same_symbol_and_magic_already_open(self):
         """CASO PRINCIPAL DO BUG: pos BITN26 BUY 555501 aberta -> novo BUY bloqueado."""
-        with patch("core.vt_autotrader.status") as mock_status:
+        with patch("core.vt_truth._mt5_status") as mock_status:
             mock_status.return_value = {
                 "positions": [_make_pos(symbol="BITN26", magic=555501, ptype="BUY")],
                 "account": {},
@@ -60,7 +83,7 @@ class TestValidateOrderPreSend(unittest.TestCase):
     def test_blocks_sell_also_when_position_open_same_symbol(self):
         """Se ha pos aberta do bot no symbol, qualquer direcao nova eh bloqueada
         (a gestão de reversão é feita em manage_position, nao aqui)."""
-        with patch("core.vt_autotrader.status") as mock_status:
+        with patch("core.vt_truth._mt5_status") as mock_status:
             mock_status.return_value = {
                 "positions": [_make_pos(symbol="WINM26", magic=555501, ptype="BUY")],
                 "account": {},
@@ -74,7 +97,7 @@ class TestValidateOrderPreSend(unittest.TestCase):
 
     def test_allows_when_no_positions_open(self):
         """Caminho feliz: status() retorna lista vazia -> permite envio."""
-        with patch("core.vt_autotrader.status") as mock_status:
+        with patch("core.vt_truth._mt5_status") as mock_status:
             mock_status.return_value = {"positions": [], "account": {}}
             from core.vt_autotrader import validate_order_pre_send
             result = validate_order_pre_send("BITN26", "BUY")
@@ -85,7 +108,7 @@ class TestValidateOrderPreSend(unittest.TestCase):
 
     def test_allows_when_open_position_is_different_symbol(self):
         """Pos aberta em symbol diferente nao bloqueia (ex: WIN aberta, sinal novo em WDO)."""
-        with patch("core.vt_autotrader.status") as mock_status:
+        with patch("core.vt_truth._mt5_status") as mock_status:
             mock_status.return_value = {
                 "positions": [_make_pos(symbol="WINM26", magic=555501, ptype="BUY")],
                 "account": {},
@@ -99,7 +122,7 @@ class TestValidateOrderPreSend(unittest.TestCase):
 
     def test_allows_when_open_position_has_different_magic(self):
         """Pos aberta com magic de outro bot/script nao bloqueia (cada magic eh independente)."""
-        with patch("core.vt_autotrader.status") as mock_status:
+        with patch("core.vt_truth._mt5_status") as mock_status:
             mock_status.return_value = {
                 "positions": [_make_pos(symbol="BITN26", magic=999999, ptype="BUY")],
                 "account": {},
@@ -113,7 +136,7 @@ class TestValidateOrderPreSend(unittest.TestCase):
 
     def test_fail_safe_allows_when_status_raises(self):
         """FAIL-SAFE: se status() exception, NAO bloquear (lockup seria pior)."""
-        with patch("core.vt_autotrader.status") as mock_status:
+        with patch("core.vt_truth._mt5_status") as mock_status:
             mock_status.side_effect = RuntimeError("MT5 offline / Wine dead")
             from core.vt_autotrader import validate_order_pre_send
             result = validate_order_pre_send("BITN26", "BUY")
@@ -126,15 +149,15 @@ class TestValidateOrderPreSend(unittest.TestCase):
         """Garante que o log emitido usa o marker [BLOCKED-DUPLICATE]
         (consumido por grep / dashboard / watchdog)."""
         from core.vt_autotrader import validate_order_pre_send
-        with patch("core.vt_autotrader.status") as mock_status, \
-             patch("core.vt_autotrader.log") as mock_log:
+        with patch("core.vt_truth._mt5_status") as mock_status, \
+             patch("core.vt_truth._log") as mock_log:
             mock_status.return_value = {
                 "positions": [_make_pos(symbol="BITN26", magic=555501)],
                 "account": {},
             }
             validate_order_pre_send("BITN26", "BUY")
 
-        # Procura o marker exato em qualquer chamada de log
+        # Procura o marker exato em qualquer chamada de log (truth layer)
         all_log_calls = [str(c) for c in mock_log.call_args_list]
         joined = "\n".join(all_log_calls)
         self.assertIn(
@@ -146,7 +169,7 @@ class TestValidateOrderPreSend(unittest.TestCase):
     def test_mixed_positions_only_target_match_blocks(self):
         """Cenario com N pos abertas, varias simbolos/magics: so bloqueia
         se match exato magic+symbol."""
-        with patch("core.vt_autotrader.status") as mock_status:
+        with patch("core.vt_truth._mt5_status") as mock_status:
             mock_status.return_value = {
                 "positions": [
                     _make_pos(symbol="WINM26", magic=555501, ticket=111),
@@ -160,12 +183,8 @@ class TestValidateOrderPreSend(unittest.TestCase):
             # BITN26 com magic 999999 ja existe MAS nao eh do bot -> permite
             self.assertTrue(validate_order_pre_send("BITN26", "BUY"))
 
-            # BITN26 com magic 555501 NAO existe -> permite
-            self.assertTrue(validate_order_pre_send("WDON26", "SELL") is False or
-                            validate_order_pre_send("WDON26", "SELL"))
-
         # Teste isolado do match: WDON26 magic 555501 ja aberta -> BLOQUEIA
-        with patch("core.vt_autotrader.status") as mock_status:
+        with patch("core.vt_truth._mt5_status") as mock_status:
             mock_status.return_value = {
                 "positions": [_make_pos(symbol="WDON26", magic=555501, ticket=222)],
                 "account": {},
