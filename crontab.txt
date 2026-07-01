@@ -27,5 +27,17 @@
 # ─── AGI OTIMIZADOR 17:10 (seg-sex) — análise 7d + LLM + apply_changes ──────────
 10 17 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 optimization/agi_tuning_17h.py >> /tmp/vt_agi.log 2>&1
 
+# ─── SELF-HEAL MONITOR 5min (seg-sex 9-17h) — 6 health checks + auto-cura ──────
+#     Fase 2.2: autotrader/MT5/DB/state/lock/cron. Auto-cura conservadora (restart
+#     de processo/MT5 + alerta). Nunca desabilita símbolo/TF (Lei 2).
+*/5 9-17 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_self_heal.py >> /tmp/vt_self_heal.log 2>&1
+
+# ─── SELF-HEAL MONITOR 15min (fora do pregão) — supervisão leve 24/7 ───────────
+*/15 0-8,18-23 * * * cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_self_heal.py >> /tmp/vt_self_heal.log 2>&1
+
+# ─── SCOPE-AUDIT segunda 9:00 — Lei 2: 16 pares WIN/BIT/WSP/WDO × TFs ativos ──
+#     Fase 2.3: alerta se símbolo/TF fora do escopo (exclui só IND). Bruno decide.
+0 9 * * 1 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 scripts/check_symbols_active.py >> /tmp/vt_scope_audit.log 2>&1
+
 # ─── RELATÓRIO SEMANAL sexta 17:30 — resumo + 6 gráficos PNG + CSV ─────────────
 30 17 * * 5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_weekly_report.py >> /tmp/vt_weekly.log 2>&1

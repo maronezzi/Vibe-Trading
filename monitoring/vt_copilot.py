@@ -22,6 +22,37 @@ from pathlib import Path
 # Adicionar projeto ao path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Self-healing monitor (Fase 2.2) — 6 health checks + auto-cura conservadora.
+# Import defensivo: se vt_self_heal falhar a importar, o copilot NÃO derruba
+# (Lei: monitoramento nunca bloqueia o fluxo principal).
+try:
+    from monitoring.vt_self_heal import run_once as self_heal_run_once
+except Exception as _self_heal_import_error:  # pragma: no cover
+    self_heal_run_once = None
+
+
+def run_self_heal_hook():
+    """Executa self-heal no início do copilot. Nunca levanta.
+
+    Retorna string-resumo das ações (p/ incluir no relatório) ou "" se
+    indisponível/saudável. Auto-cura conservadora: só age em CRITICAL/HIGH
+    curáveis (autotrader morto, MT5 offline, lock órfão); demais só alertam.
+    """
+    if self_heal_run_once is None:
+        return ""  # import falhou — copilot continua sem self-heal
+    try:
+        report = self_heal_run_once(heal=True)
+    except Exception as e:  # pragma: no cover — nunca derruba o copilot
+        log(f"[SELF-HEAL] exceção (ignorada): {e}")
+        return ""
+    parts = []
+    if not report.healthy:
+        parts.append(f"🛡️ self-heal: {len(report.issues)} issue(s)")
+        for r in report.heal_results:
+            icon = "✅" if r.success else "❌"
+            parts.append(f"   {icon} {r.issue_type}: {r.action}")
+    return "\n".join(parts)
+
 from mt5.mt5_orchestrator import status as mt5_status, _run_wine, EXECUTOR_WIN, history as mt5_history
 from core.vt_config_loader import load_config
 from core.vt_autotrader import get_truth_from_mt5
@@ -921,8 +952,22 @@ def main():
         notify_telegram(f"🤖 *Copilot {datetime.now().strftime('%Hh%M')}*\n\n{report}")
         return
 
+    elif mode == "--self-heal":
+        # Modo isolado: só roda o self-heal monitor (6 checks + auto-cura).
+        summary = run_self_heal_hook()
+        log(f"[SELF-HEAL] {summary or 'saudável'}")
+        return
+
     else:  # --full (padrão)
-        # 0. No primeiro run do dia (10h), restaurar pausas do dia anterior
+        # 0. Self-heal hook (Fase 2.2) — roda ANTES do health check do copilot.
+        #    Complementa (não substitui): o copilot checa só autotrader; o
+        #    self-heal checa também MT5/DB/state/lock/cron. Auto-cura é
+        #    conservadora e nunca bloqueia o fluxo nem desabilita símbolo (Lei 2).
+        self_heal_summary = run_self_heal_hook()
+        if self_heal_summary:
+            actions.append(self_heal_summary)
+
+        # 0b. No primeiro run do dia (10h), restaurar pausas do dia anterior
         if datetime.now().hour == 10:
             _restore_pauses_if_needed()
 
