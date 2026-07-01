@@ -1431,6 +1431,62 @@ def _defenses_ok(symbol: str, tf: str, direction: str, bar_ts) -> bool:
     return True
 
 
+# Phase 1 PLUS (2026-07-01, Bruno): guard anti-duplicação.
+#
+# BUG HOJE: depois que modify_sl falha 3x e emergency_close fecha a posição
+# no MT5 (PnL +0,00), o next tick re-evalua a estratégia e gera um NOVO sinal
+# idêntico (mesmo symbol, mesma direction, mesmo magic). O bot cria um novo
+# ticket imediatamente, abrindo uma posição DUPLICADA que ninguém pediu.
+#
+# Forense: data/architecture_audit_2026_07_01.md secao 4.2 mapeou os write
+# paths sem validate. Proposta: data/architecture_proposal_2026_07_01.md L350.
+#
+# FIX: validate_order_pre_send() consulta MT5.status() ANTES de qualquer
+# BUY/SELL. Se já existe posição aberta com mesmo magic+symbol (independente
+# de direction — porque se tem BUY aberta e a estratégia diz SELL, primeiro
+# fecha a BUY antes de abrir SELL nova; ver manage_position), bloqueia com
+# log [BLOCKED-DUPLICATE] e retorna False.
+#
+# FAIL-SAFE: status() exception => permite (assume broker offline / leitura
+# falha e não bloqueia trading por defeito de leitura). É o oposto de "tudo
+# bloqueado quando MT5 não responde", que seria pior (lockup total).
+VT_BOT_MAGIC = 555501  # magic do bot, ver mt5/mt5_executor.py L231/L341
+
+
+def validate_order_pre_send(symbol: str, direction: str, magic: int = VT_BOT_MAGIC) -> bool:
+    """Consulta MT5 status() antes de enviar BUY/SELL. Bloqueia duplicacao.
+
+    Args:
+        symbol:  contrato MT5 (ex.: "BITN26", "WINM26").
+        direction: "BUY" ou "SELL".
+        magic: magic number do bot (default 555501).
+
+    Returns:
+        True  -> seguro enviar ordem.
+        False -> bloqueado: ja existe pos aberta com mesmo magic+symbol.
+    """
+    try:
+        s = status()
+    except Exception as e:
+        # FAIL-SAFE: se MT5 nao responde, NAO bloquear. Assumir broker
+        # offline e deixar o caminho normal tratar (safe_buy/safe_sell tem
+        # retry proprio). Bloquear por defeito de leitura = lockup.
+        log(f"[validate_order_pre_send] status() falhou ({type(e).__name__}: {e}) — FAIL-SAFE: permite envio")
+        return True
+
+    positions = (s or {}).get("positions", []) or []
+    for pos in positions:
+        if pos.get("magic") == magic and pos.get("symbol") == symbol:
+            log(
+                f"[BLOCKED-DUPLICATE] {symbol} ja tem pos aberta "
+                f"ticket={pos.get('ticket')} type={pos.get('type')} "
+                f"magic={pos.get('magic')} volume={pos.get('volume', '?')} "
+                f"— bloqueando novo {direction}"
+            )
+            return False
+    return True
+
+
 def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                    sl_pts: int, atr: float, bar_ts, strategy: str = "VWAP", **kwargs):
     """Executa entrada e registra tudo."""
@@ -1439,6 +1495,12 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
     if is_permanently_disabled(symbol):
         log(f"🚫 [_execute_entry] HARD-KILL: {symbol} recusado (PERMANENTLY_DISABLED={PERMANENTLY_DISABLED})")
         return {"status": "BLOCKED", "reason": "PERMANENTLY_DISABLED", "symbol": symbol}
+
+    # Phase 1 PLUS (Bruno 2026-07-01): guard anti-duplicacao. Consulta MT5
+    # ANTES de enviar BUY/SELL. Se ja tem pos aberta com mesmo magic+symbol,
+    # bloqueia (ver validate_order_pre_send).
+    if not validate_order_pre_send(symbol, direction):
+        return {"status": "BLOCKED", "reason": "BLOCKED-DUPLICATE", "symbol": symbol}
 
     # Log
     detail_parts = [f"{strategy}"]
