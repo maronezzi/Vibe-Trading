@@ -43,15 +43,21 @@ class TestIsBlockedDayDirection(unittest.TestCase):
         self._is_blocked = _is_blocked_day_direction
 
     def test_wednesday_buy_blocked(self):
-        """Quarta (weekday=2) BUY deve ser bloqueado."""
+        """Quarta (weekday=2) BUY NÃO deve ser bloqueado (liberado manualmente 2026-07-01).
+
+        Histórico: 30d mostrou Quarta BUY -R$6.775 (regra AGI Recomendada).
+        Decisão Bruno 2026-07-01 (commit 48780d05): liberar BUY quarta manualmente.
+        _updated_by = 'bruno_manual_release_wed_buy_2026_07_01', _version=950.
+        Bloqueio mantido apenas para Terça SELL (-R$2.946 histórico), em test_tuesday_sell_blocked.
+        """
         # Mock datetime.now() para retornar quarta-feira
         wednesday = datetime(2026, 6, 24, 10, 30)  # 24/06/2026 é quarta
         self.assertEqual(wednesday.weekday(), 2, "sanity check: 24/06/2026 deve ser quarta")
         with patch("core.vt_autotrader.datetime") as mock_dt:
             mock_dt.now.return_value = wednesday
-            self.assertTrue(
+            self.assertFalse(
                 self._is_blocked("BUY"),
-                f"Quarta BUY deve ser bloqueado, retornou False"
+                f"Quarta BUY NÃO deve ser bloqueado (liberação manual Bruno 2026-07-01, v950), retornou True"
             )
 
     def test_tuesday_sell_blocked(self):
