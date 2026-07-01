@@ -2403,10 +2403,39 @@ def reconcile_positions_with_mt5():
                     # exatamente sem histórico, mas é o default conservador
                     tf = "M5"
 
-                    # 2a) Verificar se ticket já existe no DB
+                    # FIX 2026-07-01 (anti-lixo): entradas do MT5 com dados zerados
+                    # ou com ticket vazio devem ser IGNORADAS (skip + warn), nunca
+                    # persistidas. O bug original permitia INSERT com
+                    # entry_price=0 (default) e sl_pts=0/atr=0, gerando linhas
+                    # fake no DB e objetos fake em state.positions. MT5 é fonte
+                    # absoluta de verdade — se não tem dado válido, não inventamos.
+                    if not symbol or not ticket_str:
+                        log(
+                            f"[RECONCILE] ticket={ticket_str} symbol={symbol!r} "
+                            f"com dado faltando no MT5, skip ingest"
+                        )
+                        continue
+                    if entry_price <= 0 or volume <= 0:
+                        log(
+                            f"[RECONCILE] ticket={ticket_str} {symbol} com "
+                            f"price_open={entry_price} volume={volume} — "
+                            f"dado MT5 inválido, skip ingest (não inserir lixo)"
+                        )
+                        continue
+
+                    # 2a) Verificar se ticket já existe no DB (filtrar
+                    # explícito: exit_time IS NULL AND entry_time >= hoje).
+                    # Sem esses filtros, uma row de JUNHO (já fechada) podia
+                    # ser re-ingerida com strategy antiga e entry_price=
+                    # completamente diferente. Foi a causa do objeto fake
+                    # WDOQ26_M5 com entry_price=100/ticket=22222.
+                    _today_iso = datetime.now().strftime("%Y-%m-%d 00:00:00")
                     row = conn.execute(
-                        "SELECT id, strategy FROM trades WHERE entry_ticket = ?",
-                        (ticket_str,),
+                        "SELECT id, strategy FROM trades "
+                        "WHERE entry_ticket = ? "
+                        "AND exit_time IS NULL "
+                        "AND entry_time >= ?",
+                        (ticket_str, _today_iso),
                     ).fetchone()
                     trade_id = None
                     strategy_in_db = "VWAP"
@@ -2502,6 +2531,13 @@ def reconcile_positions_with_mt5():
             log(f"[RECONCILE] erro na seção ingest: {_e}")
 
         # ── 3. Detectar ghosts: state tem, MT5 não tem ──
+        # FIX 2026-07-01 (anti-lixo): validações rígidas antes de qualquer
+        # INSERT/UPDATE. O bug original permitia criar INSERTs fantasma a
+        # partir de entradas em state sem symbol/volume/entrada válidos
+        # (ex.: state.positions['WDOQ26_M5']={direction:'SELL',
+        # entry_price:100, ticket:'22222'} gerava INSERT com symbol do
+        # direction e entry_price=100). Agora: ticket vazio/zumbi → só
+        # remove do state (não polui DB). entry_price<=0 → skip + warn.
         ghosts = 0
         try:
             conn = sqlite3.connect("vt_trades.db", timeout=30.0)
@@ -2512,10 +2548,17 @@ def reconcile_positions_with_mt5():
                 for ticket_str, (state_key, pos) in list(state_by_ticket.items()):
                     if ticket_str in mt5_by_ticket:
                         continue  # ainda aberta no MT5
-                    symbol = pos.get("direction", "?")
+                    # FIX: NÃO confiar em pos.get("direction") como symbol.
+                    # Sem um symbol real do state/MT5, não inventamos.
                     direction = pos.get("direction", "?")
-                    entry_price = pos.get("entry_price", 0)
+                    # Tentar extrair symbol do state_key (formato padrão
+                    # 'WSPU26_M5' ou 'WINQ26_M5' usado em recover/entry).
+                    _symbol_from_key = state_key.rsplit("_", 1)[0] if "_" in state_key else ""
+                    # Se state_key contém '_', o chunk antes do último '_' é o symbol.
+                    symbol = _symbol_from_key or pos.get("symbol") or "UNKNOWN"
+                    entry_price = float(pos.get("entry_price", 0) or 0)
                     trade_log_id = pos.get("trade_log_id")
+                    _pos_volume = float(pos.get("volume", 0) or 0)
                     log(
                         f"[RECONCILE] Ghost detectado: state tinha "
                         f"{symbol}/{direction} ticket={ticket_str} "
@@ -2548,31 +2591,63 @@ def reconcile_positions_with_mt5():
                         except Exception as _e_ghost_db:
                             log(f"[RECONCILE] DB UPDATE ghost falhou (trade_id={trade_log_id}): {_e_ghost_db}")
                     else:
-                        # trade_log_id ausente (orphan total) — INSERT direto como ghost
-                        try:
-                            _now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            conn.execute(
-                                """
-                                INSERT OR IGNORE INTO trades (
-                                    symbol, direction, volume, entry_time, entry_price,
-                                    entry_ticket, exit_time, exit_price, exit_reason,
-                                    exit_ticket, notes, close_source, strategy
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    pos.get("direction", "?"),  # symbol placeholder se não temos
-                                    direction,
-                                    pos.get("volume", 0),
-                                    _now_str, entry_price, ticket_str,
-                                    _now_str, entry_price, "GHOST",
-                                    "ghost_reconcile",
-                                    f"GHOST_RECONCILED | state-only | reconciled {_now_str}",
-                                    "RECONCILE", "GHOST",
-                                ),
+                        # FIX: trade_log_id ausente NÃO significa "temos dados
+                        # suficientes para inserir um trade fantasma".
+                        # Antes: o código inseria um INSERT direto com symbol
+                        # = pos.direction (que é 'SELL'/'BUY', um lixo!), entry_price
+                        # = 100 e volume = 1.0 (do state fake). Resultado: linha
+                        # fantasma no DB com symbol='SELL'/'BUY' e entry_price lixo.
+                        # Agora: SÓ insere se symbol E ticket coerentes E entry_price > 0
+                        # E volume > 0. Caso contrário, apenas remove do state
+                        # (já temos consistência: state limpo, MT5 zerado).
+                        # Tickets MT5 reais têm 9-10 dígitos (e.g. 2467898858).
+                        # Tickets curtos ou não-numéricos são LIXO deixado pelo
+                        # bug anterior — não persistir.
+                        _ticket_str_clean = str(ticket_str).strip() if ticket_str else ""
+                        _ticket_is_numeric = _ticket_str_clean.isdigit()
+                        _ticket_len_ok = len(_ticket_str_clean) >= 6
+                        _can_insert_ghost = (
+                            symbol not in ("?", "UNKNOWN", "")
+                            and entry_price > 0
+                            and _pos_volume > 0
+                            and _ticket_is_numeric
+                            and _ticket_len_ok
+                        )
+                        if _can_insert_ghost:
+                            try:
+                                _now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                conn.execute(
+                                    """
+                                    INSERT OR IGNORE INTO trades (
+                                        symbol, direction, volume, entry_time, entry_price,
+                                        entry_ticket, exit_time, exit_price, exit_reason,
+                                        exit_ticket, notes, close_source, strategy
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        symbol, direction, _pos_volume,
+                                        _now_str, entry_price, ticket_str,
+                                        _now_str, entry_price, "GHOST",
+                                        "ghost_reconcile",
+                                        f"GHOST_RECONCILED | state-only | reconciled {_now_str}",
+                                        "RECONCILE", "GHOST",
+                                    ),
+                                )
+                                conn.commit()
+                            except Exception as _e_g2:
+                                log(f"[RECONCILE] DB INSERT ghost falhou (ticket={ticket_str}): {_e_g2}")
+                        else:
+                            # FIX: state-only ghost SEM dados confiáveis não
+                            # vira INSERT. Apenas removemos do state e
+                            # logamos warn. Isso impede o ciclo vicioso de
+                            # INSERT fantasma propagado pelo reconcile.
+                            log(
+                                f"[RECONCILE] ⚠️ state-only ghost ticket={ticket_str} "
+                                f"symbol={symbol!r} entry_price={entry_price} "
+                                f"volume={_pos_volume} SEM trade_log_id e SEM dados "
+                                f"válidos — apenas removido do state (DB limpo, "
+                                f"nenhum INSERT criado)"
                             )
-                            conn.commit()
-                        except Exception as _e_g2:
-                            log(f"[RECONCILE] DB INSERT ghost falhou (ticket={ticket_str}): {_e_g2}")
 
                     # 3b) Remover do state
                     state.positions.pop(state_key, None)
