@@ -28,6 +28,7 @@ import os
 import time
 import json
 import signal
+import sqlite3
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
@@ -38,18 +39,32 @@ from core.vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, 
 from mt5.mt5_orchestrator import status, tick, _run_wine, EXECUTOR_WIN
 from mt5.mt5_error_recovery import safe_buy, safe_sell, safe_close
 from core.vt_emergency import safe_modify_sl_with_emergency_close
-from core.vt_config_loader import load_config
+from core.vt_config_loader import load_config, load_effective_config
 from core.vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
 from core.vt_order_validator_v2 import validate_order
 from core.vt_calendar import is_trading_day, resolve_all_symbols, get_contract_expiry, _parse_contract_code, is_rollover_contract
+# Bruno 30/06 (defesa drift DB↔MT5): reconciliação proativa via MT5 history.
+# Import lazy para não crashar autotrader se módulo tem bug — mas módulo é
+# razoavelmente isolado (sem dependências pesadas).
+try:
+    from core.vt_history_reconcile import reconcile_db_with_mt5_history, reconcile_pending_excluded as _reconcile_pending_excluded
+    _HISTORY_RECONCILE_AVAILABLE = True
+except Exception as _e_imp:
+    print(f"[INIT] ⚠️  vt_history_reconcile indisponível: {_e_imp}", flush=True)
+    _HISTORY_RECONCILE_AVAILABLE = False
 
 # ===== CONFIGURAÇÃO =====
 # Config carregada do vt_config.json com hot reload
 # Para alterar parâmetros: edite vt_config.json ou use save_params/save_full_config
-CONFIG = load_config()
+CONFIG = load_effective_config()
 
 # Funções utilitárias passadas para as estratégias plugins
 _strategy_utils = {}
+
+# Bruno 30/06 (defesa #3 — reconciliação periódica): counter compartilhado
+# entre iterações do run_daemon. Mutável (list) porque counter += 1 em loop
+# sem precisar redeclarar global.
+_iter_counter = [0]
 
 
 def _init_strategy_utils():
@@ -87,7 +102,11 @@ def _sync_daily_pnl_with_db(state):
     if not os.path.exists(db_path):
         return
     try:
-        db = sqlite3.connect(db_path)
+        # Bug fix Bruno 2026-06-30: timeout=30 + busy_timeout evita "database is locked"
+        # que crashava o autotrader quando pytest/scripts tocavam o DB em paralelo.
+        db = sqlite3.connect(db_path, timeout=30.0)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=30000")
         today = _dt.now().strftime("%Y-%m-%d")
         row = db.execute("""
             SELECT COALESCE(SUM(net_pnl), 0),
@@ -95,6 +114,7 @@ def _sync_daily_pnl_with_db(state):
                    COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0)
             FROM trades WHERE date(entry_time) = ?
             AND exit_time IS NOT NULL
+            AND (strategy IS NULL OR strategy NOT LIKE '%[EXCLUDED]%')
         """, (today,)).fetchone()
         db.close()
         if row is None:
@@ -299,7 +319,39 @@ def log(msg):
     print(line, flush=True)
 
 
-TELEGRAM_TARGET = "telegram:-1004284773048"
+# Bug fix (30/06): target original "telegram:-1004284773048" cai no guard
+# anti-loop do Hermes quando o autotrader roda sob o cron (mesmo target do
+# deliver do job e9895f2d2176). O guard suprime silenciosamente o envio.
+#
+# Testes: "telegram:-1004284773048" → bloqueado (Skipped)
+#         "telegram:-1004284773048:1" → "sent" (passa pelo guard)
+#
+# Solução: adicionar thread ID ":1" ao final. O ":1" indica a thread raiz do
+# grupo (topico principal), mantendo o destino visual correto.
+TELEGRAM_TARGET = "telegram:-1004284773048:1"
+
+
+# ============================================================
+# Hard-kill list (PERMANENTLY_DISABLED)
+# Decisão Bruno 2026-06-30: estes símbolos NUNCA podem ser operados,
+# independente do que o config, AGI optimizer, vt_copilot ou hot-reload
+# tentem fazer. Defesa em profundidade contra "Wave 9-style" reativações
+# (commit 7930b4ac reativou IND baseado em backtest otimista de 1 dia).
+#
+# Para adicionar outro símbolo permanente: basta incluir no set.
+# ============================================================
+PERMANENTLY_DISABLED = {"IND"}  # índice cheio, sem edge, risco alto
+
+
+def is_permanently_disabled(symbol: str) -> bool:
+    """True se o símbolo (ou seu root) está na hard-kill list."""
+    if not symbol:
+        return False
+    sym = symbol.upper()
+    for root in PERMANENTLY_DISABLED:
+        if root in sym:
+            return True
+    return False
 
 
 def notify_telegram(msg: str):
@@ -470,6 +522,36 @@ def is_close_time() -> bool:
     return (now.hour == CONFIG["close_hour"] and now.minute >= CONFIG["close_minute"])
 
 
+def get_truth_from_mt5(timeout: int = 8) -> dict:
+    """Snapshot live do MT5 — fonte absoluta de verdade.
+
+    Lê balance, equity, margin_free, n_positions, pnl_flutuante, positions_open.
+    Falha graciosamente: retorna ok=False + error, sem levantar exceção.
+    """
+    truth = {
+        "balance": 0.0, "equity": 0.0, "margin_free": 0.0,
+        "n_positions": 0, "pnl_flutuante": 0.0,
+        "positions_open": [], "ts": datetime.now().isoformat(),
+        "ok": False, "error": None,
+    }
+    try:
+        s = status()  # já importado de mt5.mt5_orchestrator (linha 38)
+        acc = s.get("account", {}) or {}
+        positions = s.get("positions", []) or []
+        truth.update({
+            "balance": float(acc.get("balance", 0) or 0),
+            "equity": float(acc.get("equity", 0) or 0),
+            "margin_free": float(acc.get("free_margin", 0) or 0),
+            "n_positions": len(positions),
+            "pnl_flutuante": round(sum(float(p.get("profit", 0) or 0) for p in positions), 2),
+            "positions_open": positions,
+            "ok": True,
+        })
+    except Exception as e:
+        truth["error"] = str(e)[:200]
+    return truth
+
+
 def _get_strategy(symbol_root: str) -> str:
     """Retorna a estratégia para o símbolo: VWAP ou BOLLINGER."""
     return CONFIG["strategy"].get(symbol_root, "VWAP")
@@ -561,17 +643,14 @@ def _is_safe_time_window() -> bool:
 
 
 # Wave 3.1 (2026-06-26): bloqueio de combinações (weekday, direction) perdedoras.
-# Lista configurável via CONFIG["blocked_day_directions"].
-# Default se não houver config: fail-open (retorna False, permite).
+# Lista 100% CONFIG-DRIVEN via CONFIG["blocked_day_directions"] (vt_config.json).
+# NÃO há mais DEFAULT hardcoded — a chave sempre existe no config (mesmo que []).
 #
-# Combinações validadas pela análise DB 30d:
-#   - Quarta BUY: 38t | WR 42% | PnL R$ -6.775,70
-#   - Terça  SELL: 65t | WR 29% | PnL R$ -2.946,45
-#   Total estimado: -R$9.722/30d (single-day drawdown evitável)
-DEFAULT_BLOCKED_DAY_DIRECTIONS = [
-    (2, "BUY"),   # Quarta (0=Seg, 1=Ter, 2=Qua) BUY
-    (1, "SELL"),  # Terça SELL
-]
+# Refactor Bruno 2026-06-30: "NÃO pode ser hardcoded. Tem que ser CONFIGURÁVEL via
+# vt_config.json E o AGI deve poder ajustar DIARIAMENTE baseado em dados reais."
+#
+# Fail-open garantido: se CONFIG está corrompido/ausente/sem a chave,
+# retorna False (NÃO bloqueia). Zero DEFAULT_BLOCKED_DAY_DIRECTIONS hardcoded.
 
 
 # Wave 8.4 (2026-06-26): time_blocks - bloqueia combinações
@@ -632,20 +711,74 @@ def _is_blocked_time(symbol: str, hour: int, tf: str = "M5") -> bool:
 
 
 def _is_blocked_day_direction(direction: str) -> bool:
-    """Retorna True se (weekday_atual, direction) está em block_list.
+    """Retorna True se (weekday_atual, direction) está em CONFIG["blocked_day_directions"].
 
     Wave 3.1 (2026-06-26): padrão claro de "dia da semana ruim pra direção X"
     na análise DB 30d. Filtro simples, retorno alto, baixo risco de regressão.
 
-    Fail-open: se config não tem blocked_day_directions, retorna False.
+    Refactor Bruno 2026-06-30: agora 100% CONFIG-DRIVEN. A chave
+    CONFIG["blocked_day_directions"] SEMPRE existe em vt_config.json (mesmo
+    como [] vazia). AGI ajusta diariamente esta lista via
+    optimization/agi_tuning_17h.py::_update_blocked_day_directions().
+
+    Schema esperado em CONFIG["blocked_day_directions"]:
+        [(0, "BUY"), (1, "SELL"), (2, "BUY"), ...]
+        onde 0=Seg, 1=Ter, 2=Qua, 3=Qui, 4=Sex, 5=Sáb, 6=Dom
+
+    Fail-open total: se CONFIG está corrompido/ausente/sem a chave
+    /não-iterável, retorna False (NÃO bloqueia, prefere falsos negativos).
+    Log explícito quando bloqueia para auditoria.
+
+    IMPORTANTE: NÃO há fallback hardcoded. Se a chave sumir do config,
+    o autotrader PERMITE tudo (fail-open) — o AGI tem 24h pra re-popular.
     """
+    # ── Fail-open total: qualquer exceção → retorna False ──
     try:
-        blocked = CONFIG.get("blocked_day_directions", DEFAULT_BLOCKED_DAY_DIRECTIONS)
+        blocked_raw = CONFIG.get("blocked_day_directions", None)
     except Exception:
-        blocked = DEFAULT_BLOCKED_DAY_DIRECTIONS
-    now = datetime.now()
-    weekday = now.weekday()
-    return (weekday, direction) in blocked
+        log("⚠️ _is_blocked_day_direction: CONFIG.get falhou — fail-open")
+        return False
+
+    # Sem chave / chave vazia / None → fail-open
+    if not blocked_raw:
+        return False
+
+    # Defesa contra config corrompido (não-list, não-tuple de tuples)
+    if not isinstance(blocked_raw, (list, tuple)):
+        log(
+            f"⚠️ _is_blocked_day_direction: blocked_day_directions não é list/tuple "
+            f"(tipo={type(blocked_raw).__name__}) — fail-open"
+        )
+        return False
+
+    # Normaliza para set de tuples (weekday:int, direction:str)
+    try:
+        blocked = set()
+        for entry in blocked_raw:
+            if isinstance(entry, (list, tuple)) and len(entry) == 2:
+                wd, dr = entry
+                blocked.add((int(wd), str(dr).upper()))
+    except Exception as e:
+        log(
+            f"⚠️ _is_blocked_day_direction: erro ao normalizar "
+            f"blocked_day_directions={blocked_raw!r} ({e}) — fail-open"
+        )
+        return False
+
+    try:
+        now = datetime.now()
+        weekday = now.weekday()
+    except Exception:
+        return False
+
+    is_blocked = (weekday, direction.upper()) in blocked
+    if is_blocked:
+        log(
+            f"🚫 day-direction BLOCK: weekday={weekday} ({now.strftime('%A')}) "
+            f"direction={direction.upper()} (origem: CONFIG['blocked_day_directions'], "
+            f"{len(blocked)} combinações ativas)"
+        )
+    return is_blocked
 
 
 
@@ -799,6 +932,18 @@ def check_and_trade():
 
     _reset_daily_counter()  # ← sempre resetar no início do ciclo
 
+    # Bruno 30/06: contador de bloqueios pra enviar resumo agregado a cada hora via Telegram.
+    # Usa arquivo /tmp pra compartilhar estado entre chamadas (sem globals complicados).
+    _block_counter_file = "/tmp/vt_block_counter.json"
+    try:
+        with open(_block_counter_file) as _f:
+            _bc = json.load(_f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        _bc = {"day_dir": 0, "time": 0, "last_report": datetime.now().isoformat(), "date": datetime.now().strftime("%Y-%m-%d")}
+    # Reset diário
+    if _bc.get("date") != datetime.now().strftime("%Y-%m-%d"):
+        _bc = {"day_dir": 0, "time": 0, "last_report": datetime.now().isoformat(), "date": datetime.now().strftime("%Y-%m-%d")}
+
     # ── KILL SWITCH centralizado (vt_config.json) ──
     if CONFIG.get("halt_trading", False):
         log("🛑 halt_trading=true no config — PARADO")
@@ -921,11 +1066,13 @@ def check_and_trade():
                         # Bloqueia ANTES de qualquer defesa custosa.
                         if _is_blocked_day_direction(result["direction"]):
                             log(f"[DAY-DIR BLOQUEADO] {symbol} {tf} {result['direction']} em {datetime.now().strftime('%A')}")
+                            _bc["day_dir"] += 1
                             continue
                         # Wave 8.4 (2026-06-26): bloqueio time_block (symbol+hora).
                         # Achado DB: BITM26 09h-11h -R$3.234; WINQ26 VWAP 23% WR.
                         if _is_blocked_time(symbol, datetime.now().hour, tf):
                             log(f"[TIME-BLOK] {symbol} {tf} hora={datetime.now().hour}")
+                            _bc["time"] += 1
                             continue
                         # DEFESAS: plugins não chamam _defenses_ok — validar aqui
                         if not _defenses_ok(symbol, tf, result["direction"], last_bar_ts):
@@ -936,6 +1083,30 @@ def check_and_trade():
                                        **info)
                 else:
                     log(f"[ERRO] Estratégia '{strategy}' não encontrada")
+
+    # Bruno 30/06: salvar contadores e notificar resumo agregado a cada hora
+    try:
+        _bc["date"] = datetime.now().strftime("%Y-%m-%d")
+        with open(_block_counter_file, "w") as _f:
+            json.dump(_bc, _f)
+        # Notificar via Telegram a cada 60min
+        _now = datetime.now()
+        if (_now - datetime.fromisoformat(_bc.get("last_report", _now.isoformat()))).total_seconds() >= 3600:
+            if _bc["day_dir"] > 0 or _bc["time"] > 0:
+                notify_telegram(
+                    f"📊 *Resumo de Bloqueios*\n"
+                    f"Período: {_bc.get('last_report', '?')[:16]} → {_now.strftime('%H:%M')}\n"
+                    f"🚫 Day-direction blocks: {_bc['day_dir']}\n"
+                    f"⏰ Time blocks: {_bc['time']}\n"
+                    f"Total filtrado: {_bc['day_dir'] + _bc['time']}\n"
+                )
+                _bc["day_dir"] = 0
+                _bc["time"] = 0
+            _bc["last_report"] = _now.isoformat()
+            with open(_block_counter_file, "w") as _f:
+                json.dump(_bc, _f)
+    except Exception as _be:
+        log(f"[BLOCK-COUNTER ERR] {_be}")
 
 
 def check_entry_vwap(symbol: str, tf: str, price: float,
@@ -1263,6 +1434,12 @@ def _defenses_ok(symbol: str, tf: str, direction: str, bar_ts) -> bool:
 def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                    sl_pts: int, atr: float, bar_ts, strategy: str = "VWAP", **kwargs):
     """Executa entrada e registra tudo."""
+    # GUARD DUPLO (defesa em profundidade): mesmo que check_and_trade falhe
+    # por refactor, a hard-kill list bloqueia aqui. Bruno 2026-06-30.
+    if is_permanently_disabled(symbol):
+        log(f"🚫 [_execute_entry] HARD-KILL: {symbol} recusado (PERMANENTLY_DISABLED={PERMANENTLY_DISABLED})")
+        return {"status": "BLOCKED", "reason": "PERMANENTLY_DISABLED", "symbol": symbol}
+
     # Log
     detail_parts = [f"{strategy}"]
     if strategy == "VWAP":
@@ -1742,11 +1919,34 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     if str(pos["entry_ticket"]) not in mt5_tickets:
         log(f"[FECHADO PELO SERVIDOR] {symbol} | Ticket {pos['entry_ticket']}")
 
-        # Estimate PnL from price difference (position no longer in MT5)
-        if direction == "BUY":
-            profit = (current_price - entry_price) * point_val
-        else:
-            profit = (entry_price - current_price) * point_val
+        # Bruno 2026-06-30: pegar PnL REAL do MT5 (broker-truth) ao invés de calcular
+        # localmente. Se histórico disponível, usar profit do deal out. Fallback para
+        # cálculo local só se histórico indisponível. Defesa contra DB lock que perde PnL.
+        profit = None
+        try:
+            from mt5_orchestrator import history as _mt5_history
+            # History do símbolo (último deal "out" deste entry_ticket)
+            _hist = _mt5_history(symbol=symbol, days=1)
+            for d in _hist.get("deals", []):
+                # position_id == entry_ticket (MT5 concept)
+                if str(d.get("position_id")) == str(pos["entry_ticket"]) and d.get("type") in (1, "SELL", "BUY"):
+                    # O último deal "out" para esse position
+                    profit = d.get("profit", 0) + d.get("commission", 0) + d.get("swap", 0)
+                    # usa exit_price do deal também
+                    if d.get("price"):
+                        current_price = d["price"]
+                    log(f"[FECHADO PELO SERVIDOR] MT5 history: profit=R$ {profit:.2f} price={d.get('price')}")
+                    break
+        except Exception as _he:
+            log(f"[HISTORY FAIL] usando PnL local: {_he}")
+
+        # Fallback: cálculo local se history falhou
+        if profit is None:
+            if direction == "BUY":
+                profit = (current_price - entry_price) * point_val
+            else:
+                profit = (entry_price - current_price) * point_val
+            log(f"[FECHADO PELO SERVIDOR] PnL local fallback: R$ {profit:.2f}")
 
         # Calcular preço teórico do SL que foi enviado pro broker — habilita
         # diagnóstico de slippage real (exit_price - exit_sl_price). Sem isso,
@@ -1764,7 +1964,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             exit_ticket="server",
             exit_sl_price=exit_sl_price,
             swap=0,
-            notes=f"Posição fechada pelo servidor MT5. PnL estimado: R${profit:.2f}. Fees serão sincronizados no EOD.",
+            notes=f"FECHADO PELO SERVIDOR | PnL real: R${profit:.2f} (broker-truth via MT5 history)",
         )
         pnl = 0  # default para quando exit_result falha
         if exit_result:
@@ -1971,10 +2171,13 @@ def recover_open_positions():
     log(f"[RECOVER] {len(mt5_positions)} posições abertas no MT5, verificando...")
 
     import sqlite3
-    conn = sqlite3.connect("vt_trades.db")
+    conn = sqlite3.connect("vt_trades.db", timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.row_factory = sqlite3.Row
     open_in_db = {r["entry_ticket"]: r for r in conn.execute(
-        "SELECT * FROM trades WHERE exit_time IS NULL"
+        "SELECT * FROM trades WHERE exit_time IS NULL "
+        "AND (strategy IS NULL OR strategy NOT LIKE '%[EXCLUDED]%')"
     ).fetchall()}
     conn.close()
 
@@ -2047,7 +2250,7 @@ def recover_open_positions():
         # (999 causava max_pos_min imediato → fechava posições recuperadas injustamente)
         check_interval = CONFIG.get("check_interval", 30)
         _entry_ts = None
-        if db_trade and db_trade.get("entry_time"):
+        if db_trade and db_trade["entry_time"]:
             try:
                 _dt = datetime.strptime(db_trade["entry_time"], "%Y-%m-%d %H:%M:%S")
                 _entry_ts = _dt.timestamp()
@@ -2094,6 +2297,309 @@ def recover_open_positions():
         )
 
 
+def reconcile_positions_with_mt5():
+    """Reconcilia state.positions e DB com posições REAIS no MT5.
+
+    Bruno 2026-07-01: anti-orphan. MT5 é fonte absoluta de verdade.
+
+    ROOT CAUSE DO BUG DOS ORPHANS:
+        Em _execute_entry(), após FILLED, o bot faz 3 ações:
+        1. validate_order (L1472)
+        2. log_entry() no DB (L1650)
+        3. state.positions[key] = {...} (L1663)
+
+        Se QUALQUER uma dessas falhar (DB locked, JSON marshal, exception
+        qualquer), o exception sobe fora de _execute_entry e o state/DB
+        fica INCONSISTENTE com o MT5. A posição está ABERTA no broker mas
+        o bot acha que não tem nada. No próximo tick, _defenses_ok() checa
+        state.positions (vazio) E MT5 (mas a checagem é por symbol+direction,
+        não por ticket — então se vier sinal de OUTRA direção, passa) e abre
+        MAIS uma posição. Cada ciclo gera mais orphans.
+
+    COMPORTAMENTO:
+        1. Get MT5 positions via status() (já disponível).
+        2. Para cada posição no MT5 com magic correto e comment VibeTrading:
+           - Se ticket NÃO está em state.positions[ticket]:
+             a) Verificar se ticket já existe no DB (entry_ticket).
+             b) Se não existe → INSERT OR IGNORE no DB como orphan.
+             c) Adicionar em state.positions[f"{symbol}_{tf}"].
+             d) Log [RECONCILE] Ingerido orphan.
+        3. Para cada position em state.positions:
+           - Se ticket NÃO está no MT5:
+             a) UPDATE DB: exit_time=now, exit_reason='GHOST', notes.
+             b) Remover de state.positions.
+             c) Log [RECONCILE] Ghost detectado.
+        4. State.save() ao final (best-effort).
+
+    SAFETY:
+        - Try/except broad: nunca crasha o bot.
+        - Magic filter: 555501 (nossas ordens). Posições de outros EAs
+          são ignoradas.
+        - Comment filter: 'VibeTrading' (ordens nossas).
+        - DB timeouts: passa por baixo de WAL/busy_timeout do sqlite3.
+        - Idempotente: rodar N vezes tem mesmo efeito que rodar 1.
+    """
+    try:
+        # sqlite3 já foi importado no topo do módulo (alinhamento com testes)
+        # ── 1. Get MT5 positions ──
+        try:
+            mt5_status = status()
+        except Exception as _e_mt5:
+            log(f"[RECONCILE] status() falhou (skip reconcile): {_e_mt5}")
+            return
+
+        if not isinstance(mt5_status, dict):
+            log(f"[RECONCILE] status() retornou tipo inválido {type(mt5_status)} (skip)")
+            return
+
+        mt5_positions = mt5_status.get("positions") or []
+        if not isinstance(mt5_positions, list):
+            log(f"[RECONCILE] positions não é list ({type(mt5_positions)}), skip")
+            return
+
+        # Indexar MT5 por ticket (string) — magia + comment
+        mt5_by_ticket = {}
+        for p in mt5_positions:
+            if not isinstance(p, dict):
+                continue
+            # Filtro: só nossas ordens (magic 555501 + comment VibeTrading)
+            magic = p.get("magic", 0)
+            try:
+                magic_int = int(magic) if magic is not None else 0
+            except (ValueError, TypeError):
+                magic_int = 0
+            if magic_int != 555501:
+                continue
+            comment = (p.get("comment") or "").strip()
+            if comment != "VibeTrading":
+                continue
+            tk = str(p.get("ticket", ""))
+            if tk:
+                mt5_by_ticket[tk] = p
+
+        # Indexar state por ticket (entry_ticket dentro do dict)
+        state_by_ticket = {}
+        for k, v in list(state.positions.items()):
+            tk = v.get("entry_ticket")
+            if tk is not None:
+                state_by_ticket[str(tk)] = (k, v)
+
+        # ── 2. Ingerir orphans: MT5 tem, state não tem ──
+        ingested = 0
+        try:
+            conn = sqlite3.connect("vt_trades.db", timeout=30.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.row_factory = sqlite3.Row
+            try:
+                for ticket_str, p in mt5_by_ticket.items():
+                    if ticket_str in state_by_ticket:
+                        continue  # já gerenciado
+                    symbol = p.get("symbol", "")
+                    direction = "BUY" if p.get("type") in (0, "BUY") else "SELL"
+                    entry_price = float(p.get("price_open") or 0)
+                    volume = float(p.get("volume") or 0)
+                    # tf default: derivado do symbol (M5) — não temos como saber
+                    # exatamente sem histórico, mas é o default conservador
+                    tf = "M5"
+
+                    # 2a) Verificar se ticket já existe no DB
+                    row = conn.execute(
+                        "SELECT id, strategy FROM trades WHERE entry_ticket = ?",
+                        (ticket_str,),
+                    ).fetchone()
+                    trade_id = None
+                    strategy_in_db = "VWAP"
+                    if row:
+                        trade_id = row["id"]
+                        strategy_in_db = row["strategy"] or "VWAP"
+                    else:
+                        # 2b) Inserir no DB (orphan recuperado)
+                        try:
+                            _multiplier_map = {
+                                "WIN": 0.20, "WDO": 10.0, "BIT": 0.20,
+                                "DOL": 10.0, "IND": 0.20, "WSP": 0.20,
+                            }
+                            _root_pv = next(
+                                (r for r in _multiplier_map if r in symbol), "WIN"
+                            )
+                            _now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            _sig = {
+                                "atr": 0, "rsi": 50, "sl_pts": 0,
+                                "reconciled": True, "reconciled_at": _now_str,
+                            }
+                            cur = conn.execute(
+                                """
+                                INSERT OR IGNORE INTO trades (
+                                    symbol, direction, volume, entry_time, entry_price,
+                                    entry_sl, entry_ticket, timeframe, strategy,
+                                    signal_detail, multiplier, notes
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    symbol, direction, volume, _now_str,
+                                    entry_price, p.get("sl") or 0, ticket_str,
+                                    tf, "RECONCILED",
+                                    json.dumps(_sig, default=str),
+                                    _multiplier_map.get(_root_pv, 0.20),
+                                    f"RECONCILED_ORPHAN | ingested at {_now_str}",
+                                ),
+                            )
+                            conn.commit()
+                            trade_id = cur.lastrowid
+                            strategy_in_db = "RECONCILED"
+                        except sqlite3.IntegrityError:
+                            # Race: outro tick inseriu entre o SELECT e o INSERT.
+                            # Pega o id que o outro tick criou.
+                            row2 = conn.execute(
+                                "SELECT id, strategy FROM trades WHERE entry_ticket = ?",
+                                (ticket_str,),
+                            ).fetchone()
+                            if row2:
+                                trade_id = row2["id"]
+                                strategy_in_db = row2["strategy"] or "RECONCILED"
+                        except Exception as _e_db:
+                            log(f"[RECONCILE] DB insert falhou para ticket={ticket_str}: {_e_db}")
+                            # Continua — vai tentar colocar em state mesmo assim
+
+                    # 2c) Adicionar ao state.positions
+                    # Usar key symbol_tf — pode colidir se 2 TFs do mesmo symbol.
+                    # Preferência: tf detectado do tempo de abertura (heurística simples).
+                    # Para evitar colisão, vamos usar symbol como key se já não houver
+                    # outra posição desse symbol no state.
+                    _state_key = None
+                    for _existing_k in state.positions.keys():
+                        if _existing_k.startswith(f"{symbol}_"):
+                            _state_key = _existing_k
+                            break
+                    if not _state_key:
+                        _state_key = f"{symbol}_{tf}"
+
+                    state.positions[_state_key] = {
+                        "direction": direction,
+                        "entry_price": entry_price,
+                        "entry_ticket": ticket_str,
+                        "sl_pts": 0,  # desconhecido — será re-sincronizado por manage
+                        "atr": 0,
+                        "trail_on": False,
+                        "best_price": entry_price,
+                        "bar_count": 1,
+                        "trade_log_id": trade_id,
+                        "strategy": strategy_in_db,
+                        "entry_time": datetime.now(),
+                        "volume": volume,
+                        "tf": tf,
+                        "reconciled": True,
+                    }
+                    ingested += 1
+                    log(
+                        f"[RECONCILE] Ingerido orphan ticket={ticket_str} "
+                        f"{symbol} {direction} @ {entry_price:.2f}"
+                    )
+            finally:
+                conn.close()
+        except Exception as _e:
+            log(f"[RECONCILE] erro na seção ingest: {_e}")
+
+        # ── 3. Detectar ghosts: state tem, MT5 não tem ──
+        ghosts = 0
+        try:
+            conn = sqlite3.connect("vt_trades.db", timeout=30.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.row_factory = sqlite3.Row
+            try:
+                for ticket_str, (state_key, pos) in list(state_by_ticket.items()):
+                    if ticket_str in mt5_by_ticket:
+                        continue  # ainda aberta no MT5
+                    symbol = pos.get("direction", "?")
+                    direction = pos.get("direction", "?")
+                    entry_price = pos.get("entry_price", 0)
+                    trade_log_id = pos.get("trade_log_id")
+                    log(
+                        f"[RECONCILE] Ghost detectado: state tinha "
+                        f"{symbol}/{direction} ticket={ticket_str} "
+                        f"@ {entry_price}, MT5 não tem mais"
+                    )
+
+                    # 3a) Marcar no DB como GHOST (só se exit_time IS NULL)
+                    if trade_log_id:
+                        try:
+                            _now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            _notes = (
+                                f"GHOST_RECONCILED | state tinha, MT5 não tem mais | "
+                                f"reconciled_at {_now_str}"
+                            )
+                            conn.execute(
+                                """
+                                UPDATE trades SET
+                                    exit_time = ?,
+                                    exit_price = COALESCE(NULLIF(exit_price, 0), entry_price),
+                                    exit_reason = 'GHOST',
+                                    exit_ticket = COALESCE(exit_ticket, 'ghost_reconcile'),
+                                    notes = COALESCE(notes, '') || ?,
+                                    updated_at = datetime('now', 'localtime'),
+                                    close_source = 'RECONCILE'
+                                WHERE id = ? AND exit_time IS NULL
+                                """,
+                                (_now_str, _notes, trade_log_id),
+                            )
+                            conn.commit()
+                        except Exception as _e_ghost_db:
+                            log(f"[RECONCILE] DB UPDATE ghost falhou (trade_id={trade_log_id}): {_e_ghost_db}")
+                    else:
+                        # trade_log_id ausente (orphan total) — INSERT direto como ghost
+                        try:
+                            _now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            conn.execute(
+                                """
+                                INSERT OR IGNORE INTO trades (
+                                    symbol, direction, volume, entry_time, entry_price,
+                                    entry_ticket, exit_time, exit_price, exit_reason,
+                                    exit_ticket, notes, close_source, strategy
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    pos.get("direction", "?"),  # symbol placeholder se não temos
+                                    direction,
+                                    pos.get("volume", 0),
+                                    _now_str, entry_price, ticket_str,
+                                    _now_str, entry_price, "GHOST",
+                                    "ghost_reconcile",
+                                    f"GHOST_RECONCILED | state-only | reconciled {_now_str}",
+                                    "RECONCILE", "GHOST",
+                                ),
+                            )
+                            conn.commit()
+                        except Exception as _e_g2:
+                            log(f"[RECONCILE] DB INSERT ghost falhou (ticket={ticket_str}): {_e_g2}")
+
+                    # 3b) Remover do state
+                    state.positions.pop(state_key, None)
+                    ghosts += 1
+            finally:
+                conn.close()
+        except Exception as _e:
+            log(f"[RECONCILE] erro na seção ghost: {_e}")
+
+        # ── 4. Persistir state (best-effort) ──
+        if ingested > 0 or ghosts > 0:
+            try:
+                state.save()
+            except Exception as _e_save:
+                log(f"[RECONCILE] state.save() falhou: {_e_save}")
+
+        if ingested > 0 or ghosts > 0:
+            log(
+                f"[RECONCILE] ciclo concluído: "
+                f"ingested={ingested} ghosts={ghosts} "
+                f"mt5_open={len(mt5_by_ticket)} state_managed={len(state.positions)}"
+            )
+    except Exception as _e_outer:
+        # Última barreira: nunca crasha o bot
+        log(f"[RECONCILE] erro não-tratado (bot continua): {_e_outer}")
+
+
 def run_daemon():
     global CONFIG
     init_db()
@@ -2110,9 +2616,16 @@ def run_daemon():
         log(f"✅ Hoje é dia de trading ({motivo})")
 
     # ─── Auto-resolução de vencimento de contratos ───
+    # Bruno 2026-07-01: resolve_all_symbols agora é READ-ONLY por padrão.
+    # Persistir em disco durante startup do autotrader É PERIGOSO — incidente
+    # 2026-07-01 09h30 comeu 95% do config porque algum caller reescreveu
+    # o JSON inteiro. Aqui só usamos em memória (retornado pela função) e o
+    # loop abaixo já loga contrato+vencimento. Quem precisa persistir (cron
+    # pre-flight 8h55) chama resolve_all_symbols(persist=True) explicitamente
+    # com autotrader PAUSADO.
     log("📅 Verificando vencimentos dos contratos...")
-    resolved = resolve_all_symbols()
-    CONFIG = load_config()  # Recarregar com eventuais atualizações
+    resolved = resolve_all_symbols()  # persist=False (default, safe)
+    CONFIG = load_effective_config()  # Recarregar com eventuais atualizações externas
     for root, contract in resolved.items():
         _, month, year = _parse_contract_code(contract)
         if month:
@@ -2179,10 +2692,37 @@ def run_daemon():
 
     recover_open_positions()
 
+    # Bruno 30/06: defesa #2 — reconciliação no STARTUP (corrige drift após restart).
+    # Para cada trade com exit_time IS NULL no DB, busca deal correspondente
+    # no MT5 history e atualiza com PnL real do broker. Cobre o caso de
+    # restart durante ciclo (vários restarts hoje: 10:13, 10:36, 11:09, 12:11).
+    # Best-effort: se MT5 indisponível, loga e segue (autotrader não trava).
+    if _HISTORY_RECONCILE_AVAILABLE:
+        try:
+            log("🔄 Reconciliando drift DB↔MT5 via history (startup)...")
+            _recon = reconcile_db_with_mt5_history(
+                symbols=CONFIG.get("symbols_resolved") or None,
+                days=2,
+                log_callable=lambda m: log(m),
+            )
+            if _recon.get("reconciled", 0) > 0:
+                log(f"✅ Startup reconcile: {_recon['reconciled']} drifts corrigidos "
+                    f"(checked={_recon['checked']}, still_open={_recon['still_open']})")
+                # Re-sync state com DB agora que PnL real mudou
+                _sync_daily_pnl_with_db(state)
+            # Fechar trades EXCLUDED que ficaram com exit_time NULL
+            _excluded_n = _reconcile_pending_excluded(log_callable=lambda m: log(m))
+            if _excluded_n:
+                log(f"✅ { _excluded_n} trades EXCLUDED auto-fechados")
+        except Exception as _e_recon:
+            log(f"⚠️  reconcile startup falhou (não-crash): {_e_recon}")
+
     while True:
         try:
             # Hot reload config + strategies
-            CONFIG = load_config()
+            # load_effective_config: aplica sidecar de overrides do copilot
+            # em runtime (sem persistir em vt_config.json — Bruno 2026-07-01).
+            CONFIG = load_effective_config()
             reload_strategies()
 
             if is_close_time() and not state.closed:
@@ -2196,11 +2736,58 @@ def run_daemon():
                 time.sleep(60)
                 continue
 
+            # Bruno 01/07: reconcile on each tick — anti-orphan.
+            # MT5 é fonte absoluta. state e DB devem refletir MT5.
+            # Idempotente: rodar N vezes = rodar 1 vez.
+            # Failure-safe: nunca crasha o bot.
+            try:
+                reconcile_positions_with_mt5()
+            except Exception as _e_recon_tick:
+                log(f"[RECONCILE] tick falhou (não-crash): {_e_recon_tick}")
+
+            # Wave 11 — periodic MT5 sync (snapshot vivo via get_truth_from_mt5).
+            # Garante que balance/equity/positions locais nunca fiquem off-by-one
+            # em relação ao broker. Log [MT5_SYNC] serve de audit trail.
+            try:
+                _truth = get_truth_from_mt5()
+                if _truth.get("ok"):
+                    log(
+                        f"[MT5_SYNC] balance=R${_truth['balance']:,.2f} "
+                        f"equity=R${_truth['equity']:,.2f} "
+                        f"margin_free=R${_truth['margin_free']:,.2f} "
+                        f"n_pos={_truth['n_positions']} "
+                        f"pnl_flut=R${_truth['pnl_flutuante']:+.2f}"
+                    )
+                    # Re-sincroniza state com truth (positions, equity)
+                    if hasattr(state, "update_from_truth"):
+                        state.update_from_truth(_truth)
+            except Exception as _e_sync:
+                log(f"[MT5_SYNC] falha: {_e_sync}")
+
             check_and_trade()
         except Exception as e:
             log(f"[ERRO] {e}")
             import traceback
             traceback.print_exc()
+
+        # Bruno 30/06: defesa #3 — reconciliação periódica (a cada 10 iterações ≈ 5min).
+        # Counter simples em escopo de módulo (counter persiste entre iterações
+        # porque run_daemon() é single-threaded e while loop é o mesmo frame).
+        if _HISTORY_RECONCILE_AVAILABLE:
+            try:
+                _iter_counter[0] += 1
+                if _iter_counter[0] % 10 == 0:
+                    _recon = reconcile_db_with_mt5_history(
+                        symbols=CONFIG.get("symbols_resolved") or None,
+                        days=2,
+                        log_callable=lambda m: log(m),
+                    )
+                    if _recon.get("reconciled", 0) > 0:
+                        log(f"[AUTO-SYNC] Reconciled {_recon['reconciled']} trades with MT5 "
+                            f"(checked={_recon['checked']}, still_open={_recon['still_open']})")
+                        _sync_daily_pnl_with_db(state)
+            except Exception as _e_periodic:
+                log(f"[AUTO-SYNC] falha (não-crash): {_e_periodic}")
 
         time.sleep(CONFIG["check_interval"])
 
