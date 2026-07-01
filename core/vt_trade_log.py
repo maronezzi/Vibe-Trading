@@ -212,18 +212,54 @@ def log_entry(symbol: str, direction: str, volume: float,
 def log_exit(trade_id: int, exit_price: float, exit_reason: str,
              exit_ticket: str = None, exit_sl_price: float = None,
              swap: float = 0, notes: str = None, raw_json: dict = None,
-             close_source: str = None):
+             close_source: str = "UNKNOWN"):
     """Registra FECHAMENTO de uma posição e calcula PnL.
 
-    close_source: origem do fechamento (SL_SERVER, SL_LOCAL, EOD,
-    RECONCILIATION, EMERGENCY_CLOSE). NULL se não informado (compatível com
-    callers legados que não passam esse argumento).
+    close_source: origem do fechamento. É OBRIGATÓRIO que callers cientes
+    do pipeline passem um valor explícito (taxonomia atual):
+
+        - "MT5_SERVER_SL"        : MT5 fechou sozinho via SL/TP server-side
+        - "TRAIL_STOP"           : trailing stop ativado pelo bot
+        - "TIME_TRAIL"           : time-trail ativado por idade da posição
+        - "EMERGENCY_CLOSE"      : core/vt_emergency.py (modify_sl falhou)
+        - "USER_CLOSE"           : fechamento manual (ex.: --close flag)
+        - "EOD_CLOSE"            : fechamento de fim de dia (16:45 EOD)
+        - "HARD_EXIT"            : tempo máximo da posição atingido
+        - "BREAKEVEN"            : fechamento por breakeven
+        - "RECONCILE"            : reconcile_positions_with_mt5 (GHOST)
+        - "ORPHAN_CLOSE_RESOLVED_<ts>": _resolve_orphan_closes()
+        - "ORPHAN_CLOSE_RESOLVED_ORPHAN_RESOLVE": fallback orphan
+        - "mt5_orchestrator_close": _persist_close_to_db de close() manual
+        - "HISTORY_RECONCILE_*"  : vt_history_reconcile.py
+        - "EXCLUDED_RECONCILE"   : reconcile_pending_excluded
+        - "MT5_TRUTH_RECONCILE"  : reconciler proativo
+        - "UNKNOWN"              : fallback explícito (NÃO USE — corrija o caller)
+
+    BUG LATENTE (forense arquitetura_audit 9.6, 2026-07-01): trade #2068
+    fechou com reason='SL_SERVIDOR' e close_source=None porque manage_position()
+    chamava log_exit() sem o argumento. Default anterior era None — permitia
+    o bug passar silencioso. Agora default é "UNKNOWN" e logamos WARNING
+    para que callsite sem close_source explícito seja detectável em runtime
+    (sem quebrar callers legados imediatamente).
     """
     conn = get_db()
     row = conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
     if not row:
         conn.close()
         return None
+
+    # Bug latente 9.6 (2026-07-01): log_warning se close_source explícito
+    # não foi passado. Default "UNKNOWN" garante que DB nunca grava NULL,
+    # mas queremos detectar callers que ainda esquecem o argumento para
+    # podermos corrigir o callsite (não silenciar o problema).
+    if close_source == "UNKNOWN":
+        import logging as _logging
+        _logging.getLogger("vt_trade_log").warning(
+            "log_exit() chamado sem close_source explícito (trade_id=%s "
+            "exit_reason=%s). Caller deve passar close_source — ver taxonomia "
+            "no docstring de log_exit().",
+            trade_id, exit_reason,
+        )
 
     symbol = row["symbol"]
     volume = row["volume"]
