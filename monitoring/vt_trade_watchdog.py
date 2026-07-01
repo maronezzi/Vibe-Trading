@@ -25,13 +25,19 @@ import sqlite3
 import sys
 import time
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "core"))  # noqa: E402 — garante import de vt_hermes_helper (espelha fix de vt_daily_report.py em 17/06/2026)
 
 from mt5.mt5_orchestrator import status as mt5_status
 from core.vt_config_loader import load_config
+# Fase 4 (architecture_proposal_2026_07_01.md, secao 4.4):
+# PnL diario vem do truth layer (MT5 history broker-truth), NAO de
+# SELECT SUM(net_pnl) sobre o DB. DB vira comparacao para detectar drift.
+from core import vt_truth
 
 # ===== CONFIG =====
 STATE_FILE = "/tmp/vt_autotrader_state.json"
@@ -39,6 +45,12 @@ STATUS_FILE = "/tmp/vt_watchdog_status.json"
 DB_PATH = Path(__file__).parent.parent / "vt_trades.db"
 TELEGRAM_TARGET = "telegram:-1004284773048"
 MAGIC = 555501
+
+# Fase 4: limite (em R$) acima do qual o watchdog dispara alerta de drift
+# entre PnL MT5-truth e PnL DB. 5 reais eh ruido operacional (comissao,
+# swap residual); acima disso indica dessincronizacao real entre bot e
+# broker.
+DRIFT_THRESHOLD_REAIS = Decimal("5.00")
 
 
 def log(msg):
@@ -238,7 +250,119 @@ def check_trade_log(mt5_positions):
     return issues
 
 
-# ===== 6. FORMAT OUTPUT =====
+# ===== 6. CHECK DAILY PNL DRIFT (FASE 4 — TRUTH LAYER) =====
+def get_db_daily_pnl(date_iso: Optional[str] = None) -> Decimal:
+    """PnL diario calculado direto do DB local (fonte SECUNDARIA).
+
+    Mantido apenas para comparar contra a verdade MT5 e detectar drift.
+    NAO deve ser usado para decisao de risco, alerta, ou relatorio — esse
+    papel eh do truth layer (vt_truth.get_daily_pnl).
+
+    Args:
+        date_iso: data de referencia YYYY-MM-DD. Se None, usa "hoje" (local).
+
+    Returns:
+        Decimal em R$ (precisao 0.01). Zero se DB indisponivel / vazio.
+
+    Comportamento:
+        - FAIL-SAFE: erros nao levantam; retorna Decimal('0.00').
+        - Filtra trades com exit_time preenchido (fechados) na data alvo.
+        - Soma net_pnl (que ja incorpora gross - fees - swap no bot).
+    """
+    if date_iso is None:
+        date_iso = datetime.now().strftime("%Y-%m-%d")
+    if not DB_PATH.exists():
+        return Decimal("0.00")
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT COALESCE(SUM(net_pnl), 0.0) AS total "
+            "FROM trades "
+            "WHERE date(entry_time) = ? AND exit_time IS NOT NULL",
+            (date_iso,),
+        ).fetchone()
+        conn.close()
+        total = row["total"] if row else 0.0
+        return Decimal(str(total)).quantize(Decimal("0.01"))
+    except Exception as e:
+        log(f"[DB DAILY PNL ERRO] {e}")
+        return Decimal("0.00")
+
+
+def get_mt5_daily_pnl_truth(date_iso: Optional[str] = None) -> Decimal:
+    """PnL diario MT5-truth via truth layer (fonte AUTORITATIVA).
+
+    Wrapper sobre core.vt_truth.get_daily_pnl() que expoe Decimal em R$
+    (precisao 0.01) com cache TTL interno de 5s.
+
+    Args:
+        date_iso: data de referencia YYYY-MM-DD. Se None, usa "hoje".
+
+    Returns:
+        Decimal em R$. Zero se MT5 indisponivel / sem deals no dia.
+
+    Comportamento:
+        - FAIL-SAFE: se MT5 falha, retorna Decimal('0.00') (truth layer
+          ja eh defensivo — ver core/vt_truth.py).
+    """
+    try:
+        return vt_truth.get_daily_pnl(date_iso=date_iso)
+    except Exception as e:
+        log(f"[MT5 DAILY PNL ERRO] {e}")
+        return Decimal("0.00")
+
+
+def compute_pnl_drift(date_iso: Optional[str] = None) -> Dict[str, Any]:
+    """Calcula drift entre PnL MT5-truth e PnL DB.
+
+    Compara a fonte autoritativa (MT5 history, via truth layer) contra o
+    DB local. Drift = |mt5 - db|. Acima de DRIFT_THRESHOLD_REAIS eh
+    dessincronizacao real.
+
+    Args:
+        date_iso: data de referencia YYYY-MM-DD. Se None, usa "hoje".
+
+    Returns:
+        Dict com:
+          - mt5_pnl: Decimal em R$ (MT5-truth)
+          - db_pnl: Decimal em R$ (DB local)
+          - drift: Decimal em R$ (|mt5 - db|)
+          - drift_alert: bool (drift > DRIFT_THRESHOLD_REAIS)
+          - threshold: Decimal em R$ (limiar usado na comparacao)
+          - date_iso: str (data alvo)
+          - source: "TRUTH_LAYER" (sempre via vt_truth)
+    """
+    if date_iso is None:
+        date_iso = datetime.now().strftime("%Y-%m-%d")
+    mt5_pnl = get_mt5_daily_pnl_truth(date_iso=date_iso)
+    db_pnl = get_db_daily_pnl(date_iso=date_iso)
+    drift = (mt5_pnl - db_pnl).copy_abs()
+    return {
+        "mt5_pnl": mt5_pnl,
+        "db_pnl": db_pnl,
+        "drift": drift,
+        "drift_alert": drift > DRIFT_THRESHOLD_REAIS,
+        "threshold": DRIFT_THRESHOLD_REAIS,
+        "date_iso": date_iso,
+        "source": "TRUTH_LAYER",
+    }
+
+
+def format_drift_alert(drift_info: Dict[str, Any]) -> str:
+    """Formata alerta Telegram de drift de PnL."""
+    mt5 = drift_info["mt5_pnl"]
+    db = drift_info["db_pnl"]
+    drift = drift_info["drift"]
+    threshold = drift_info["threshold"]
+    return (
+        f"⚠️ *DRIFT PnL DIARIO*: "
+        f"MT5=R$ {mt5:+.2f} | DB=R$ {db:+.2f} | "
+        f"diff=R$ {drift:.2f} (limite R$ {threshold:.2f})"
+    )
+
+
+# ===== 7. FORMAT OUTPUT =====
 def format_orphan(p):
     """Format an orphan position for display."""
     symbol = p.get("symbol", "?")
@@ -261,7 +385,7 @@ def format_ok(n_positions, balance, equity):
     return f"✅ WATCHDOG: OK | {n_positions} posicoes | Equity=R${equity:,.0f}"
 
 
-# ===== 7. SAVE STATE =====
+# ===== 8. SAVE STATE =====
 def save_status(status_data):
     """Save watchdog status to JSON."""
     tmp = STATUS_FILE + ".tmp"
@@ -300,6 +424,13 @@ def run_watchdog(json_only=False):
     # 5. Check trade log integrity
     db_issues = check_trade_log(mt5_positions)
 
+    # 6. Check daily PnL drift (Fase 4 — truth layer)
+    # MT5-truth eh fonte autoritativa; DB eh comparacao para detectar
+    # dessincronizacao entre o que o bot registrou e o que o broker
+    # confirma. Drift > R$ 5/dia = alerta.
+    drift_info = compute_pnl_drift()
+    drift_alert = drift_info["drift_alert"]
+
     # Build status
     elapsed = time.time() - start
     status_data = {
@@ -315,14 +446,30 @@ def run_watchdog(json_only=False):
         "equity": equity,
         "margin_free": margin_free,
         "account_issues": account_issues,
-        "ok": len(orphans) == 0 and len(ghosts) == 0 and len(account_issues) == 0 and len(db_issues) == 0,
+        # Fase 4: campos de drift PnL (MT5-truth vs DB).
+        # mt5_pnl/db_pnl/drift sao Decimal em R$ (serializam como float via
+        # default=str no json.dumps). drift_alert eh bool pronto pra UI.
+        "mt5_pnl": drift_info["mt5_pnl"],
+        "db_pnl": drift_info["db_pnl"],
+        "drift": drift_info["drift"],
+        "drift_alert": drift_alert,
+        "drift_threshold": drift_info["threshold"],
+        "drift_date": drift_info["date_iso"],
+        "drift_source": drift_info["source"],
+        "ok": (
+            len(orphans) == 0
+            and len(ghosts) == 0
+            and len(account_issues) == 0
+            and len(db_issues) == 0
+            and not drift_alert
+        ),
     }
 
-    # 7. Save state
+    # 8. Save state
     save_status(status_data)
 
-    # 8. Output + alerts
-    has_issues = orphans or ghosts or account_issues or db_issues
+    # 9. Output + alerts
+    has_issues = bool(orphans or ghosts or account_issues or db_issues or drift_alert)
 
     if not has_issues:
         sync_note = f" | {len(sync_fixes)} state sync fix(es)" if sync_fixes else ""
@@ -333,6 +480,13 @@ def run_watchdog(json_only=False):
             for sf in sync_fixes:
                 log(f"[INFO] State file sync: {sf['ticket']} ({sf['symbol']}) "
                     f"DB trade #{sf['db_trade_id']}")
+        # Log discreto do drift (sem alerta Telegram — esta abaixo do limite).
+        log(
+            f"[DRIFT OK] MT5=R${drift_info['mt5_pnl']:+.2f} "
+            f"DB=R${drift_info['db_pnl']:+.2f} "
+            f"diff=R${drift_info['drift']:.2f} "
+            f"(limite R${DRIFT_THRESHOLD_REAIS:.2f})"
+        )
     else:
         # Build alert message
         lines = [f"🚨 *WATCHDOG ALERTA* — {datetime.now().strftime('%H:%M:%S')}"]
@@ -358,6 +512,11 @@ def run_watchdog(json_only=False):
             print(line, flush=True)
             lines.append(line)
 
+        if drift_alert:
+            line = format_drift_alert(drift_info)
+            print(line, flush=True)
+            lines.append(line)
+
         lines.append("")
         lines.append(f"📊 MT5: {len(mt5_positions)} pos | Bot: {len(bot_positions)} pos | Sync fixes: {len(sync_fixes)}")
         lines.append(f"💰 Balance: R${balance:,.2f} | Equity: R${equity:,.2f}")
@@ -367,10 +526,16 @@ def run_watchdog(json_only=False):
 
     # Print summary line
     sync_suffix = f" | {len(sync_fixes)} sync fix(es)" if sync_fixes else ""
+    drift_suffix = ""
+    if drift_alert:
+        drift_suffix = f" | DRIFT R${drift_info['drift']:.2f}"
     summary = (
         format_ok(len(mt5_positions), balance, equity)
         if not has_issues
-        else f"⚠️ WATCHDOG: {len(orphans)} orfaos, {len(ghosts)} fantasmas{sync_suffix} | Equity=R${equity:,.0f}"
+        else (
+            f"⚠️ WATCHDOG: {len(orphans)} orfaos, {len(ghosts)} fantasmas"
+            f"{sync_suffix}{drift_suffix} | Equity=R${equity:,.0f}"
+        )
     )
     print(f"\n{summary}", flush=True)
 
