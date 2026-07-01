@@ -15,14 +15,145 @@ import sys
 import json
 import sqlite3
 import subprocess
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 # Adicionar projeto ao path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mt5.mt5_orchestrator import status as mt5_status, _run_wine, EXECUTOR_WIN
+from mt5.mt5_orchestrator import status as mt5_status, _run_wine, EXECUTOR_WIN, history as mt5_history
 from core.vt_config_loader import load_config
+from core.vt_autotrader import get_truth_from_mt5
+
+# ===== TRUTH LAYER (FASE 1) =====
+# Cache TTL para get_daily_pnl_truth(). PnL diario cresce monotonicamente,
+# entao 5s e folgado. Intraday report sempre invalida o cache antes de
+# calcular (padrao do architecture_proposal_2026_07_01.md, secao 3.4).
+_PNL_TRUTH_TTL_SECONDS = 5.0
+_pnl_truth_cache = {
+    "ts": 0.0,         # time.monotonic()
+    "data": None,      # dict abaixo
+    "key": None,       # (days, today) — invalida se dia trocar
+}
+
+
+def _invalidate_pnl_truth_cache():
+    """Forca re-leitura do MT5 history na proxima chamada."""
+    _pnl_truth_cache["ts"] = 0.0
+    _pnl_truth_cache["data"] = None
+    _pnl_truth_cache["key"] = None
+
+
+def get_daily_pnl_truth(days: int = 1, force_refresh: bool = False) -> dict:
+    """PnL diario do broker (fonte autoritativa — MT5 history).
+
+    Implementacao FASE 1 do refactor (data/architecture_proposal_2026_07_01.md
+    linha 280-320): le MT5 history direto via mt5_orchestrator.history() e
+    soma profit+commission+swap dos deals. Cache in-memory com TTL 5s para
+    evitar custo de uma chamada Wine (~200ms) por tick.
+
+    Retorna dict com:
+        source: 'MT5_HISTORY' (broker-truth) ou 'MT5_EMPTY' (sem deals hoje)
+        deals_total: int — total de deals retornados pelo MT5 no periodo
+        pnl_profit, pnl_commission, pnl_swap, pnl_net: floats (R$)
+        deals: lista de dicts com ticket, time, profit, commission, swap, symbol
+        ok: bool — True se MT5 respondeu sem erro
+        error: str | None
+        stale: bool — True se cache foi usado (nao MT5 ao vivo)
+        ts: ISO timestamp da coleta
+
+    Idempotente: pode ser chamado multiplas vezes no tick (cache TTL 5s).
+    Se force_refresh=True, ignora cache.
+
+    Fallback: NAO faz fallback automatico para DB. Quem chama decide se cai
+    no DB (ex: check_intraday_stats()). Razao: misturar as duas fontes
+    aqui dentro esconde o drift — quem chama precisa ver source='MT5_HISTORY'
+    vs source='DB_FALLBACK' explicitamente.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    cache_key = (days, today)
+
+    # Cache hit (TTL dentro da janela, mesmo dia)
+    now = time.monotonic()
+    if not force_refresh and _pnl_truth_cache["data"] is not None:
+        if _pnl_truth_cache["key"] == cache_key:
+            if (now - _pnl_truth_cache["ts"]) < _PNL_TRUTH_TTL_SECONDS:
+                cached = dict(_pnl_truth_cache["data"])
+                cached["stale"] = True
+                return cached
+
+    # Cache miss — buscar MT5
+    result = {
+        "source": "MT5_HISTORY",
+        "deals_total": 0,
+        "pnl_profit": 0.0,
+        "pnl_commission": 0.0,
+        "pnl_swap": 0.0,
+        "pnl_net": 0.0,
+        "deals": [],
+        "ok": False,
+        "error": None,
+        "stale": False,
+        "ts": datetime.now().isoformat(),
+    }
+
+    try:
+        raw = mt5_history(symbol=None, days=days)
+        if not isinstance(raw, dict):
+            result["source"] = "MT5_EMPTY"
+            result["error"] = f"MT5 history retornou tipo invalido: {type(raw).__name__}"
+        elif "error" in raw and "history" not in raw:
+            # Erro real do MT5 (timeout, Wine down, etc.)
+            result["source"] = "MT5_EMPTY"
+            result["error"] = str(raw.get("error", "unknown"))
+        else:
+            deals = raw.get("history", []) or []
+            result["deals_total"] = len(deals)
+            result["ok"] = True
+
+            if not deals:
+                result["source"] = "MT5_EMPTY"
+            else:
+                # Soma broker-truth por deal: profit + commission + swap
+                pnl_p = 0.0
+                pnl_c = 0.0
+                pnl_s = 0.0
+                light_deals = []
+                for d in deals:
+                    p = float(d.get("profit", 0) or 0)
+                    c = float(d.get("commission", 0) or 0)
+                    s = float(d.get("swap", 0) or 0)
+                    pnl_p += p
+                    pnl_c += c
+                    pnl_s += s
+                    light_deals.append({
+                        "ticket": d.get("ticket"),
+                        "time": d.get("time"),
+                        "symbol": d.get("symbol"),
+                        "type": d.get("type"),
+                        "profit": round(p, 2),
+                        "commission": round(c, 2),
+                        "swap": round(s, 2),
+                    })
+                result["pnl_profit"] = round(pnl_p, 2)
+                result["pnl_commission"] = round(pnl_c, 2)
+                result["pnl_swap"] = round(pnl_s, 2)
+                # pnl_net e o que aparece no relatorio: profit+commission+swap
+                # (commission e swap sao negativos no broker — ja vem com sinal)
+                result["pnl_net"] = round(pnl_p + pnl_c + pnl_s, 2)
+                result["deals"] = light_deals
+    except Exception as e:
+        result["source"] = "MT5_EMPTY"
+        result["error"] = f"excecao ao chamar mt5_history: {e}"
+
+    # Grava cache so se chamada foi OK (cache de dados validos)
+    if result["ok"] or result["source"] == "MT5_EMPTY":
+        _pnl_truth_cache["ts"] = now
+        _pnl_truth_cache["data"] = dict(result)
+        _pnl_truth_cache["key"] = cache_key
+
+    return result
 
 # ===== CONFIGURAÇÃO =====
 DB_PATH = Path(__file__).parent.parent / "vt_trades.db"
@@ -461,44 +592,88 @@ def evaluate_and_pause():
 def check_intraday_stats() -> dict:
     """Métricas INTRADAY (somente HOJE): PnL realizado, flutuante, contadores, série.
 
+    FASE 1 do refactor (data/architecture_proposal_2026_07_01.md linha 280-320):
+    PnL realizado vem do MT5 history (broker-truth) via get_daily_pnl_truth().
+    DB SQLite é só fallback — se MT5 indisponível, loga source='DB_FALLBACK'
+    e usa net_pnl da tabela trades.
+
     Substitui o antigo check_performance() (janela 5 dias) como entrada do
     generate_report(). Mantém evaluate_and_pause() usando a janela maior.
 
     Retorna dict com:
-        ops, wins, losses, pnl_realized: agregados dos trades fechados hoje
-        open_count, open_pnl: posições abertas via MT5 status()
+        ops, wins, losses, pnl_realized: agregados (broker-truth se source=MT5)
+        open_count, open_pnl: posições abertas via get_truth_from_mt5() (helper centralizado)
         pnl_total: pnl_realized + open_pnl
         pnl_cum: lista [(exit_time_iso, pnl_acumulado)] em ordem cronológica
         max_drawdown: pior queda do peak até o fundo
         best_trade, worst_trade: extremos do dia
+        source: 'MT5_HISTORY' (broker-truth) | 'DB_FALLBACK' (MT5 falhou)
+        truth_error: str | None — mensagem de erro do MT5 se houve fallback
     """
-    conn = sqlite3.connect(str(DB_PATH))
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Realizado: trades fechados hoje (exclui stale_close — contratos antigos limpos manualmente)
-    closed = conn.execute("""
-        SELECT COUNT(*) ops,
-               SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) wins,
-               SUM(CASE WHEN net_pnl <= 0 THEN 1 ELSE 0 END) losses,
-               COALESCE(SUM(net_pnl), 0) pnl
-        FROM trades
-        WHERE exit_time IS NOT NULL
-          AND date(exit_time) = ?
-          AND exit_reason != 'stale_close'
-    """, (today,)).fetchone()
+    # 1) FONTE AUTORITATIVA: MT5 history (broker-truth)
+    #    Invalida cache para que o intraday report sempre reflita o estado
+    #    atual do broker (padrao architecture_proposal_2026_07_01.md, secao 3.4)
+    _invalidate_pnl_truth_cache()
+    pnl_truth = get_daily_pnl_truth(days=1, force_refresh=True)
 
-    # Série temporal ordenada
-    pnl_series = conn.execute("""
-        SELECT exit_time, net_pnl
-        FROM trades
-        WHERE exit_time IS NOT NULL
-          AND date(exit_time) = ?
-          AND exit_reason != 'stale_close'
-        ORDER BY exit_time
-    """, (today,)).fetchall()
-    conn.close()
+    source = "MT5_HISTORY"
+    truth_error = None
+    pnl_realized = 0.0
+    ops = 0
+    wins = 0
+    losses = 0
+    pnl_series = []  # lista de (exit_time_iso, pnl) ordenados
 
-    # Acumulado + max drawdown
+    if pnl_truth["ok"] and pnl_truth["deals_total"] > 0:
+        # Broker-truth: somar profit+commission+swap por deal, contar wins/losses
+        pnl_realized = pnl_truth["pnl_net"]
+        ops = pnl_truth["deals_total"]
+        # wins/losses pelo deal (profit > 0 conta como win; commission/swap
+        # nao interferem — sao custos do broker)
+        wins = sum(1 for d in pnl_truth["deals"] if d["profit"] > 0)
+        losses = sum(1 for d in pnl_truth["deals"] if d["profit"] <= 0)
+        # Serie temporal a partir dos deals (time do MT5)
+        for d in pnl_truth["deals"]:
+            # time do MT5 vem como string de timestamp epoch ou ISO — normalizar
+            t_raw = d.get("time")
+            t_iso = _normalize_deal_time(t_raw)
+            pnl_series.append((t_iso, round(d["profit"] + d["commission"] + d["swap"], 2)))
+        pnl_series.sort(key=lambda x: x[0])
+    else:
+        # 2) FALLBACK: DB SQLite (cache). Fonte nao-confiavel mas melhor que nada.
+        source = "DB_FALLBACK"
+        truth_error = pnl_truth.get("error") or "MT5 sem deals no periodo"
+        log(f"[WARN] PnL intraday usando DB fallback (MT5 indisponivel: {truth_error})")
+
+        conn = sqlite3.connect(str(DB_PATH))
+        closed = conn.execute("""
+            SELECT COUNT(*) ops,
+                   SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) wins,
+                   SUM(CASE WHEN net_pnl <= 0 THEN 1 ELSE 0 END) losses,
+                   COALESCE(SUM(net_pnl), 0) pnl
+            FROM trades
+            WHERE exit_time IS NOT NULL
+              AND date(exit_time) = ?
+              AND exit_reason != 'stale_close'
+        """, (today,)).fetchone()
+        pnl_series = conn.execute("""
+            SELECT exit_time, net_pnl
+            FROM trades
+            WHERE exit_time IS NOT NULL
+              AND date(exit_time) = ?
+              AND exit_reason != 'stale_close'
+            ORDER BY exit_time
+        """, (today,)).fetchall()
+        pnl_series = [(t, p) for t, p in pnl_series]  # ja vem como tuplas
+        ops = closed[0] or 0
+        wins = closed[1] or 0
+        losses = closed[2] or 0
+        pnl_realized = round(closed[3] or 0.0, 2)
+        conn.close()
+
+    # Acumulado + max drawdown (mesmo calculo, agora sobre fonte broker-truth)
     pnl_cum = []
     acc = 0.0
     peak = 0.0
@@ -509,22 +684,21 @@ def check_intraday_stats() -> dict:
         peak = max(peak, acc)
         max_dd = min(max_dd, acc - peak)
 
-    # Posições abertas via MT5 (fonte da verdade, nao o DB)
+    # Posicoes abertas via get_truth_from_mt5() (helper centralizado,
+    # fonte da verdade para balance/equity/positions segundo Wave 12.1).
+    # Se MT5 falhar aqui, loga e segue com zeros (open_count=0).
     open_count, open_pnl = 0, 0.0
-    try:
-        mt5_state = mt5_status()
-        positions = mt5_state.get("positions", [])
-        open_count = len(positions)
-        open_pnl = round(sum(p.get("profit", 0) for p in positions), 2)
-    except Exception as e:
-        log(f"[WARN] Não foi possível obter MT5 status: {e}")
-
-    pnl_realized = round(closed[3] or 0.0, 2)
+    truth = get_truth_from_mt5()
+    if truth.get("ok"):
+        open_count = truth.get("n_positions", 0) or 0
+        open_pnl = round(truth.get("pnl_flutuante", 0.0) or 0.0, 2)
+    else:
+        log(f"[WARN] MT5 indisponivel para posicoes abertas: {truth.get('error')}")
 
     return {
-        "ops": closed[0] or 0,
-        "wins": closed[1] or 0,
-        "losses": closed[2] or 0,
+        "ops": ops,
+        "wins": wins,
+        "losses": losses,
         "pnl_realized": pnl_realized,
         "open_count": open_count,
         "open_pnl": open_pnl,
@@ -533,7 +707,26 @@ def check_intraday_stats() -> dict:
         "max_drawdown": round(max_dd, 2),
         "best_trade": round(max((p for _, p in pnl_series), default=0.0), 2),
         "worst_trade": round(min((p for _, p in pnl_series), default=0.0), 2),
+        "source": source,           # MT5_HISTORY | DB_FALLBACK
+        "truth_error": truth_error,
+        "deals_total": pnl_truth.get("deals_total", 0),
     }
+
+
+def _normalize_deal_time(t_raw) -> str:
+    """Normaliza timestamp de deal do MT5 para ISO string.
+
+    MT5 retorna time como int (epoch) ou str. Para a serie temporal do
+    grafico, aceitamos ambos formatos.
+    """
+    if t_raw is None:
+        return ""
+    if isinstance(t_raw, (int, float)):
+        try:
+            return datetime.fromtimestamp(int(t_raw)).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return str(t_raw)
+    return str(t_raw)
 
 
 def render_pnl_chart(pnl_cum: list, today: str) -> Path:
@@ -589,7 +782,13 @@ def render_pnl_chart(pnl_cum: list, today: str) -> Path:
 
 
 def generate_report():
-    """Relatório INTRADAY: evolução do dia até o momento (sem histórico 5d)."""
+    """Relatório INTRADAY: evolução do dia até o momento (sem histórico 5d).
+
+    FASE 1 (data/architecture_proposal_2026_07_01.md linha 280-320):
+    - PnL realizado vem do MT5 history (broker-truth) via check_intraday_stats()
+    - Balance/equity vem de get_truth_from_mt5() (helper centralizado, Wave 12.1)
+    - Emite aviso quando MT5 indisponível (não silencia)
+    """
     report = []
 
     # 1. Status do autotrader
@@ -599,12 +798,25 @@ def generate_report():
     else:
         report.append("❌ Autotrader: PARADO")
 
+    # 1.5 Balance/equity do MT5 (helper centralizado Wave 12.1).
+    # Falha aqui = aviso explicito (NUNCA silenciar).
+    truth = get_truth_from_mt5()
+    if truth.get("ok"):
+        bal = truth.get("balance", 0.0)
+        eq = truth.get("equity", 0.0)
+        report.append(f"💰 Saldo MT5: R$ {bal:,.2f} · Equity: R$ {eq:,.2f}")
+    else:
+        report.append(f"⚠️ MT5 indisponível ({truth.get('error', '?')})")
+
     # 2. Estatísticas intraday
     s = check_intraday_stats()
     wr = (s["wins"] / s["ops"] * 100) if s["ops"] > 0 else 0
 
     report.append("")
     report.append(f"📈 *Intrade* ({datetime.now().strftime('%H:%M')})")
+    # Mostra a fonte do PnL realizado (FASE 1: MT5_HISTORY vs DB_FALLBACK)
+    source_label = "broker-truth (MT5)" if s.get("source") == "MT5_HISTORY" else "DB fallback (MT5 off)"
+    report.append(f"  _PnL realizado: {source_label}_")
     if s["ops"] > 0:
         report.append(
             f"  Trades: {s['ops']} (W:{s['wins']} L:{s['losses']} · WR {wr:.0f}%)"

@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "core"))  # noqa: E402 — fixa ModuleNotFoundError para `from vt_hermes_helper import hermes_send` (linha 252)
 
 from mt5.mt5_orchestrator import status, close_all
+from core.vt_autotrader import get_truth_from_mt5  # Wave 12.1 — helper centralizado
 
 
 DB_PATH = Path(__file__).parent.parent / "vt_trades.db"
@@ -148,15 +149,21 @@ def format_report(report: dict, close_info: dict) -> str:
         "",
     ]
 
-    # Estado da conta
-    try:
-        acc = status().get("account", {})
-        lines.append("💰 *Estado da Conta*")
-        lines.append(f"• Saldo: R$ {acc.get('balance', 0):,.2f}")
-        lines.append(f"• Equity: R$ {acc.get('equity', 0):,.2f}")
-        lines.append("")
-    except Exception:
-        pass
+    # Estado da conta — via get_truth_from_mt5() (helper centralizado, Wave 12.1).
+    # Falha aqui = aviso explicito (NUNCA silenciar, ver regressao 2026-06-29).
+    truth = get_truth_from_mt5()
+    lines.append("💰 *Estado da Conta*")
+    if truth.get("ok"):
+        bal = truth.get("balance", 0.0) or 0.0
+        eq = truth.get("equity", 0.0) or 0.0
+        free = truth.get("margin_free", 0.0) or 0.0
+        lines.append(f"• Saldo: R$ {bal:,.2f}")
+        lines.append(f"• Equity: R$ {eq:,.2f}")
+        lines.append(f"• Margem livre: R$ {free:,.2f}")
+    else:
+        # Wave 12.1: avisar explicitamente (NUNCA silenciar MT5 indisponivel)
+        lines.append(f"⚠️ MT5 indisponível ({truth.get('error', '?')}) — saldo/equity não exibidos")
+    lines.append("")
 
     # Fechamento de posições
     if close_info.get("closed", 0) > 0:
