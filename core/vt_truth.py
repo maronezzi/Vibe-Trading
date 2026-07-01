@@ -75,6 +75,75 @@ CACHE_TTL_POSITIONS = 2.0
 CACHE_TTL_HISTORY = 2.0
 CACHE_TTL_PNL = 5.0
 
+# Mapeamento canonico de "type" MT5 -> direcao.
+# 0 = BUY, 1 = SELL (conforme docs MetaTrader5). Strings tambem aceitas
+# (MT5 real hoje retorna "BUY"/"SELL", mas o codigo nao pode assumir isso).
+_DIRECTION_BUY = 0
+_DIRECTION_SELL = 1
+
+
+def _normalize_direction(type_value: _Any) -> str:
+    """Normaliza o campo `type` MT5 para string de direcao canonica.
+
+    Aceita:
+        - 0 / "0"             -> "BUY"
+        - 1 / "1"             -> "SELL"
+        - "BUY" / "buy"       -> "BUY"
+        - "SELL" / "sell"     -> "SELL"
+        - qualquer outro str  -> passado adiante (logado como WARN se !=
+                                 BUY/SELL, pra nao mascarar typos do broker)
+        - None / False / ""   -> "" (logado como WARN; caller decide o que fazer)
+
+    Por que existe (Fase 3.5):
+        str(p.get("type", "") or "") colapsa type=0 (int BUY) para "" porque
+        `0 or ""` -> "". Hoje MT5 retorna string, entao o bug nao se
+        manifesta em producao, mas o codigo fica fragil: se um helper interno
+        esquecer de mapear int->str, a direcao e silenciosamente perdida
+        e positions com direction="" nao conseguem matchear filtros
+        BUY/SELL. Esta funcao torna o mapping explicito e tolerante.
+    """
+    # None / False / ""  (cuidado: `0 or ""` cai aqui tambem, por isso
+    # testamos o int ANTES do `or ""`)
+    if type_value is None or type_value is False or type_value == "":
+        _log(f"_normalize_direction: type vazio/None/False recebido ({type_value!r})")
+        return ""
+
+    # int 0/1 (codigo MT5 nativo) — caminho principal do fix
+    if isinstance(type_value, bool):
+        # bool eh subclasse de int, mas True/False nao sao direcoes validas.
+        _log(f"_normalize_direction: bool recebido ({type_value!r}), retornando ''")
+        return ""
+    if isinstance(type_value, int):
+        if type_value == _DIRECTION_BUY:
+            return "BUY"
+        if type_value == _DIRECTION_SELL:
+            return "SELL"
+        _log(f"_normalize_direction: int fora do range BUY/SELL ({type_value!r})")
+        return str(type_value)
+
+    # Strings: "0"/"1"/"BUY"/"SELL"/"buy"/"sell" etc.
+    if isinstance(type_value, str):
+        s = type_value.strip()
+        if s == "":
+            _log("_normalize_direction: string vazia apos strip")
+            return ""
+        if s == "0":
+            return "BUY"
+        if s == "1":
+            return "SELL"
+        upper = s.upper()
+        if upper in ("BUY", "SELL"):
+            return upper
+        # String desconhecida — passa adiante mas loga WARN pra nao
+        # mascarar typos do broker.
+        _log(f"_normalize_direction: string de direcao nao-canonica ({s!r})")
+        return s
+
+    # Qualquer outro tipo (float, list, etc) — passa como string
+    # e loga WARN.
+    _log(f"_normalize_direction: tipo nao-suportado ({type(type_value).__name__}: {type_value!r})")
+    return str(type_value)
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TRADES_DB = PROJECT_ROOT / "vt_trades.db"
 
@@ -213,7 +282,7 @@ def get_open_positions(magic_filter: int = MAGIC_VIBETRADING) -> List[Position]:
             result.append(Position(
                 ticket=int(p.get("ticket", 0) or 0),
                 symbol=str(p.get("symbol", "") or ""),
-                direction=str(p.get("type", "") or ""),
+                direction=_normalize_direction(p.get("type")),
                 volume=float(p.get("volume", 0.0) or 0.0),
                 price_open=float(p.get("price_open", 0.0) or 0.0),
                 price_current=float(p.get("price_current", 0.0) or 0.0),
@@ -281,7 +350,7 @@ def get_position_history(
             result.append(Deal(
                 ticket=int(d.get("ticket", 0) or 0),
                 symbol=str(d.get("symbol", "") or ""),
-                direction=str(d.get("type", "") or ""),
+                direction=_normalize_direction(d.get("type")),
                 volume=float(d.get("volume", 0.0) or 0.0),
                 price=float(d.get("price", 0.0) or 0.0),
                 profit=float(d.get("profit", 0.0) or 0.0),
