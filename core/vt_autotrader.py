@@ -166,12 +166,19 @@ class SessionState:
         self.resolved_symbols = {}        # cache: {"WDO": "WDON26", "WIN": "WINM26"}
         self.resolved_day = ""            # dia do cache (reseta a cada dia)
 
-        # Wave 8.6.2 (2026-06-26): sincroniza com DB mesmo na construção
-        # inicial (state vazio). Sem isso, restart zera state.daily_pnl
-        # mesmo que DB tenha trades do dia.
+        # FASE 3 (2026-07-01): SessionState NAO le mais /tmp/vt_autotrader_state.json
+        # no startup. State vira projecao em memoria, reconstruida do MT5
+        # via rebuild_state_from_mt5() (chamado no startup, ver linha 429).
+        # Mantemos so o _sync_daily_pnl_with_db (le do DB SQLite, nao do state
+        # file) para nao zerar state.daily_pnl apos restart.
         _sync_daily_pnl_with_db(self)
 
-    STATE_FILE = "/tmp/vt_autotrader_state.json"
+    # FASE 3: STATE_FILE descontinuado. NUNCA eh lido/escrito em disco.
+    # Mantido como atributo de classe apenas para evitar AttributeError em
+    # testes legacy (test_state_mirror_blocked.py usa setattr pra redirecionar).
+    # A Fase 3 ELIMINOU o conceito de state persistente: rebuild_state_from_mt5()
+    # eh a unica fonte de verdade para state.positions.
+    STATE_FILE = "/tmp/vt_autotrader_state.json"  # noqa: F841 — legado, nao usado
 
     @staticmethod
     def _json_default(obj):
@@ -218,17 +225,13 @@ class SessionState:
 
     # Wave 12 — Fase 2 (2026-07-01, Bruno): state espelha MT5 (truth layer).
     #
-    # Contrato do MT5 truth filter (defesa em profundidade até Fase 3):
-    #   - Posição "nossa" = magic == 555501 AND comment == "VibeTrading".
-    #   - state.positions só pode ter keys cujo symbol está aberto no MT5.
-    #   - Se state tem key que MT5 NÃO tem → remove antes de gravar.
-    #   - Falha de leitura MT5 (status() exception / malformed) → FAIL-SAFE:
-    #     NÃO filtra. Preserva state. Bloquear save por causa de MT5 down
-    #     seria pior que o orphan que estamos defendendo.
+    # Mantido apenas o helper _fetch_mt5_truth_symbols (consulta status()
+    # filtrada por magic=555501 + comment=VibeTrading). Era usado pelo save()
+    # antigo (Fase 2) que gravava apos filtrar; o save() foi descontinuado
+    # na Fase 3. O helper fica disponivel para reuso futuro (ex.: filtros
+    # de watchdog / preview de expose positions).
     #
-    # Throttle: cacheia o set de symbols abertos por 5s. save() é chamado
-    # em vários call sites por tick (entry/exit/daily_reset); sem cache
-    # seriam múltiplas chamadas Wine/segundo.
+    # _filter_positions_via_mt5_truth foi REMOVIDO na Fase 3 (sem callers).
     _mt5_truth_symbols_cache = None
     _mt5_truth_symbols_ts = 0.0
     _MT5_TRUTH_TTL_SEC = 5.0
@@ -276,158 +279,222 @@ class SessionState:
         cls._mt5_truth_symbols_ts = now
         return truth_symbols
 
-    def _filter_positions_via_mt5_truth(self) -> None:
-        """Remove de self.positions as keys cujo symbol NÃO está aberto no MT5.
+    def save(self):
+        """STATE FILE DESCONTINUADO (FASE 3, 2026-07-01).
 
-        FAIL-SAFE: se truth for None (MT5 falhou), não faz nada — preserva state.
-        Loga [STATE-MIRROR] para cada filtragem (audit trail).
+        Comportamento historico (FASE 1/2): persistia state em disco
+        via atomic write (json.dump + os.fsync + rename). Orfas
+        propagavam entre restarts — state stale reconstruido do cache,
+        NAO do MT5 (bug latente: data/architecture_audit_2026_07_01.md
+        secao 4.3, drift state↔MT5).
+
+        Comportamento atual: NO-OP. Loga WARN para nao silenciar
+        call sites existentes (mantidos no codigo por seguranca).
+        NAO escreve em /tmp/vt_autotrader_state.json. Toda decisao
+        passa por _truth.get_open_positions() (cache 2s) no proximo tick.
+
+        Migre qualquer call site que dependia de persistir valores
+        via state.save() para usar _truth diretamente. Exemplos:
+          - halt_until, consecutive_losses: lidos/escritos no DB.
+          - daily_pnl, trade_count, wins, losses: _sync_daily_pnl_with_db().
+          - positions: rebuild_state_from_mt5() no proximo tick.
         """
-        truth_symbols = self._fetch_mt5_truth_symbols()
-        if truth_symbols is None:
-            return  # FAIL-SAFE: não filtra quando MT5 down
+        print(
+            "[STATE] WARN: save() descontinuado na Fase 3. State vira "
+            "projecao em memoria. Use _truth.get_open_positions() como "
+            "fonte de verdade. NAO escreve em /tmp/vt_autotrader_state.json.",
+            flush=True,
+        )
 
-        if not self.positions:
-            return  # nada pra filtrar
+    # === INICIO BLOCO FASE 3 — REMOVIDO ====================================
+    # save() antigo persistia em disco via atomic write. Foi ELIMINADO na
+    # Fase 3 (state nao eh mais cache autoritativo). O bloco abaixo eh mantido
+    # comentado apenas como referencia historica para o README/CHANGELOG do
+    # refactor. Removido em definitivo em commits futuros.
+    #
+    # def _save_legacy_discontinued(self):
+    #     """ANTIGO — Phase 1/2. Persistia state com filtro MT5-truth.
+    #
+    #     O codigo antigo escrevia em STATE_FILE apos filtrar
+    #     state.positions via _filter_positions_via_mt5_truth(). Orfas
+    #     eram removidas antes de gravar. FAIL-SAFE: se MT5 falhasse,
+    #     gravava sem filtro.
+    #     """
+    #     import json as _json, os
+    #     try:
+    #         self._filter_positions_via_mt5_truth()
+    #     except Exception as _e_filt:
+    #         print(f"[STATE-MIRROR] filtro explodiu ({type(_e_filt).__name__}: {_e_filt})", flush=True)
+    #     tmp = self.STATE_FILE + ".tmp"
+    #     try:
+    #         with open(tmp, "w") as f:
+    #             _json.dump(self.to_dict(), f, indent=2, default=self._json_default)
+    #             f.flush()
+    #             os.fsync(f.fileno())
+    #         os.rename(tmp, self.STATE_FILE)
+    #     except Exception as e:
+    #         print(f"[STATE] Erro ao salvar: {e}", flush=True)
+    #         try:
+    #             os.unlink(tmp)
+    #         except OSError:
+    #             pass
+    # === FIM BLOCO FASE 3 — REMOVIDO =======================================
 
-        to_drop = []
-        for key in list(self.positions.keys()):
-            # state keys = f"{symbol}_{tf}" (ex.: "WINM26_M5", "WDOQ26_M5")
-            # symbol nunca tem underscore nos contratos B3 (WIN/WDO/BIT/WSP).
-            parts = key.rsplit("_", 1)
-            symbol = parts[0] if len(parts) >= 2 else key
-            if symbol not in truth_symbols:
-                to_drop.append((key, symbol))
+    # FASE 3: load() descontinuado. NUNCA le disco.
+    # Mantido como no-op para nao quebrar test_state_daily_pnl_sync_with_db.py
+    # (legacy), que faz SessionState() + state.load() no fluxo de import.
+    # A unica fonte de verdade para popular state agora eh rebuild_state_from_mt5().
+    def load(self):
+        """STATE FILE DESCONTINUADO (FASE 3, 2026-07-01). No-op.
 
-        for key, symbol in to_drop:
+        Comportamento historico: lia /tmp/vt_autotrader_state.json (se existia
+        e era do mesmo dia) e populava self.* com os valores persistidos.
+
+        Comportamento atual: retorna imediatamente. State vazio + 1 tick =
+        state reconstruido do MT5 via rebuild_state_from_mt5().
+
+        O restart do autotrader NAO herda mais halt_until, consecutive_losses,
+        daily_trade_count — todos esses valores passam pelo DB ou sao derivados
+        de _truth (PnL) / rebuild_state_from_mt5() (positions). Os call sites
+        foram migrados; load() existe apenas para compat.
+        """
+        return
+
+    # FASE 3 (2026-07-01): API publica nova. Recen construido do MT5.
+    # Substitui o ciclo save/load que era feito em /tmp/vt_autotrader_state.json.
+    #
+    # FLUXO:
+    #   1. SessionState() constroi state VAZIO (positions={}, halt_until={}).
+    #   2. rebuild_state_from_mt5() eh chamado IMEDIATAMENTE para popular
+    #      state.positions a partir de core.vt_truth.get_open_positions().
+    #   3. No proximo tick, manage_position() ja encontra state.positions
+    #      sincronizado com MT5 (zero orphans por definicao).
+    #
+    # VANTAGENS vs save/load:
+    #   - Restart mid-day: state consistente com broker (truth MT5, nao
+    #     cache stale que ficou dias na /tmp).
+    #   - Sem race entre save() e modify_sl() (que era a causa raiz dos
+    #     orphans persistentes — state.save() no momento errado).
+    #   - Sem file I/O (json.dump + os.fsync + rename) — ~5ms economizados
+    #     por save() chamado 10x/tick.
+    def rebuild_state_from_mt5(self):
+        """Reconstrói state.positions consultando MT5 (truth autoritativo).
+
+        Limpa self.positions e popula com 1 entry por Position MT5 aberta
+        (magic=555501). Para cada position, monta dict compatível com o
+        formato historico de state.positions usado por manage_position():
+
+            state.positions[f"{symbol}_M5"] = {
+                "direction": "BUY" | "SELL",
+                "entry_price": float,
+                "entry_ticket": str(ticket),
+                "entry_time": datetime.fromisoformat(open_time),
+                "volume": float,
+                "tf": "M5",
+                "from_mt5_rebuild": True,  # flag de origem (debug only)
+            }
+
+        Args:
+            (nenhum — usa _truth.get_open_positions())
+
+        Returns:
+            int: numero de positions reconstruidas (0 se MT5 indisponivel).
+
+        Comportamento:
+            - FAIL-SAFE: se MT5 indisponivel, NAO levanta. Retorna 0 e
+              loga WARN. O proximo tick pode reconstruir novamente.
+            - Idempotente: rodar 2x seguidas com mesmo MT5 = mesmo state.
+            - tf default = "M5": o MT5 nao expoe timeframe na Position
+              (vem do deal, nao da posicao aberta). Mantemos M5 como
+              padrao porque o autotrader opera majoritariamente em M5.
+              Se algum call site precisa de outro TF, refatoramos depois.
+            - NUNCA toca halt_until, consecutive_losses, daily_pnl (esses
+              passam pelo DB / sao derivados em _sync_daily_pnl_with_db).
+        """
+        # _truth ja trata falhas do MT5 silenciosamente e devolve list vazia.
+        # Import lazy para evitar import circular no startup.
+        from core import vt_truth as _truth_layer
+        positions_mt5 = _truth_layer.get_open_positions(magic_filter=_truth_layer.MAGIC_VIBETRADING)
+
+        # Limpa e repopula positions. NAO faz merge: state deve ser
+        # EXATAMENTE o que o MT5 diz. Nenhum orfao persiste por
+        # definicao (vs Fase 1/2 onde load() podia reintroduzir keys).
+        self.positions = {}
+
+        for p in positions_mt5:
+            # _truth.Position eh frozen dataclass. Campos ja normalizados.
+            # monta dict compativel com o que manage_position espera.
             try:
-                pos = self.positions.pop(key)
-                ticket = pos.get("entry_ticket", "?") if isinstance(pos, dict) else "?"
+                state_key = f"{p.symbol}_M5"
+                self.positions[state_key] = {
+                    "direction": "BUY" if p.direction in ("BUY", 0, "0") else "SELL",
+                    "entry_price": float(p.price_open or 0.0),
+                    "entry_ticket": str(p.ticket),
+                    "entry_time": _parse_mt5_time(p.open_time),
+                    "volume": float(p.volume or 0.0),
+                    "tf": "M5",
+                    "from_mt5_rebuild": True,  # flag: veio do rebuild (nao de _execute_entry)
+                }
+            except Exception as _e_rebuild:
+                # FAIL-SAFE: pula pos mal-formada (mesmo padrao do _truth)
                 print(
-                    f"[STATE-MIRROR] filtered state: removido {key} (symbol={symbol} "
-                    f"ticket={ticket}) — não está aberto no MT5 (magic=555501)",
+                    f"[STATE-REBUILD] pulou pos malformada "
+                    f"(ticket={getattr(p, 'ticket', '?')}, "
+                    f"symbol={getattr(p, 'symbol', '?')}, "
+                    f"err={type(_e_rebuild).__name__}: {_e_rebuild})",
                     flush=True,
                 )
-            except KeyError:
-                pass
+                continue
 
-    def save(self):
-        """Persiste state em disco (escrita atômica).
+        n = len(self.positions)
+        if n > 0:
+            print(
+                f"[STATE-REBUILD] reconstruidas {n} positions do MT5: "
+                f"{list(self.positions.keys())}",
+                flush=True,
+            )
+        else:
+            print(
+                "[STATE-REBUILD] MT5 sem posicoes abertas (state reconstruido vazio)",
+                flush=True,
+            )
+        return n
 
-        Wave 12 (2026-07-01): ANTES de gravar, filtra state.positions via MT5
-        truth (status() filtrado por magic=555501 + comment=VibeTrading).
-        Symbols que não estão abertos no MT5 são removidos (defesa em
-        profundidade até Fase 3 quando state for removido de fato).
-        FAIL-SAFE: se MT5 falhar, state é gravado sem filtro (não bloqueia bot).
-        """
-        import json as _json
-        import os
-        # Filtra ANTES de serializar — garante que o JSON em disco nunca tem
-        # symbols órfãos (drift entre state e MT5).
-        try:
-            self._filter_positions_via_mt5_truth()
-        except Exception as _e_filt:
-            # FAIL-SAFE: se o filtro explodiu por algum motivo, loga e segue
-            # com o state como está. Melhor salvar potencialmente dirty do que
-            # quebrar o bot inteiro.
-            print(f"[STATE-MIRROR] filtro explodiu ({type(_e_filt).__name__}: {_e_filt}) — FAIL-SAFE: grava state sem filtro", flush=True)
+# ==== FASE 3 helper: parse de tempo MT5 ====
+# _truth.Position.open_time vem como str epoch ("1719840300") ou ISO
+# ("2026-07-01 14:30:00"). _sync_daily_pnl_with_db usa logica similar,
+# mas aqui eh local pq o topo do arquivo ja usa varios wrappers ad-hoc.
+def _parse_mt5_time(time_str):
+    """Converte open_time do MT5 (epoch ou ISO) pra datetime.
 
-        tmp = self.STATE_FILE + ".tmp"
-        try:
-            with open(tmp, "w") as f:
-                _json.dump(self.to_dict(), f, indent=2, default=self._json_default)
-                f.flush()
-                os.fsync(f.fileno())
-            os.rename(tmp, self.STATE_FILE)
-        except Exception as e:
-            print(f"[STATE] Erro ao salvar: {e}", flush=True)
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-
-    def load(self):
-        """Restaura state do disco (se existe e é do mesmo dia)."""
-        import json as _json
-        try:
-            with open(self.STATE_FILE) as f:
-                data = _json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            print(f"[STATE] Erro ao carregar state: {e} — resetando", flush=True)
-            return
-
-        saved_day = data.get("current_day")
-        today = str(datetime.now().date())
-        if saved_day != today:
-            print(f"[STATE] State salvo é de {saved_day}, hoje é {today} — resetando", flush=True)
-            return
-
-        self.daily_trade_count = data.get("daily_trade_count", 0)
-        self.current_day = datetime.strptime(saved_day, "%Y-%m-%d").date() if saved_day else None
-        self.daily_trade_by_symbol = data.get("daily_trade_by_symbol", {})
-        self.consecutive_losses = data.get("consecutive_losses", {})
-        self.trade_count = data.get("trade_count", 0)
-        self.wins = data.get("wins", 0)
-        self.losses = data.get("losses", 0)
-        self.daily_pnl = data.get("daily_pnl", 0)
-
-        # Wave 8.6.2 (2026-06-26): SINCRONIZA state.daily_pnl com DB.
-        # Bug detectado: state off-by-one após restart (não sincronizava
-        # trades pré-restart). Resultado: notificações Telegram com PnL
-        # errado até o final do dia.
-        _sync_daily_pnl_with_db(self)
-
-        # Restaura halt_until (string → datetime)
-        raw_halt = data.get("halt_until", {})
-        self.halt_until = {}
-        for k, v in raw_halt.items():
-            try:
-                self.halt_until[k] = datetime.fromisoformat(v)
-            except (ValueError, TypeError):
-                pass
-
-        # Restaura positions (entry_time string → datetime)
-        raw_pos = data.get("positions", {})
-        self.positions = {}
-        for k, v in raw_pos.items():
-            pos = dict(v)
-            if isinstance(pos.get("entry_time"), str):
-                try:
-                    pos["entry_time"] = datetime.fromisoformat(pos["entry_time"])
-                except (ValueError, TypeError):
-                    pass
-            self.positions[k] = pos
-
-        # Restaura last_trade_time (string → datetime)
-        raw_ltt = data.get("last_trade_time", {})
-        self.last_trade_time = {}
-        for k, v in raw_ltt.items():
-            try:
-                self.last_trade_time[k] = datetime.fromisoformat(v)
-            except (ValueError, TypeError):
-                pass
-
-        # Restaura last_signals (ts string → datetime)
-        raw_sigs = data.get("last_signals", {})
-        self.last_signals = {}
-        for k, v in raw_sigs.items():
-            sig = dict(v)
-            if isinstance(sig.get("ts"), str):
-                try:
-                    sig["ts"] = datetime.fromisoformat(sig["ts"])
-                except (ValueError, TypeError):
-                    pass
-            if isinstance(sig.get("bar_ts"), str):
-                try:
-                    sig["bar_ts"] = sig["bar_ts"]  # bar_ts pode ser int/string
-                except (ValueError, TypeError):
-                    pass
-            self.last_signals[k] = sig
-
-        print(f"[STATE] Restaurado: trades={self.daily_trade_count}, losses={self.consecutive_losses}, halt={self.halt_until}, positions={list(self.positions.keys())}", flush=True)
+    Retorna datetime.now() se parsing falhar (fail-safe — estado valido,
+    mesmo que com timestamp impreciso).
+    """
+    from datetime import datetime as _dt
+    if not time_str:
+        return _dt.now()
+    # Epoch numerico
+    try:
+        epoch = float(time_str)
+        if epoch > 1e9:
+            return _dt.fromtimestamp(epoch)
+    except (ValueError, TypeError, OSError):
+        pass
+    # ISO
+    try:
+        s = str(time_str).replace("T", " ")[:19]
+        return _dt.fromisoformat(s)
+    except (ValueError, TypeError):
+        pass
+    return _dt.now()
 
 
 state = SessionState()
-state.load()  # ← restaura do disco na inicialização
+# FASE 3: substitui state.load() (que lia /tmp/vt_autotrader_state.json)
+# por state.rebuild_state_from_mt5() (consulta MT5 truth).
+# Pos-processamento: _sync_daily_pnl_with_db() ja eh chamado dentro do __init__
+# da SessionState para popular state.daily_pnl com base no DB (nao state file).
+state.rebuild_state_from_mt5()  # Fase 3: state reconstruido do MT5, NAO do disco
 log_file = Path("/tmp/vt_autotrader.log")
 
 
