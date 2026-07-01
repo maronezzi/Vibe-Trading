@@ -6,30 +6,401 @@ Uso no autotrader:
     CONFIG = load_config()  # no início
     CONFIG = load_config()  # a cada ciclo (hot reload se mudou)
 
-Uso nos scripts de otimização:
+Uso nos scripts de otimização (CANÔNICO):
     from vt_config_loader import save_params, save_full_config
     save_params("wdo", params, updated_by="agi_17h")
     save_full_config(config, updated_by="optimizer")
+
+================================================================
+REGRA DE OURO (Bruno 2026-07-01):
+================================================================
+"a escrita do arquivo json, deve ser feita no AGI, autotrader e demais só devem ler"
+
+Apenas 3 categorias de módulos podem CHAMAR json.dump/_atomic_write/
+save_params/save_full_config:
+  1. core/vt_config_loader.py (API canônica: save_params, save_full_config)
+  2. optimization/agi_tuning_17h.py e filhos (AGI, autorização canônica)
+  3. scripts/ que rodem COM AUTOTRADER PAUSADO (nunca em paralelo)
+
+TODOS os outros módulos (autotrader, watchdog, copilot, etc.) só podem
+chamar load_config().
+
+Para enforcement mecânico, este módulo oferece:
+  - acquire_write_lock() / release_write_lock(): cria sidecar .lock
+  - is_authorized_writer(module_path): True se módulo está na whitelist
+  - save_params/save_full_config: auto-adquire lock e checa whitelist
+  - load_config: WARN se lock existir (lock stale = provável race)
+================================================================
 """
 
 import json
 import os
 import logging
+import time
 from pathlib import Path
 from datetime import datetime
 
 log = logging.getLogger("vt_config")
 
 CONFIG_PATH = Path(__file__).parent.parent / "vt_config.json"
+LOCK_PATH = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".lock")
+
+# Whitelist canônica de AUTORIZADOS a persistir config.
+# Regra Bruno 2026-07-01:
+#   - core/vt_config_loader.py: API canônica (esta mesma)
+#   - optimization/agi_tuning_17h.py + filhos: AGI (única autoridade canônica)
+#   - scripts/*: APENAS se rodarem com autotrader PAUSADO (responsabilidade
+#     do operador)
+# Qualquer outro módulo que escrever aqui vai cair em RuntimeError (ver
+# _assert_authorized_writer).
+ALLOWED_WRITERS = (
+    # este próprio módulo (loader) — entry point via save_params/save_full_config
+    "core/vt_config_loader.py",
+    # AGI canônico + filhos diretos
+    "optimization/agi_tuning_17h.py",
+    "optimization/agi_bayesian_optimizer.py",
+    "optimization/agi_evidence_validator.py",
+    "optimization/strategy_explorer.py",
+    "optimization/exhaustive_strategy_search.py",
+    # scripts de manutenção (devem rodar com autotrader PAUSADO)
+    "scripts/vt_meio_dia_tuning.py",
+    "scripts/migrate_today_trades_w13_2.py",
+    "scripts/preflight_dryrun.py",
+    "scripts/simulate_today_wave9.py",
+    "scripts/warmup_search.py",
+    "backtest/apply_optimization.py",
+    # monitoring/vt_pre_flight.py roda 8h55 ANTES do autotrader (pre-flight
+    # gate) — é seguro persistir resolved_symbols nessa janela.
+    "monitoring/vt_pre_flight.py",
+    # monitoring/vt_resolve_symbols.py: script CLI manual de sincronização
+    # de contratos. Requer autotrader PAUSADO para uso.
+    "monitoring/vt_resolve_symbols.py",
+)
 
 # Cache
 _config = None
 _mtime = 0
 
 
+# ============================================================
+# Lock API (failsafe contra escrita concorrente)
+# ============================================================
+#
+# Sidecar: vt_config.json.lock
+# Conteúdo (json):
+#     {
+#       "operator":  "<humano/agent name>",
+#       "reason":    "<motivo da escrita — save_full_config / save_params / etc.>",
+#       "started_at": "<ISO 8601 string>",
+#       "started_at_ts": <epoch seconds — usado pelo stale checker>,
+#       "pid":       <os.getpid()>
+#     }
+# Stale threshold: 300s (mais que isso = lock morto, novo acquire sobrescreve).
+#
+# Anti-race crítico (incidente 01/07/2026): 2x em poucas horas, autotrader
+# sobrescreveu vt_config.json (580→18 linhas, perdeu 49 chaves). Lock file
+# garante serialização: writers se protegem MUTUAMENTE contra reescritas
+# parciais concorrente.
+
+class ConfigLockError(RuntimeError):
+    """Levantada quando outro writer está vivo e bloqueando o arquivo."""
+
+
+# Stale threshold (segundos). Lock mais velho que isso é tratado como morto
+# e sobrescrito (forçar acquire = seguro).
+_STALE_LOCK_SECONDS = 300
+
+
+def _read_lock_meta() -> dict | None:
+    """Lê sidecar .lock. Retorna dict ou None se não existe / corrompido."""
+    if not LOCK_PATH.exists():
+        return None
+    try:
+        meta = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        return meta if isinstance(meta, dict) else None
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _lock_age_seconds(meta: dict) -> float:
+    """Idade do lock em segundos. Compat com campos velhos (`ts`) e novos (`started_at_ts`)."""
+    for key in ("started_at_ts", "ts", "started_at"):
+        v = meta.get(key)
+        if isinstance(v, (int, float)):
+            return time.time() - float(v)
+    return 0.0
+
+
+def _is_lock_process_alive(meta: dict) -> bool:
+    """True se PID do lock ainda existe no sistema (não é stale por pid-sumido)."""
+    pid = meta.get("pid")
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def is_write_locked() -> bool:
+    """True se existe lock de escrita ativo (vivo). NÃO verifica stale.
+
+    Um lock stale (>300s) é retornado como NÃO-locked pelo critério do
+    acquire_write_lock; aqui reportamos PRESENÇA do sidecar (compat com
+    chamadas que só querem saber se há .lock no disco). Use
+    assert_write_unlocked() / acquire_write_lock() para comportamento
+    fail-safe de produção.
+    """
+    return LOCK_PATH.exists()
+
+
+def assert_write_unlocked() -> None:
+    """Levanta RuntimeError se .lock existe E está vivo.
+
+    Use em callers externos que querem fazer pre-check (sem precisar do
+    retorno bool). Internamente save_full_config/save_params usam isto.
+    """
+    meta = _read_lock_meta()
+    if meta is None:
+        return
+    # Stale? → ignora
+    if _lock_age_seconds(meta) > _STALE_LOCK_SECONDS:
+        return
+    # Mesmo processo re-adquirindo? Permite (re-entrant é OK).
+    if meta.get("pid") == os.getpid():
+        return
+    # Outro processo vivo → bloqueia
+    if _is_lock_process_alive(meta):
+        raise RuntimeError(
+            f"Config locked by another writer "
+            f"(operator={meta.get('operator', '?')}, "
+            f"reason={meta.get('reason', '?')}, "
+            f"pid={meta.get('pid', '?')}, "
+            f"age={_lock_age_seconds(meta):.0f}s). "
+            f"Re-aborted write protected against race."
+        )
+
+
+def acquire_write_lock(operator: str, reason: str = "") -> bool:
+    """Tenta adquirir lock exclusivo de escrita do vt_config.json.
+
+    Comportamento (cirúrgico, anti-race 01/07/2026):
+      - Sem sidecar: cria {operator, reason, started_at, started_at_ts, pid},
+        retorna True.
+      - Sidecar existe, lock FRESCO (<300s) e PID diferente vivo:
+        NÃO sobrescreve, retorna False. (Protege contra race.)
+      - Sidecar existe, lock STALE (>300s) OU pid morto:
+        sobrescreve e retorna True.
+      - Mesmo PID já tem lock: re-adquire (overwrites, retorna True).
+
+    Args:
+        operator: nome lógico de quem está adquirindo (ex: 'agi_17h_llm',
+            'optimizer', 'pre_flight_resolve')
+        reason: descrição da escrita (ex: 'save_full_config',
+            'save_params:wdo', 'manual_resync'). Útil para diagnóstico.
+
+    Returns:
+        True se lock foi adquirido; False se outro writer vivo está ativo.
+    """
+    meta = _read_lock_meta()
+
+    if meta is not None and _lock_age_seconds(meta) <= _STALE_LOCK_SECONDS:
+        # Lock fresco — só sobrescreve se (a) mesmo PID (re-entrant) ou
+        # (b) PID do lock antigo já morreu (defesa em profundidade).
+        same_pid = meta.get("pid") == os.getpid()
+        pid_alive = _is_lock_process_alive(meta)
+        if not same_pid and pid_alive:
+            log.warning(
+                f"⚠️ acquire_write_lock: sidecar ativo de "
+                f"operator={meta.get('operator')} pid={meta.get('pid')} "
+                f"reason={meta.get('reason')} age={_lock_age_seconds(meta):.0f}s. "
+                f"Retornando False (não sobrescreve lock vivo)."
+            )
+            return False
+
+    # Adquire (cria ou sobrescreve stale / re-entrant / pid-morto)
+    now = time.time()
+    payload = {
+        "operator": operator,
+        "reason": reason or "",
+        "started_at": datetime.now().isoformat(),
+        "started_at_ts": now,
+        "pid": os.getpid(),
+        "config_path": str(CONFIG_PATH),
+    }
+    try:
+        LOCK_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return True
+    except OSError as e:
+        log.error(f"Falha ao criar sidecar lock: {e}")
+        return False
+
+
+def release_write_lock() -> None:
+    """Remove sidecar .lock (se existir). Idempotente.
+
+    Use sempre em try/finally após acquire_write_lock ter retornado True.
+    """
+    try:
+        LOCK_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log.warning(f"Falha ao remover sidecar lock: {e}")
+
+
+# ============================================================
+# Whitelist enforcement
+# ============================================================
+
+def is_authorized_writer(module_path: str) -> bool:
+    """True se module_path está na whitelist de writers autorizados."""
+    if not module_path:
+        return False
+    # Normaliza: path absoluto → relativo ao PROJECT_ROOT
+    try:
+        rel = str(Path(module_path).resolve().relative_to(Path(__file__).resolve().parent.parent))
+    except (ValueError, OSError):
+        rel = module_path
+    rel = rel.replace("\\", "/")
+    return any(rel == allowed or rel.endswith("/" + allowed) for allowed in ALLOWED_WRITERS)
+
+
+def _assert_authorized_writer():
+    """Inspeciona o call stack e verifica se o caller está na whitelist.
+
+    Levanta RuntimeError se não estiver — defesa em profundidade contra
+    refactors que reintroduzam writes não-autorizados.
+    """
+    import inspect
+
+    # Pega o frame do chamador (ignora este próprio _assert_authorized_writer
+    # E save_params/save_full_config — ambos no MESMO módulo).
+    this_module_file = __file__
+    try:
+        current = inspect.currentframe()
+        if current is None:
+            return
+        # Walk up the stack até achar um frame de módulo DIFERENTE do nosso
+        caller_frame = current.f_back
+        caller_module = None
+        while caller_frame is not None:
+            mod = inspect.getmodule(caller_frame)
+            if mod is not None:
+                mod_file = getattr(mod, "__file__", None)
+                if mod_file and not _same_module(mod_file, this_module_file):
+                    caller_module = mod
+                    break
+            caller_frame = caller_frame.f_back
+
+        if caller_module is None:
+            return  # todos os frames são do nosso módulo → trusted
+        caller_file = getattr(caller_module, "__file__", None)
+        if not caller_file:
+            return  # módulo sem __file__ (REPL/builtin) → não enforça
+        caller_path: str = caller_file
+    except Exception:
+        return  # falha em inspecionar → não bloqueia (fail-open conservador)
+
+    if not is_authorized_writer(caller_path):
+        raise RuntimeError(
+            f"🚨 WRITE NÃO AUTORIZADO em vt_config.json!\n"
+            f"   Módulo chamador: {caller_path}\n"
+            f"   Regra Bruno 2026-07-01: 'autotrader e demais só devem ler'.\n"
+            f"   Whitelist: core/vt_config_loader.py, optimization/agi_tuning_17h.py "
+            f"e filhos, scripts/ com autotrader PAUSADO.\n"
+            f"   Se você REALMENTE precisa escrever aqui, pause o autotrader "
+            f"OU adicione seu módulo em ALLOWED_WRITERS (vt_config_loader.py) "
+            f"COM AUTORIZAÇÃO EXPLÍCITA DO BRUNO."
+        )
+
+
+def _same_module(file_a: str, file_b: str) -> bool:
+    """True se dois paths apontam pro mesmo arquivo .py (normalizado)."""
+    try:
+        return os.path.samefile(file_a, file_b)
+    except (OSError, ValueError, AttributeError):
+        # Fallback: comparação de string normalizada
+        return os.path.normpath(os.path.abspath(file_a)) == os.path.normpath(os.path.abspath(file_b))
+
+
+# ============================================================
+# Read API
+# ============================================================
+
+# Sidecar de overrides aplicado pelo copilot (NÃO persistido em vt_config.json).
+# O autotrader lê este sidecar em runtime e mescla com o config oficial.
+# Bruno 2026-07-01: copilot não escreve no config (concorrente), apenas
+# deixa intenção aqui. Autotrader aplica em memória.
+COPILOT_OVERRIDE_PATH = Path("/tmp/vt_copilot_overrides.json")
+
+
+def load_copilot_overrides() -> dict | None:
+    """Lê sidecar /tmp/vt_copilot_overrides.json (intenções do copilot).
+
+    Returns:
+        dict com {disabled_symbols, disabled_timeframes, updated_at, updated_by}
+        OU None se sidecar não existe / está corrompido.
+
+    NÃO escreve em disco. Read-only.
+    """
+    if not COPILOT_OVERRIDE_PATH.exists():
+        return None
+    try:
+        data = json.loads(COPILOT_OVERRIDE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        return data
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def load_effective_config(force: bool = False) -> dict:
+    """Carrega config + aplica overrides do copilot (sidecar) em memória.
+
+    Use esta função em runtime (autotrader) ao invés de load_config() puro,
+    para que desativações do copilot tenham efeito imediato sem persistir
+    no vt_config.json.
+    """
+    cfg = load_config(force=force)
+    overrides = load_copilot_overrides()
+    if not overrides:
+        return cfg
+
+    # Merge: sidecar sobrescreve disabled_* (é o ponto inteiro do override)
+    if "disabled_symbols" in overrides:
+        cfg["disabled_symbols"] = list(overrides["disabled_symbols"])
+    if "disabled_timeframes" in overrides:
+        cfg["disabled_timeframes"] = list(overrides["disabled_timeframes"])
+
+    return cfg
+
+
 def load_config(force: bool = False) -> dict:
-    """Carrega config do JSON. Hot-reload se arquivo mudou (mtime)."""
+    """Carrega config do JSON. Hot-reload se arquivo mudou (mtime).
+
+    Se um .lock existir (de write concorrente), emite WARNING. Locks com
+    mais de 5min são considerados stale e ignorados.
+    """
     global _config, _mtime
+
+    # ── Check de lock (failsafe) ──
+    if LOCK_PATH.exists():
+        meta = _read_lock_meta()
+        if meta is not None:
+            age = _lock_age_seconds(meta)
+            if age < _STALE_LOCK_SECONDS:
+                log.warning(
+                    f"⚠️ vt_config.json tem .lock ativo: operator={meta.get('operator')} "
+                    f"pid={meta.get('pid')} reason={meta.get('reason')} age={age:.0f}s. "
+                    f"Provável escrita concorrente — verifique."
+                )
+            else:
+                log.warning(
+                    f"⚠️ vt_config.json tem .lock STALE (age={age:.0f}s > {_STALE_LOCK_SECONDS}s). "
+                    f"Operator: {meta.get('operator')} reason: {meta.get('reason')}."
+                )
 
     try:
         current_mtime = os.path.getmtime(CONFIG_PATH)
@@ -68,35 +439,88 @@ def load_config(force: bool = False) -> dict:
         return _config or {}
 
 
+# ============================================================
+# Write API (auto-enforces whitelist + lock)
+# ============================================================
+
 def save_params(symbol_root: str, params: dict, updated_by: str = "optimizer"):
-    """Salva parâmetros de um símbolo no JSON (usado por scripts de otimização)."""
-    cfg = load_config(force=True)
+    """Salva parâmetros de um símbolo no JSON (usado por scripts de otimização).
 
-    key = symbol_root.lower()
-    # Merge: mantém chaves existentes, atualiza as novas
-    if key in cfg:
-        cfg[key].update(params)
-    else:
-        cfg[key] = params
+    Args:
+        symbol_root: 'wdo', 'win', etc.
+        params: dict de parâmetros para merge
+        updated_by: nome do writer (vai para _updated_by no JSON)
 
-    cfg["_version"] = cfg.get("_version", 0) + 1
-    cfg["_updated_at"] = datetime.now().isoformat()
-    cfg["_updated_by"] = updated_by
+    Raises:
+        RuntimeError: se outro writer tem lock vivo (anti-race 01/07/2026)
+    """
+    _assert_authorized_writer()
+    if is_write_locked():
+        # Pre-check rápido — defesa em profundidade. O try/except+finally
+        # abaixo também protege, mas o check upfront dá erro mais óbvio.
+        assert_write_unlocked()
+    if not acquire_write_lock(updated_by, reason=f"save_params:{symbol_root.lower()}"):
+        raise RuntimeError(
+            f"Config locked by another writer — save_params({symbol_root}) "
+            f"abortou para proteger contra race."
+        )
+    try:
+        cfg = load_config(force=True)
 
-    return _atomic_write(cfg)
+        key = symbol_root.lower()
+        # Merge: mantém chaves existentes, atualiza as novas
+        if key in cfg:
+            cfg[key].update(params)
+        else:
+            cfg[key] = params
+
+        cfg["_version"] = cfg.get("_version", 0) + 1
+        cfg["_updated_at"] = datetime.now().isoformat()
+        cfg["_updated_by"] = updated_by
+
+        return _atomic_write(cfg)
+    finally:
+        release_write_lock()
 
 
 def save_full_config(cfg: dict, updated_by: str = "optimizer"):
-    """Salva config completa no JSON (usado pelo AGI)."""
-    cfg["_version"] = cfg.get("_version", 0) + 1
-    cfg["_updated_at"] = datetime.now().isoformat()
-    cfg["_updated_by"] = updated_by
+    """Salva config completa no JSON (usado pelo AGI).
 
-    return _atomic_write(cfg)
+    Args:
+        cfg: dict COMPLETO (todas as 49+ chaves) — NÃO subset.
+        updated_by: nome do writer (canonical: 'agi_17h_llm', 'optimizer',
+            'pre_flight_resolve', etc.)
+
+    Raises:
+        RuntimeError: se outro writer tem lock vivo (anti-race 01/07/2026)
+
+    Incidente 01/07/2026: 2x em poucas horas, vt_config.json foi reescrito
+    com subset parcial (580→18 linhas, perdeu 49 chaves). Lock file com
+    try/finally aqui é a defesa canônica.
+    """
+    _assert_authorized_writer()
+    if is_write_locked():
+        assert_write_unlocked()
+    if not acquire_write_lock(updated_by, reason="save_full_config"):
+        raise RuntimeError(
+            f"Config locked by another writer — save_full_config abortou "
+            f"para proteger contra race."
+        )
+    try:
+        cfg["_version"] = cfg.get("_version", 0) + 1
+        cfg["_updated_at"] = datetime.now().isoformat()
+        cfg["_updated_by"] = updated_by
+
+        return _atomic_write(cfg)
+    finally:
+        release_write_lock()
 
 
 def _atomic_write(cfg: dict) -> bool:
-    """Escrita atômica: tmp + rename (evita corrupção)."""
+    """Escrita atômica: tmp + rename (evita corrupção).
+
+    Função interna: assume lock já adquirido por save_params/save_full_config.
+    """
     tmp_path = CONFIG_PATH.with_suffix(".tmp")
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
