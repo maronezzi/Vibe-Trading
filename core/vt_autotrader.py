@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "mt5"))  # para imports 'from mt5_orchestrator' em mt5_error_recovery
 
 from core.vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary, sync_fees_from_mt5
-from mt5.mt5_orchestrator import status, tick, _run_wine, EXECUTOR_WIN
+from mt5.mt5_orchestrator import status, tick, history, _run_wine, EXECUTOR_WIN
 from mt5.mt5_error_recovery import safe_buy, safe_sell, safe_close
 from core.vt_emergency import safe_modify_sl_with_emergency_close
 from core.vt_config_loader import load_config, load_effective_config
@@ -2297,6 +2297,334 @@ def recover_open_positions():
         )
 
 
+def _resolve_orphan_closes():
+    """
+    Bruno 2026-07-01 — Terceira defesa da trindade anti-orphan.
+
+    PROBLEMA REAL (trades #2069 #2073 #2074 #2075 — 01/07/2026):
+        O autotrader abriu 4-5 trades que viraram GHOST no DB com PnL=0.
+        O bot fechou essas posições via SL_SERVIDOR (MT5 fechou sozinho)
+        mas o PnL nunca chegou no DB porque:
+          (a) reconcile_positions_with_mt5 (commit ce026460) detectou drift
+              ANTES de close()/_persist_close_to_db rodar → marcou GHOST
+              com PnL=0.
+          (b) O bot nunca chamou close() para esses tickets (MT5 fechou
+              sozinho via server-side SL), então _persist_close_to_db
+              (commit dc447fd6) nunca rodou.
+        Resultado: trades com PnL grande ficaram de FORA do intraday report
+        (que exclui GHOST).
+
+    SOLUÇÃO — close resolution pass a cada tick:
+        1. Lista trades no DB com exit_time IS NULL AND entry_ticket NOT NULL.
+        2. Verifica tickets abertos no MT5 (via status()).
+        3. Para cada ticket NÃO em MT5 (servidor fechou sozinho):
+           a) Pega deal mais recente desse position_id via history().
+           b) Se exit_time IS NULL → UPDATE completo com PnL REAL do broker:
+              exit_time=now, exit_price=deal.price, gross_pnl=deal.profit,
+              net_pnl=broker_net (profit+commission+swap), close_reason=
+              'SERVER_CLOSE_RESOLVED'.
+           c) Se exit_time IS NOT NULL (já reconciliado por reconcile_positions_
+              with_mt5 ou vt_history_reconcile): só atualiza PnL SE o novo
+              valor for diferente (re-reconcile preserva exit_reason original).
+
+    IDEMPOTÊNCIA:
+        - close_source LIKE 'ORPHAN_CLOSE_RESOLVED_%' (já foi resolvido
+          por esta função) → skip.
+        - strategy LIKE '%[HISTORY_RECONCILE_%' já tratado por vt_history_
+          reconcile; esta função PRESERVA exit_reason/exit_time do reconcile.
+        - exit_time IS NULL garante UPDATE completo, exit_time IS NOT NULL
+          garante UPDATE cirúrgico (só PnL).
+
+    SEGURANÇA:
+        - Failure-safe: try/except em todas as chamadas externas
+          (status/history/DB). NUNCA crasha o bot.
+        - Custo: 1 status() + N history() por tick (~30s). Aceitável.
+        - Não conflita com _persist_close_to_db de close() manual: aquele
+          sempre vê exit_time IS NULL quando bot chamou close() por último
+          e preenche corretamente. Esta função cobre o caso onde bot NÃO
+          chamou close() (SL_SERVIDOR).
+
+    NÃO FAZ:
+        - NÃO sobrescreve exit_reason se já estiver setado (preserva
+          GHOST/SL_SERVIDOR/TP_SERVIDOR/HISTORY_RECONCILE* já gravados).
+        - NÃO toca trades com entry_ticket IS NULL (orfaos sem ticket).
+        - NÃO insere novos trades — só atualiza existentes.
+    """
+    stats = {"checked": 0, "resolved": 0, "skipped_legit": 0,
+             "skipped_no_history": 0, "errors": 0, "updated_pnl": 0}
+    conn = None
+
+    try:
+        # ─── 1. Ler DB: trades abertos com ticket ───
+        try:
+            conn = sqlite3.connect("vt_trades.db", timeout=30.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.row_factory = sqlite3.Row
+        except Exception as _e_db:
+            log(f"[ORPHAN-RESOLVE] DB connect falhou (skip): {_e_db}")
+            return stats
+
+        try:
+            open_trades = conn.execute("""
+                SELECT id, entry_ticket, symbol, direction, entry_price,
+                       entry_time, volume, multiplier, strategy, exit_time,
+                       close_source, gross_pnl, net_pnl
+                FROM trades
+                WHERE (
+                    -- Caminho A: exit_time IS NULL (posição fantasma,
+                    -- MT5 fechou sozinho e nunca chamou close())
+                    (exit_time IS NULL
+                     AND entry_ticket IS NOT NULL
+                     AND entry_ticket != '')
+                    OR
+                    -- Caminho B: já fechado por reconcile_positions_with_mt5
+                    -- (GHOST/RECONCILE) mas PnL pode ter ficado zerado.
+                    -- Re-reconcile: pega PnL real do broker-truth sem
+                    -- sobrescrever exit_time/exit_reason.
+                    (exit_time IS NOT NULL
+                     AND close_source = 'RECONCILE'
+                     AND (close_source IS NULL
+                          OR close_source NOT LIKE 'ORPHAN_CLOSE_RESOLVED_%'))
+                )
+                ORDER BY id
+            """).fetchall()
+        except Exception as _e_q:
+            log(f"[ORPHAN-RESOLVE] DB select falhou: {_e_q}")
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return stats
+
+        if not open_trades:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return stats
+
+        stats["checked"] = len(open_trades)
+
+        # ─── 2. Ler MT5: quais tickets estão abertos AGORA? ───
+        try:
+            mt5_status = status()
+        except Exception as _e_st:
+            log(f"[ORPHAN-RESOLVE] status() falhou (skip tick): {_e_st}")
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return stats
+
+        if not isinstance(mt5_status, dict):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return stats
+
+        mt5_tickets = set()
+        for p in (mt5_status.get("positions") or []):
+            if isinstance(p, dict) and p.get("ticket"):
+                mt5_tickets.add(str(p.get("ticket")))
+
+        # ─── 3. Iterar trades abertos no DB ───
+        # Agrupa símbolos para reduzir chamadas history() (1 por símbolo,
+        # não 1 por trade)
+        tickets_to_resolve = []  # [(row, ticket_str), ...]
+        for row in open_trades:
+            ticket_str = str(row["entry_ticket"] or "").strip()
+            if not ticket_str:
+                continue
+            if ticket_str in mt5_tickets:
+                # Ticket ainda ABERTO no MT5 → posição legítima, não é ghost
+                stats["skipped_legit"] += 1
+                continue
+            # Idempotência: já resolvido por esta função antes?
+            cs = row["close_source"] or ""
+            if cs.startswith("ORPHAN_CLOSE_RESOLVED"):
+                stats["skipped_legit"] += 1
+                continue
+            tickets_to_resolve.append((row, ticket_str))
+
+        if not tickets_to_resolve:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return stats
+
+        # Agrupa tickets por símbolo para fazer 1 history() por símbolo
+        symbols_needed = sorted({r["symbol"] for r, _ in tickets_to_resolve
+                                 if r["symbol"]})
+        # MT5 history por símbolo (cache local)
+        deals_by_position = {}  # {position_id_str: deal}
+        for sym in symbols_needed:
+            try:
+                hist = history(symbol=sym, days=2)
+                if not isinstance(hist, dict):
+                    continue
+                deals = hist.get("history") or hist.get("deals") or []
+                for d in deals:
+                    if not isinstance(d, dict):
+                        continue
+                    pos_id = str(d.get("position_id") or d.get("entry_id") or "")
+                    if not pos_id:
+                        continue
+                    # Só deals "out" (SELL fechar BUY, ou BUY fechar SELL)
+                    d_type = d.get("type")
+                    if d_type in (1, "SELL", "SELL_OUT"):
+                        deals_by_position[pos_id] = d
+                    elif pos_id not in deals_by_position:
+                        deals_by_position[pos_id] = d
+            except Exception as _e_h:
+                log(f"[ORPHAN-RESOLVE] history({sym}) falhou: {_e_h} — tickets deste symbol skip")
+                continue
+
+        # ─── 4. Para cada ticket fora do MT5, preencher no DB ───
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        resolve_tag = f"ORPHAN_CLOSE_RESOLVED_{datetime.now().strftime('%H%M%S')}"
+
+        for row, ticket_str in tickets_to_resolve:
+            deal = deals_by_position.get(ticket_str)
+            if deal is None:
+                # Não tem deal no MT5 history → ou posição ainda aberta no
+                # MT5 (legítimo) ou history() falhou. Não toca.
+                stats["skipped_no_history"] += 1
+                continue
+
+            try:
+                broker_profit = float(deal.get("profit") or 0)
+                broker_commission = float(deal.get("commission") or 0)
+                broker_swap = float(deal.get("swap") or 0)
+                broker_net = broker_profit + broker_commission + broker_swap
+                exit_price = float(deal.get("price") or 0)
+                # exit_reason: respeitar o que veio do MT5 se for SL/TP
+                mt5_reason = str(
+                    deal.get("deal_type") or deal.get("reason") or ""
+                ).upper()
+                if "SL" in mt5_reason or "STOP" in mt5_reason:
+                    new_reason = "SL_SERVIDOR"
+                elif "TP" in mt5_reason or "TAKE" in mt5_reason:
+                    new_reason = "TP_SERVIDOR"
+                else:
+                    new_reason = "SERVER_CLOSE_RESOLVED"
+
+                was_open = (row["exit_time"] is None)
+
+                if was_open:
+                    # ─── Caminho A: exit_time IS NULL — UPDATE completo ───
+                    conn.execute(
+                        """
+                        UPDATE trades SET
+                            exit_time = ?,
+                            exit_price = COALESCE(NULLIF(?, 0), entry_price),
+                            exit_reason = ?,
+                            swap = ?,
+                            gross_pnl = ?,
+                            net_pnl = ?,
+                            notes = COALESCE(notes, '') || ?,
+                            close_source = ?,
+                            updated_at = datetime('now', 'localtime')
+                        WHERE id = ? AND exit_time IS NULL
+                        """,
+                        (
+                            now_str,
+                            exit_price,
+                            new_reason,
+                            broker_swap,
+                            broker_profit,
+                            broker_net,
+                            f"\n[{resolve_tag}] ticket={ticket_str} "
+                            f"deal.profit=R${broker_profit:+.2f} "
+                            f"broker_net=R${broker_net:+.2f}",
+                            resolve_tag,
+                            row["id"],
+                        ),
+                    )
+                    if conn.total_changes > 0:
+                        stats["resolved"] += 1
+                        log(
+                            f"[ORPHAN-RESOLVE] ✅ #{row['id']} {row['symbol']} "
+                            f"{row['direction']} ticket={ticket_str} → "
+                            f"closed @ {exit_price:.2f} "
+                            f"PnL=R${broker_net:+.2f} ({new_reason})"
+                        )
+                else:
+                    # ─── Caminho B: exit_time IS NOT NULL — UPDATE cirúrgico ───
+                    # Já tinha exit_time (reconcile_positions_with_mt5 marcou
+                    # GHOST, ou vt_history_reconcile preencheu). Apenas
+                    # atualiza PnL se for diferente do que está no DB —
+                    # preserva exit_reason/exit_time/close_source originais.
+                    current_gross = float(row["gross_pnl"] or 0)
+                    current_net = float(row["net_pnl"] or 0)
+                    if abs(current_gross - broker_profit) < 0.005 and \
+                       abs(current_net - broker_net) < 0.005:
+                        # PnL já bate — nada a fazer (idempotente)
+                        stats["skipped_legit"] += 1
+                        continue
+                    conn.execute(
+                        """
+                        UPDATE trades SET
+                            exit_price = COALESCE(NULLIF(?, 0), exit_price),
+                            swap = ?,
+                            gross_pnl = ?,
+                            net_pnl = ?,
+                            notes = COALESCE(notes, '') || ?,
+                            close_source = ?,
+                            updated_at = datetime('now', 'localtime')
+                        WHERE id = ?
+                        """,
+                        (
+                            exit_price,
+                            broker_swap,
+                            broker_profit,
+                            broker_net,
+                            f"\n[{resolve_tag}] PnL re-reconciled "
+                            f"(was R${current_net:+.2f} → R${broker_net:+.2f}) "
+                            f"ticket={ticket_str}",
+                            resolve_tag,
+                            row["id"],
+                        ),
+                    )
+                    if conn.total_changes > 0:
+                        stats["updated_pnl"] += 1
+                        log(
+                            f"[ORPHAN-RESOLVE] 🔧 #{row['id']} {row['symbol']} "
+                            f"ticket={ticket_str} PnL re-reconciled "
+                            f"R${current_net:+.2f} → R${broker_net:+.2f}"
+                        )
+            except sqlite3.OperationalError as _e_locked:
+                stats["errors"] += 1
+                log(f"[ORPHAN-RESOLVE] #{row['id']} DB locked, next tick will retry")
+                continue
+            except Exception as _e_one:
+                stats["errors"] += 1
+                log(f"[ORPHAN-RESOLVE] #{row['id']} ticket={ticket_str} falhou: {_e_one}")
+                continue
+
+        conn.commit()
+    except Exception as _e_outer:
+        log(f"[ORPHAN-RESOLVE] erro não-tratado (bot continua): {_e_outer}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    if stats["resolved"] or stats["updated_pnl"] or stats["errors"]:
+        log(
+            f"[ORPHAN-RESOLVE] done: checked={stats['checked']} "
+            f"resolved={stats['resolved']} pnl_updated={stats['updated_pnl']} "
+            f"skipped_legit={stats['skipped_legit']} "
+            f"skipped_no_history={stats['skipped_no_history']} "
+            f"errors={stats['errors']}"
+        )
+    return stats
+
+
 def reconcile_positions_with_mt5():
     """Reconcilia state.positions e DB com posições REAIS no MT5.
 
@@ -2815,6 +3143,21 @@ def run_daemon():
             # MT5 é fonte absoluta. state e DB devem refletir MT5.
             # Idempotente: rodar N vezes = rodar 1 vez.
             # Failure-safe: nunca crasha o bot.
+            #
+            # ORDEM IMPORTANTE (trindade anti-orphan):
+            #   1) _resolve_orphan_closes() — preenche trades cujo MT5 fechou
+            #      sozinho (SL_SERVIDOR / server-side close). Sincroniza
+            #      exit_time/exit_price/PnL via MT5 history. ANTES do
+            #      reconcile para evitar marcação de GHOST com PnL=0.
+            #   2) reconcile_positions_with_mt5() — anti-orphan state e DB
+            #      (commit ce026460). Detecta drift DB↔MT5↔state.
+            #   3) _persist_close_to_db() em close() manual (commit dc447fd6)
+            #      já é coberto pelos call sites de close/close_all.
+            try:
+                _resolve_orphan_closes()
+            except Exception as _e_orphan:
+                log(f"[ORPHAN-RESOLVE] tick falhou (não-crash): {_e_orphan}")
+
             try:
                 reconcile_positions_with_mt5()
             except Exception as _e_recon_tick:
