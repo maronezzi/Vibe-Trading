@@ -31,6 +31,7 @@ import signal
 import sqlite3
 from datetime import datetime, date, timedelta
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "mt5"))  # para imports 'from mt5_orchestrator' em mt5_error_recovery
@@ -209,10 +210,121 @@ class SessionState:
                            for k, v in self.halt_until.items()},
         }
 
+    # Wave 12 — Fase 2 (2026-07-01, Bruno): state espelha MT5 (truth layer).
+    #
+    # Contrato do MT5 truth filter (defesa em profundidade até Fase 3):
+    #   - Posição "nossa" = magic == 555501 AND comment == "VibeTrading".
+    #   - state.positions só pode ter keys cujo symbol está aberto no MT5.
+    #   - Se state tem key que MT5 NÃO tem → remove antes de gravar.
+    #   - Falha de leitura MT5 (status() exception / malformed) → FAIL-SAFE:
+    #     NÃO filtra. Preserva state. Bloquear save por causa de MT5 down
+    #     seria pior que o orphan que estamos defendendo.
+    #
+    # Throttle: cacheia o set de symbols abertos por 5s. save() é chamado
+    # em vários call sites por tick (entry/exit/daily_reset); sem cache
+    # seriam múltiplas chamadas Wine/segundo.
+    _mt5_truth_symbols_cache = None
+    _mt5_truth_symbols_ts = 0.0
+    _MT5_TRUTH_TTL_SEC = 5.0
+
+    @classmethod
+    def _fetch_mt5_truth_symbols(cls) -> Optional[set]:
+        """Consulta MT5 status() e retorna set de symbols abertos (magic 555501).
+
+        Retorna None se MT5 falhou (caller deve FAIL-SAFE e não filtrar).
+        Cache TTL = _MT5_TRUTH_TTL_SEC para evitar spam Wine.
+        """
+        now = time.time()
+        if cls._mt5_truth_symbols_cache is not None and (now - cls._mt5_truth_symbols_ts) < cls._MT5_TRUTH_TTL_SEC:
+            return cls._mt5_truth_symbols_cache
+
+        try:
+            s = status()
+        except Exception as e:
+            # FAIL-SAFE: log + retorna None (caller não filtra)
+            print(f"[STATE-MIRROR] status() falhou ({type(e).__name__}: {e}) — FAIL-SAFE: não filtra state", flush=True)
+            cls._mt5_truth_symbols_cache = None
+            cls._mt5_truth_symbols_ts = now
+            return None
+
+        if not isinstance(s, dict):
+            print(f"[STATE-MIRROR] status() retornou tipo inválido ({type(s).__name__}) — FAIL-SAFE: não filtra state", flush=True)
+            cls._mt5_truth_symbols_cache = None
+            cls._mt5_truth_symbols_ts = now
+            return None
+
+        truth_symbols = set()
+        for p in s.get("positions") or []:
+            if not isinstance(p, dict):
+                continue
+            try:
+                magic_int = int(p.get("magic", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            comment = (p.get("comment") or "").strip()
+            symbol = (p.get("symbol") or "").strip()
+            if magic_int == 555501 and comment == "VibeTrading" and symbol:
+                truth_symbols.add(symbol)
+
+        cls._mt5_truth_symbols_cache = truth_symbols
+        cls._mt5_truth_symbols_ts = now
+        return truth_symbols
+
+    def _filter_positions_via_mt5_truth(self) -> None:
+        """Remove de self.positions as keys cujo symbol NÃO está aberto no MT5.
+
+        FAIL-SAFE: se truth for None (MT5 falhou), não faz nada — preserva state.
+        Loga [STATE-MIRROR] para cada filtragem (audit trail).
+        """
+        truth_symbols = self._fetch_mt5_truth_symbols()
+        if truth_symbols is None:
+            return  # FAIL-SAFE: não filtra quando MT5 down
+
+        if not self.positions:
+            return  # nada pra filtrar
+
+        to_drop = []
+        for key in list(self.positions.keys()):
+            # state keys = f"{symbol}_{tf}" (ex.: "WINM26_M5", "WDOQ26_M5")
+            # symbol nunca tem underscore nos contratos B3 (WIN/WDO/BIT/WSP).
+            parts = key.rsplit("_", 1)
+            symbol = parts[0] if len(parts) >= 2 else key
+            if symbol not in truth_symbols:
+                to_drop.append((key, symbol))
+
+        for key, symbol in to_drop:
+            try:
+                pos = self.positions.pop(key)
+                ticket = pos.get("entry_ticket", "?") if isinstance(pos, dict) else "?"
+                print(
+                    f"[STATE-MIRROR] filtered state: removido {key} (symbol={symbol} "
+                    f"ticket={ticket}) — não está aberto no MT5 (magic=555501)",
+                    flush=True,
+                )
+            except KeyError:
+                pass
+
     def save(self):
-        """Persiste state em disco (escrita atômica)."""
+        """Persiste state em disco (escrita atômica).
+
+        Wave 12 (2026-07-01): ANTES de gravar, filtra state.positions via MT5
+        truth (status() filtrado por magic=555501 + comment=VibeTrading).
+        Symbols que não estão abertos no MT5 são removidos (defesa em
+        profundidade até Fase 3 quando state for removido de fato).
+        FAIL-SAFE: se MT5 falhar, state é gravado sem filtro (não bloqueia bot).
+        """
         import json as _json
         import os
+        # Filtra ANTES de serializar — garante que o JSON em disco nunca tem
+        # symbols órfãos (drift entre state e MT5).
+        try:
+            self._filter_positions_via_mt5_truth()
+        except Exception as _e_filt:
+            # FAIL-SAFE: se o filtro explodiu por algum motivo, loga e segue
+            # com o state como está. Melhor salvar potencialmente dirty do que
+            # quebrar o bot inteiro.
+            print(f"[STATE-MIRROR] filtro explodiu ({type(_e_filt).__name__}: {_e_filt}) — FAIL-SAFE: grava state sem filtro", flush=True)
+
         tmp = self.STATE_FILE + ".tmp"
         try:
             with open(tmp, "w") as f:
@@ -2027,6 +2139,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             exit_sl_price=exit_sl_price,
             swap=0,
             notes=f"FECHADO PELO SERVIDOR | PnL real: R${profit:.2f} (broker-truth via MT5 history)",
+            close_source="MT5_SERVER_SL",
         )
         pnl = 0  # default para quando exit_result falha
         if exit_result:
@@ -2102,6 +2215,7 @@ def close_all_and_report():
             exit_reason="EOD_16:45",
             exit_ticket="eod",
             notes="Fechamento obrigatório de intraday",
+            close_source="EOD_CLOSE",
         )
         if exit_result:
             pnl = exit_result.get("net_pnl", 0)
@@ -3048,6 +3162,17 @@ def reconcile_positions_with_mt5():
             log(f"[RECONCILE] erro na seção ghost: {_e}")
 
         # ── 4. Persistir state (best-effort) ──
+        # Wave 12 (2026-07-01): sincroniza o cache de truth do SessionState
+        # com o mt5_by_ticket que acabamos de computar. Garante que o filtro
+        # dentro de state.save() use o MESMO truth (sem chamada Wine adicional
+        # e sem race contra mudancas externas no estado do cache).
+        try:
+            SessionState._mt5_truth_symbols_cache = {p.get("symbol", "").strip()
+                                                    for p in mt5_by_ticket.values()
+                                                    if p.get("symbol")}
+            SessionState._mt5_truth_symbols_ts = time.time()
+        except Exception:
+            pass
         if ingested > 0 or ghosts > 0:
             try:
                 state.save()
