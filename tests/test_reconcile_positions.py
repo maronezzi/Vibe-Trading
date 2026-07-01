@@ -186,6 +186,12 @@ class TestReconcileIngestsOrphan(unittest.TestCase):
     def setUp(self):
         from core import vt_autotrader
         vt_autotrader.state.positions.clear()
+        # FIX 2026-07-01: reset do cache TTL do state-mirror (Wave 12) que
+        # persiste entre testes e fazia testes anteriores poluírem o filtro
+        # do próximo. Sem isso, test_other_magic_not_ingested via cache stale
+        # do test_orphan_inserted_into_db e filtrava WDOQ26 de fora.
+        vt_autotrader.state._mt5_truth_symbols_cache = None
+        vt_autotrader.state._mt5_truth_symbols_ts = 0.0
         # DB temporário isolado do de produção
         import tempfile
         self._tmpdir = tempfile.TemporaryDirectory()
