@@ -352,8 +352,16 @@ def simulate_forward(
         empty["decision"] = "strategy_load_failed"
         return empty
 
-    # Resolve contract spec by symbol+'$'
-    spec = _CONTRACT_SPECS.get(symbol + "$", _CONTRACT_SPECS["WIN$"])
+    # Wave 1B.2 FIX (2026-07-02): BUG B1 — antes usava
+    #   spec = _CONTRACT_SPECS.get(symbol + "$", _CONTRACT_SPECS["WIN$"])
+    # o que SEMPRE caía no fallback WIN$ sintético (mult=0.2 slip=1.0)
+    # independente do symbol passado. Para BITM26 (mult=0.01 slip=50.0)
+    # aplicava 0.2×1.0 → PnL inflado em 5-100×.
+    # Fix: usar _get_spec_by_symbol() que faz match hierárquico:
+    #   1. match exato (WINQ26 → WINQ26)
+    #   2. match por root (BITM26 → primeira chave BIT, retorna BITM26 spec)
+    #   3. default conservador
+    spec = _get_spec_by_symbol(symbol)
     mult = spec["mult"]
     slip = spec["slip"]
     commission = SIM_COMMISSION
@@ -484,7 +492,10 @@ def simulate_forward(
         else:
             # Check exit: SL hit intra-bar
             if pos == 1 and low <= sl_price:
-                pnl = (sl_price - ep) * mult - slip - commission
+                # Wave 1B.2 FIX (BUG B2): slip estava em ticks mas era subtraído como R$.
+                # Para WIN slip=5 deveria custar R$1.00 (5×0.20), não R$5.
+                # Para BIT slip=50 deveria custar R$0.50 (50×0.01), não R$50.
+                pnl = (sl_price - ep) * mult - (slip * mult) - commission
                 trades.append(pnl)
                 pos = 0
                 cooldown_until = i + cooldown_bars
@@ -496,7 +507,8 @@ def simulate_forward(
                 daily_counts[day_str] = daily_counts.get(day_str, 0) + 1
                 continue
             if pos == -1 and high >= sl_price:
-                pnl = (ep - sl_price) * mult - slip - commission
+                # Wave 1B.2 FIX (BUG B2): converter slip ticks → R$
+                pnl = (ep - sl_price) * mult - (slip * mult) - commission
                 trades.append(pnl)
                 pos = 0
                 cooldown_until = i + cooldown_bars
@@ -525,7 +537,8 @@ def simulate_forward(
                 hours=SIM_BRT_OFFSET_HOURS
             )
             if t.hour > SIM_EOD_HOUR or (t.hour == SIM_EOD_HOUR and t.minute >= SIM_EOD_MINUTE):
-                pnl = ((price - ep) if pos == 1 else (ep - price)) * mult - slip - commission
+                # Wave 1B.2 FIX (BUG B2): converter slip ticks → R$
+                pnl = ((price - ep) if pos == 1 else (ep - price)) * mult - (slip * mult) - commission
                 trades.append(pnl)
                 pos = 0
                 cooldown_until = i + cooldown_bars
