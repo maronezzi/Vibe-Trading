@@ -581,3 +581,42 @@ def validate_order_pre_send(
             )
             return False
     return True
+
+
+# =============================================================================
+# Fase 3 — Helper de cálculo de SL (Lei 3: SL obrigatório)
+# =============================================================================
+def compute_sl_atr(atr: float, sl_atr_mult: float, min_sl: float = 1.0) -> float:
+    """Calcula SL baseado em ATR. Garante SL >= min_sl (Lei 3).
+
+    Helper GENÉRICO: atr * sl_atr_mult, com floor em `min_sl`.
+
+    Quando usar este vs `_calc_sl` do autotrader?
+    ---------------------------------------------
+    - `compute_sl_atr` (este): genérico, sem specs por símbolo. Útil para
+      validações, testes, e callers que só precisam garantir que SL > 0.
+    - `_calc_sl` (`core/vt_autotrader.py:1533`): canônico para o path de ordens
+      AO VIVO. Tem specs por símbolo (min_native/max_native/point_mult para
+      WIN/WDO/BIT/WSP/IND/DOL) e arredondamento. O autotrader JÁ o usa.
+
+    Lei 3 (Segurança de Execução): toda ordem DEVE ter SL > 0. Este helper
+    garante o floor; `_calc_sl` garante os limites por símbolo. Ambos defendem
+    a Lei 3 — quem chama buy()/sell() deve passar sl > 0.
+
+    Args:
+        atr: ATR do ativo (em pontos nativos do preço).
+        sl_atr_mult: multiplicador (típico 1.0-2.5, de params_by_tf).
+        min_sl: floor mínimo (default 1.0; nunca 0 — Lei 3).
+
+    Returns:
+        sl >= min_sl (sempre positivo).
+    """
+    if atr is None or atr <= 0:
+        sl = float(min_sl)
+    else:
+        mult = sl_atr_mult if (sl_atr_mult and sl_atr_mult > 0) else 1.5
+        sl = atr * mult
+        if sl < min_sl:
+            _log(f"[SL] compute_sl_atr: {sl:.4f} < {min_sl} (min), usando {min_sl}")
+            sl = float(min_sl)
+    return max(sl, float(min_sl))

@@ -206,6 +206,133 @@ def _check_mt5_reachable() -> Optional[HealthIssue]:
     return None
 
 
+# ── Fase 3.2 — Health checks MT5 específicos (4 novos) ─────────────────────
+# O check #2 (mt5_reachable) já cobre "ping". Estes 4 aprofundam:
+#   #2a margin livre baixa, #2b tick freshness, #2c symbol map, #2d trade_allowed
+# Todos read-only e conservadores: só ALERTAM (nunca desabilitam símbolo — Lei 2).
+# Reaproveitam o status() já chamado quando possível via _mt5_status_cached().
+
+# Thresholds MT5 (Lei 1: infra, override-able via kwargs em testes)
+MT5_MARGIN_FLOOR_PCT = 30.0       # free_margin/equity < 30% → alerta
+MT5_TICK_STALE_MINUTES = 5        # tick sem update > 5min → alerta
+
+
+def _mt5_status_safe() -> Optional[dict]:
+    """Chama mt5 status() com timeout curto. None se indisponível."""
+    try:
+        from mt5.mt5_orchestrator import status as mt5_status
+        data = mt5_status()
+        if isinstance(data, dict) and data.get("error_code") != "NO_ACCOUNT":
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _check_mt5_margin() -> Optional[HealthIssue]:
+    """Check #2a: margem livre > 30% do equity (proteção contra margin call)."""
+    data = _mt5_status_safe()
+    if not data:
+        return None  # já coberto pelo _check_mt5_reachable
+    acct = data.get("account") or {}
+    equity = acct.get("equity", 0) or 0
+    free = acct.get("free_margin", 0) or 0
+    if equity <= 0:
+        return None
+    pct = (free / equity) * 100
+    if pct < MT5_MARGIN_FLOOR_PCT:
+        return HealthIssue(
+            "mt5_low_margin", SEV_HIGH,
+            f"Margem livre {pct:.1f}% < {MT5_MARGIN_FLOOR_PCT}% "
+            f"(free=R${free:.0f} equity=R${equity:.0f}). Risco de margin call.",
+        )
+    return None
+
+
+def _check_mt5_tick_freshness() -> Optional[HealthIssue]:
+    """Check #2b: último tick dos símbolos ativos < 5min (dados frescos)."""
+    try:
+        from core.vt_config_loader import load_config
+        cfg = load_config()
+        resolved = cfg.get("resolved_symbols", {}) or {}
+        if not resolved:
+            return None
+        from mt5.mt5_orchestrator import tick as mt5_tick
+    except Exception:
+        return None
+    # Testa o primeiro símbolo resolvido (amostra — não todos, p/ não pesar)
+    sample_sym = next(iter(resolved.values()), None)
+    if not sample_sym:
+        return None
+    try:
+        tk = mt5_tick(sample_sym)
+    except Exception as e:
+        return HealthIssue("mt5_tick_error", SEV_LOW,
+                           f"tick({sample_sym}) falhou: {e}")
+    if not tk or not isinstance(tk, dict):
+        return None
+    # tick pode trazer 'time' (epoch) — se ausente, não conseguimos validar
+    t = tk.get("time")
+    if t is None:
+        return None
+    try:
+        age_min = (time.time() - float(t)) / 60
+    except (ValueError, TypeError):
+        return None
+    if age_min > MT5_TICK_STALE_MINUTES:
+        return HealthIssue(
+            "mt5_tick_stale", SEV_HIGH,
+            f"Tick {sample_sym} stale ({age_min:.0f}min). Dados de mercado "
+            f"desatualizados — pode ser feed quebrado.",
+        )
+    return None
+
+
+def _check_mt5_symbol_map() -> Optional[HealthIssue]:
+    """Check #2c: símbolos resolvidos continuam mapeáveis no MT5."""
+    try:
+        from core.vt_config_loader import load_config
+        cfg = load_config()
+        resolved = cfg.get("resolved_symbols", {}) or {}
+        if not resolved:
+            return None
+        from mt5.mt5_orchestrator import info as mt5_info
+    except Exception:
+        return None
+    missing = []
+    for root, full_sym in list(resolved.items())[:4]:  # amostra 4
+        if root == "IND":
+            continue  # IND ignorado (Lei 2 / hard-kill)
+        try:
+            inf = mt5_info(full_sym)
+            if isinstance(inf, dict) and inf.get("error"):
+                missing.append(full_sym)
+        except Exception:
+            missing.append(full_sym)
+    if missing:
+        return HealthIssue(
+            "mt5_symbol_map_broken", SEV_HIGH,
+            f"Símbolos não mapeáveis no MT5: {missing}. "
+            f"Verificar vt_resolve_symbols / mudança de contrato.",
+        )
+    return None
+
+
+def _check_mt5_trade_allowed() -> Optional[HealthIssue]:
+    """Check #2d: account_info.trade_allowed True (conta autorizada a operar)."""
+    data = _mt5_status_safe()
+    if not data:
+        return None
+    acct = data.get("account") or {}
+    if acct.get("trade_allowed") is False:
+        return HealthIssue(
+            "mt5_trade_blocked", SEV_CRITICAL,
+            "trade_allowed=False no MT5. Conta não autorizada a operar "
+            "(sessão fechada / auto-trading desligado no terminal).",
+        )
+    return None
+
+
 def _check_db_accessible() -> Optional[HealthIssue]:
     """Check 3: SQLite WAL SELECT 1 responde."""
     if not DB_PATH.exists():
@@ -301,6 +428,10 @@ def health_check() -> HealthReport:
     for check in (
         _check_autotrader_alive,
         _check_mt5_reachable,
+        _check_mt5_margin,            # Fase 3.2
+        _check_mt5_tick_freshness,    # Fase 3.2
+        _check_mt5_symbol_map,        # Fase 3.2
+        _check_mt5_trade_allowed,     # Fase 3.2
         _check_db_accessible,
         _check_state_fresh,
         _check_config_lock_stale,

@@ -1697,6 +1697,36 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
         ticket = result.get("ticket", "?")
         exec_price = result.get("price", price)
 
+        # ===== Fase 3 — Lei 4: valida ticket confirmado pelo MT5 =====
+        # Antes o código aceitava ticket="?" como válido. Agora exigimos int > 0.
+        # Se result veio BLOCKED/NOT_CONFIRMED do orchestrator (Fase 3.3), status
+        # != FILLED já caiu no else abaixo. Mas ticket="?" ainda pode escapar de
+        # FILLED legítimo com campo ausente — defendemos aqui também.
+        try:
+            _ticket_int = int(ticket) if ticket not in ("?", None, "") else 0
+        except (ValueError, TypeError):
+            _ticket_int = 0
+        if _ticket_int <= 0:
+            print(f"[LEI4] {symbol} {direction} FILLED mas ticket inválido "
+                  f"(ticket={ticket}). Recusando abrir posição — não confiar sem confirmação.")
+            return {"status": "BLOCKED", "reason": "INVALID_TICKET",
+                    "detail": f"ticket={ticket}", "symbol": symbol}
+
+        # ===== Fase 3.1 — Registra no OrderTracker (rastreio ininterrupto) =====
+        try:
+            from core.vt_order_tracker import OrderTracker
+            _tracker = OrderTracker()  # autoload do /tmp/vt_order_tracker.json
+            _tracker.register_order(
+                ticket=_ticket_int, symbol=symbol, direction=direction,
+                volume=_vol, entry_price=exec_price, sl_pts=sl_pts,
+                tp_pts=None, reason=f"{tf}_{strategy}", strategy=strategy,
+            )
+        except Exception as _tracker_err:
+            # Tracker é observabilidade — NUNCA derruba o path de ordens.
+            # A verdade final continua sendo o MT5 (reconcile_positions_with_mt5).
+            print(f"[TRACKER] aviso: falha ao registrar ticket={_ticket_int}: "
+                  f"{_tracker_err} (não bloqueia ordem)")
+
         # ===== VALIDAÇÃO PÓS-ENVIO =====
         try:
             order_data = {

@@ -22,6 +22,30 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Fase 3 — Lei 3 (SL obrigatório) + Lei 4 (Garantia MT5): exceções e constantes
+# nomeadas. Import defensivo: se vt_exceptions falhar, buy/sell caem no fallback
+# de validação inline (continuam funcionando, só sem as mensagens ricas).
+try:
+    from core.vt_exceptions import (
+        ACCEPTED_RETCODES,
+        REASON_MISSING_STOP_LOSS,
+        REASON_NOT_CONFIRMED,
+        REASON_REJECTED_BY_RETCODE,
+        error_dict,
+    )
+except Exception:  # pragma: no cover — fallback robusto
+    ACCEPTED_RETCODES = frozenset({10008, 10009})
+    REASON_MISSING_STOP_LOSS = "MISSING_STOP_LOSS"
+    REASON_NOT_CONFIRMED = "NOT_CONFIRMED"
+    REASON_REJECTED_BY_RETCODE = "REJECTED_BY_RETCODE"
+
+    def error_dict(reason, detail="", **extra):
+        d = {"status": "BLOCKED", "reason": reason, "ticket": 0}
+        if detail:
+            d["detail"] = detail
+        d.update(extra)
+        return d
+
 PROJECT = Path("/home/bruno/Projects/Vibe-Trading")
 WINE_PYTHON = os.path.expanduser("~/.wine/drive_c/Python311/python.exe")
 EXECUTOR_WIN = "Z:\\home\\bruno\\Projects\\Vibe-Trading\\mt5\\mt5_executor.py"
@@ -128,28 +152,117 @@ def info(symbol: str) -> dict:
     return _run_wine(EXECUTOR_WIN, "info", symbol)
 
 
+def _validate_order_safety(symbol: str, sl_pts) -> Optional[dict]:
+    """Lei 3: SL obrigatório. Retorna dict BLOCKED se sl inválido, else None.
+
+    Valida ANTES de chamar _run_wine (não confia no caller). sl_pts deve ser
+    int > 0. None/0/negativo → BLOCKED com reason MISSING_STOP_LOSS.
+
+    NÃO propaga exceção: devolve dict no contrato existente (status=BLOCKED),
+    que safe_buy/safe_sell já sabem tratar via _classify_error (entra no fluxo
+    de retry/abort). Assim a defesa da Lei 3 é garantida SEM derrubar o bot.
+    """
+    if sl_pts is None or not isinstance(sl_pts, (int, float)) or sl_pts <= 0:
+        return error_dict(
+            REASON_MISSING_STOP_LOSS,
+            detail=f"{symbol} sl_pts={sl_pts} (invalido). Lei 3: SL obrigatorio.",
+            symbol=symbol, sl_pts=sl_pts,
+        )
+    return None
+
+
+def _validate_order_confirmed(symbol: str, side: str, result: dict) -> dict:
+    """Lei 4: ordem só é "aberta" se MT5 confirmar ticket + retcode aceito.
+
+    Opera sobre o dict retornado por _run_wine. Se já é FILLED com ticket>0,
+    retorna result inalterado (sucesso). Senão devolve dict BLOCKED com a
+    razão específica (NOT_CONFIRMED se sem ticket, REJECTED_BY_RETCODE se
+    retcode não-aceito). Mantém compat: quem checa status=='FILLED' continua
+    funcionando; quem checa ticket>0 também.
+    """
+    if not isinstance(result, dict):
+        return result  # contrato inesperado — não inferir, devolve como está
+    status = result.get("status")
+    # Sucesso já confirmado pelo executor (FILLED + ticket)
+    if status == "FILLED":
+        ticket = result.get("ticket", 0)
+        try:
+            ticket_int = int(ticket) if ticket not in (None, "?", "") else 0
+        except (ValueError, TypeError):
+            ticket_int = 0
+        if ticket_int > 0:
+            return result  # OK — Lei 4 satisfeita
+        # FILLED mas sem ticket válido → trata como não confirmado
+        return error_dict(
+            REASON_NOT_CONFIRMED,
+            detail=f"{symbol} {side}: FILLED sem ticket valido (ticket={ticket}).",
+            symbol=symbol, side=side,
+        )
+    # retcode presente mas status != FILLED: verifica se broker aceitou
+    retcode = result.get("retcode")
+    if retcode is not None:
+        try:
+            rc = int(retcode)
+        except (ValueError, TypeError):
+            rc = 0
+        if rc in ACCEPTED_RETCODES and result.get("ticket"):
+            # Bug latente corrigido: retcode 10008 (PLACED) era tratado como
+            # REJECTED. Agora se retcode é aceito E tem ticket, confirma.
+            result = dict(result)
+            result["status"] = "FILLED"
+            result["recovered_placed"] = True
+            _log(f"[LEI4] {symbol} {side}: retcode {rc} aceito, ticket "
+                 f"{result.get('ticket')} — confirmando (recuperação PLACED)")
+            return result
+        if rc not in ACCEPTED_RETCODES and rc != 0:
+            return error_dict(
+                REASON_REJECTED_BY_RETCODE,
+                detail=f"{symbol} {side}: retcode={rc} não aceito "
+                       f"(válidos: {sorted(ACCEPTED_RETCODES)}).",
+                symbol=symbol, retcode=rc,
+            )
+    # status REJECTED / error / sem retcode — devolve como está (já é erro)
+    return result
+
+
 def buy(symbol: str, volume: float = 1.0, sl_pts: Optional[int] = None,
         tp_pts: Optional[int] = None) -> dict:
-    """Compra com SL obrigatório. Símbolo deve ser completo (ex: 'WDON26')."""
-    args = ["buy", symbol, str(volume)]
-    if sl_pts is not None:
-        args.append(str(sl_pts))
+    """Compra com SL obrigatório (Lei 3) e confirmação MT5 (Lei 4).
+
+    Valida sl_pts > 0 ANTES de enviar (Lei 3). Após _run_wine, valida que MT5
+    retornou ticket válido + retcode aceito (Lei 4). Em caso de violação,
+    devolve dict {"status":"BLOCKED","reason":...,"ticket":0} no contrato
+    existente — NÃO propaga exceção (não derruba o autotrader ao vivo).
+    Símbolo deve ser completo (ex: 'WDON26').
+    """
+    blocked = _validate_order_safety(symbol, sl_pts)
+    if blocked is not None:
+        _log(f"[LEI3] BUY {symbol} BLOCKED sem SL (sl_pts={sl_pts})")
+        return blocked
+    args = ["buy", symbol, str(volume), str(sl_pts)]
     if tp_pts is not None:
         args.append(str(tp_pts))
     result = _run_wine(EXECUTOR_WIN, *args)
+    result = _validate_order_confirmed(symbol, "BUY", result)
     _log(f"BUY {symbol} vol={volume} sl={sl_pts} → {result.get('status', result.get('error', '?'))}")
     return result
 
 
 def sell(symbol: str, volume: float = 1.0, sl_pts: Optional[int] = None,
          tp_pts: Optional[int] = None) -> dict:
-    """Vende com SL obrigatório. Símbolo deve ser completo (ex: 'WDON26')."""
-    args = ["sell", symbol, str(volume)]
-    if sl_pts is not None:
-        args.append(str(sl_pts))
+    """Vende com SL obrigatório (Lei 3) e confirmação MT5 (Lei 4).
+
+    Mesmo contrato e defesas de buy(). Símbolo deve ser completo (ex: 'WDON26').
+    """
+    blocked = _validate_order_safety(symbol, sl_pts)
+    if blocked is not None:
+        _log(f"[LEI3] SELL {symbol} BLOCKED sem SL (sl_pts={sl_pts})")
+        return blocked
+    args = ["sell", symbol, str(volume), str(sl_pts)]
     if tp_pts is not None:
         args.append(str(tp_pts))
     result = _run_wine(EXECUTOR_WIN, *args)
+    result = _validate_order_confirmed(symbol, "SELL", result)
     _log(f"SELL {symbol} vol={volume} sl={sl_pts} → {result.get('status', result.get('error', '?'))}")
     return result
 

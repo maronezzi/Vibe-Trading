@@ -292,6 +292,17 @@ def safe_buy(symbol: str, volume: float = 1.0, sl_pts: int = None,
     from mt5_orchestrator import buy, tick
     result = None
 
+    # Fase 3 — Lei 3 (defesa em profundidade): valida SL ANTES do loop de retry.
+    # buy() já valida internamente, mas safe_buy é a camada "ÚLTIMO antes do MT5"
+    # (handoff). Se sl inválido, falha rápido com BLOCKED — não desperdiça retries.
+    if sl_pts is None or sl_pts <= 0:
+        _log(f"[LEI3] safe_buy {symbol} BLOCKED: sl_pts={sl_pts} (invalido). "
+             f"Caller deve passar _calc_sl() > 0. Abortando sem retry.")
+        return {
+            "status": "BLOCKED", "reason": "MISSING_STOP_LOSS",
+            "detail": f"sl_pts={sl_pts}", "ticket": 0, "symbol": symbol,
+        }
+
     for attempt in range(MAX_RETRIES):
         result = buy(symbol, volume, sl_pts=sl_pts, tp_pts=tp_pts)
         if result.get("status") == "FILLED":
@@ -377,6 +388,15 @@ def safe_sell(symbol: str, volume: float = 1.0, sl_pts: int = None,
               tp_pts: int = None, strategy: str = "", atr: float = None) -> dict:
     from mt5_orchestrator import sell, tick
     result = None
+
+    # Fase 3 — Lei 3 (defesa em profundidade): valida SL ANTES do loop de retry.
+    if sl_pts is None or sl_pts <= 0:
+        _log(f"[LEI3] safe_sell {symbol} BLOCKED: sl_pts={sl_pts} (invalido). "
+             f"Caller deve passar _calc_sl() > 0. Abortando sem retry.")
+        return {
+            "status": "BLOCKED", "reason": "MISSING_STOP_LOSS",
+            "detail": f"sl_pts={sl_pts}", "ticket": 0, "symbol": symbol,
+        }
 
     for attempt in range(MAX_RETRIES):
         result = sell(symbol, volume, sl_pts=sl_pts, tp_pts=tp_pts)
