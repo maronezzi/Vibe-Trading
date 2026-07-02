@@ -39,5 +39,10 @@
 #     Fase 2.3: alerta se símbolo/TF fora do escopo (exclui só IND). Bruno decide.
 0 9 * * 1 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 scripts/check_symbols_active.py >> /tmp/vt_scope_audit.log 2>&1
 
+# ─── DRY-RUN SEMANAL domingo 6:00 — Fase 5: validação 1 dia antes do pregão ──
+#     10 cenários adversariais + invariantes. Gera data/validation_weekly_*.md.
+#     Se FAIL, alerta Telegram (saída capturada pelo cron).
+0 6 * * 0 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 scripts/vt_validate_1day.py --mode=mock >> /tmp/vt_dryrun_weekly.log 2>&1
+
 # ─── RELATÓRIO SEMANAL sexta 17:30 — resumo + 6 gráficos PNG + CSV ─────────────
 30 17 * * 5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_weekly_report.py >> /tmp/vt_weekly.log 2>&1
