@@ -68,6 +68,7 @@ ALLOWED_WRITERS = (
     "scripts/preflight_dryrun.py",
     "scripts/simulate_today_wave9.py",
     "scripts/warmup_search.py",
+    "scripts/reenable_scope_and_live_vol.py",
     "backtest/apply_optimization.py",
     # monitoring/vt_pre_flight.py roda 8h55 ANTES do autotrader (pre-flight
     # gate) — é seguro persistir resolved_symbols nessa janela.
