@@ -679,6 +679,12 @@ def check_intraday_stats() -> dict:
         log(f"[WARN] PnL intraday usando DB fallback (MT5 indisponivel: {truth_error})")
 
         conn = sqlite3.connect(str(DB_PATH))
+
+        # Wave 1C.2 (Bruno 02/07 11:14): exlcuir GHOST do PnL realizado.
+        # Trades GHOST tem exit_time mas net_pnl=0 (bug autotrader: nao
+        # encontrou exit_price real porque MT5 history vazio). Se contasse,
+        # reportaria "WR 0%" mesmo com varios losses reais. Excluir evita
+        # esse teatro. Os losses reais aparecem via MT5_BALANCE_DELTA abaixo.
         closed = conn.execute("""
             SELECT COUNT(*) ops,
                    SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) wins,
@@ -688,6 +694,7 @@ def check_intraday_stats() -> dict:
             WHERE exit_time IS NOT NULL
               AND date(exit_time) = ?
               AND exit_reason != 'stale_close'
+              AND exit_reason != 'GHOST'
         """, (today,)).fetchone()
         pnl_series = conn.execute("""
             SELECT exit_time, net_pnl
@@ -695,6 +702,7 @@ def check_intraday_stats() -> dict:
             WHERE exit_time IS NOT NULL
               AND date(exit_time) = ?
               AND exit_reason != 'stale_close'
+              AND exit_reason != 'GHOST'
             ORDER BY exit_time
         """, (today,)).fetchall()
         pnl_series = [(t, p) for t, p in pnl_series]  # ja vem como tuplas
@@ -703,6 +711,46 @@ def check_intraday_stats() -> dict:
         losses = closed[2] or 0
         pnl_realized = round(closed[3] or 0.0, 2)
         conn.close()
+
+        # 2.5) MT5_BALANCE_DELTA (Wave 1C.2): se MT5 history vazio (broker
+        # demo nao persiste deals), usar variacao do saldo MT5 como PnL
+        # realizado broker-truth. Saldo de abertura = saldo do dia
+        # anterior em ~R$ 1.002.230,57 (padrao); mas pra ser exato, le do
+        # DB o saldo inicial = SUM(gross_pnl dos dias anteriores NAO-GHOST)
+        # + balance. Aqui, mais simples: usar truth['balance'] (atual) -
+        # base_dia (snapshot do inicio do dia, se disponivel).
+        # SEMPRE roda quando MT5 history vazio (mesmo se DB tem dados, o
+        # delta do saldo e a verdade do broker e sobrescreve o DB PnL).
+        try:
+            # Bruno 02/07: vt_copilot roda como standalone (sem autotrader
+            # injetar sys.path). Padrao igual a core/vt_autotrader.py:37.
+            import sys as _sys
+            from pathlib import Path as _Path
+            _mt5_path = str(_Path(__file__).parent.parent / "mt5")
+            if _mt5_path not in _sys.path:
+                _sys.path.insert(0, _mt5_path)
+            from mt5_orchestrator import status as _mt5_status
+            mt5_now = _mt5_status()
+            current_balance = mt5_now.get("account", {}).get("balance", 0.0)
+            # Saldo de abertura do dia: tenta pegar do /tmp/vt_intraday_state.json
+            # ou usa 1.002.230,57 como fallback (saldo 01/07 EOD)
+            base_balance = 1002230.57
+            try:
+                import json as _json
+                from pathlib import Path as _Path2
+                _state_path = _Path2("/tmp/vt_autotrader_state.json")
+                if _state_path.exists():
+                    _state = _json.loads(_state_path.read_text())
+                    if _state.get("starting_balance"):
+                        base_balance = _state["starting_balance"]
+            except Exception:
+                pass
+            balance_delta = round(current_balance - base_balance, 2)
+            # Sobrescreve pnl_realized com a verdade do broker
+            pnl_realized = balance_delta
+            log(f"[FALLBACK-BALANCE] MT5 broker-truth PnL: R$ {balance_delta:+.2f} (base {base_balance:,.2f} -> now {current_balance:,.2f})")
+        except Exception as _e:
+            log(f"[FALLBACK-BALANCE] erro ao ler MT5 status: {_e}")
 
     # Acumulado + max drawdown (mesmo calculo, agora sobre fonte broker-truth)
     pnl_cum = []
@@ -862,11 +910,31 @@ def generate_report():
         )
         report.append(f"  Max drawdown: R$ {s['max_drawdown']:.2f}")
     else:
-        report.append("  Sem trades fechados hoje")
+        # Wave 1C.2: mesmo com 0 trades "normais" fechados, o FALLBACK-BALANCE
+        # pode ter capturado PnL broker-truth. Mostrar.
+        report.append("  Sem trades fechados hoje (DB limpo)")
+        if s.get("pnl_realized", 0.0) != 0.0:
+            # CAUTION: GHOST trades podem ter ocorrido. Mostrar aviso.
+            try:
+                conn = sqlite3.connect(str(DB_PATH))
+                n_ghost = conn.execute(
+                    "SELECT COUNT(*) FROM trades WHERE date(exit_time)=date('now','localtime') "
+                    "AND exit_reason='GHOST'"
+                ).fetchone()[0]
+                conn.close()
+                if n_ghost > 0:
+                    report.append(
+                        f"  ⚠️ {n_ghost} trade(s) GHOST (PnL real indisponivel — bug autotrader/MT5 demo)"
+                    )
+            except Exception:
+                pass
+            report.append(f"  PnL realizado (broker-truth via saldo): R$ {s['pnl_realized']:+.2f}")
         if s["open_count"] > 0:
             report.append(
                 f"  PnL flutuante ({s['open_count']} abertas): R$ {s['open_pnl']:+.2f}"
             )
+        if s.get("pnl_total", 0.0) != 0.0:
+            report.append(f"  *PnL total: R$ {s['pnl_total']:+.2f}*")
 
     # 3. Posições abertas (detalhe)
     if s["open_count"] > 0:

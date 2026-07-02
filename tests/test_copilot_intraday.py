@@ -82,20 +82,30 @@ class TestCheckIntradayStats(unittest.TestCase):
     def test_check_intraday_stats_only_counts_today(self):
         """check_intraday_stats() deve contar apenas trades de HOJE."""
         from vt_copilot import check_intraday_stats
-        with patch("vt_copilot.DB_PATH", self.db_path):
+        # Wave 1C.2: FALLBACK-BALANCE sempre sobrescreve pnl_realized com delta
+        # do saldo MT5. Mockamos status com saldo igual ao base, entao pnl=0.
+        with patch("vt_copilot.DB_PATH", self.db_path), \
+             patch("vt_copilot.get_daily_pnl_truth", return_value={"ok": False, "deals_total": 0, "pnl_net": 0, "deals": [], "error": "mocked"}), \
+             patch("mt5_orchestrator.status", return_value={"account": {"balance": 1002230.57, "equity": 1002230.57}, "positions": []}):
             stats = check_intraday_stats()
         # 2 trades fechados hoje (50 + -30), 1 trade antigo NAO conta, 1 trade aberto NAO conta
         self.assertEqual(stats["ops"], 2,
                          f"Esperado 2 trades fechados hoje, achou {stats['ops']}")
         self.assertEqual(stats["wins"], 1)
         self.assertEqual(stats["losses"], 1)
-        self.assertAlmostEqual(stats["pnl_realized"], 20.0, places=2,
-                               msg=f"Esperado PnL = 50-30=20, achou {stats['pnl_realized']}")
+        # pnl_realized vem do FALLBACK-BALANCE = 0 (delta saldo mock)
+        # (note: este test NAO valida pnl_realized porque e sobrescrito por saldo MT5.
+        # Validacao de PnL DB-only esta em test_intraday_balance_delta_fallback.py
+        # test_ghost_trades_excluded_from_pnl_realized)
+        self.assertEqual(stats["pnl_realized"], 0.0,
+                         f"pnl_realized vem do FALLBACK-BALANCE (saldo inalterado no mock), esperado 0, achou {stats['pnl_realized']}")
 
     def test_pnl_cum_series_in_trade_order(self):
         """pnl_cum deve ser série temporal em ordem cronológica com acumulado."""
         from vt_copilot import check_intraday_stats
-        with patch("vt_copilot.DB_PATH", self.db_path):
+        with patch("vt_copilot.DB_PATH", self.db_path), \
+             patch("vt_copilot.get_daily_pnl_truth", return_value={"ok": False, "deals_total": 0, "pnl_net": 0, "deals": [], "error": "mocked"}), \
+             patch("mt5_orchestrator.status", return_value={"account": {"balance": 1002230.57, "equity": 1002230.57}, "positions": []}):
             stats = check_intraday_stats()
         # 2 pontos: 50 (depois WIN) → 20 (depois DOL)
         self.assertEqual(len(stats["pnl_cum"]), 2)
@@ -105,7 +115,9 @@ class TestCheckIntradayStats(unittest.TestCase):
     def test_max_drawdown_calculation(self):
         """Max DD = queda maxima do peak até o fundo subsequente."""
         from vt_copilot import check_intraday_stats
-        with patch("vt_copilot.DB_PATH", self.db_path):
+        with patch("vt_copilot.DB_PATH", self.db_path), \
+             patch("vt_copilot.get_daily_pnl_truth", return_value={"ok": False, "deals_total": 0, "pnl_net": 0, "deals": [], "error": "mocked"}), \
+             patch("mt5_orchestrator.status", return_value={"account": {"balance": 1002230.57, "equity": 1002230.57}, "positions": []}):
             stats = check_intraday_stats()
         # Curva: 50 → 20, peak=50, drawdown=20-50=-30
         self.assertAlmostEqual(stats["max_drawdown"], -30.0, places=2,
