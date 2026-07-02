@@ -107,7 +107,11 @@ def get_db_open_trades():
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT id, symbol, direction, entry_ticket, volume, entry_price, entry_time "
-            "FROM trades WHERE exit_time IS NULL OR exit_time = ''"
+            "FROM trades WHERE (exit_time IS NULL OR exit_time = '') "
+            # Wave 1C.1 (2026-07-02): 28 trades com ticket=12345/99999 eram teste,
+            # marcados [EXCLUDED_TEST_2026_07_02]. Nao sao operacao real. Filtrar
+            # pra nao alarmar como "fantasma" (Bruno confirmou).
+            "AND (strategy IS NULL OR INSTR(strategy, '[EXCLUDED') = 0)"
         ).fetchall()
         conn.close()
         db_trades = {}
@@ -221,7 +225,10 @@ def check_trade_log(mt5_positions):
 
     try:
         open_trades = conn.execute(
-            "SELECT id, symbol, direction, entry_ticket, entry_price FROM trades WHERE exit_time IS NULL"
+            "SELECT id, symbol, direction, entry_ticket, entry_price FROM trades "
+            "WHERE exit_time IS NULL "
+            # Wave 1C.1 (2026-07-02): filtro EXCLUDED — ver L110-114
+            "AND (strategy IS NULL OR INSTR(strategy, '[EXCLUDED') = 0)"
         ).fetchall()
     except Exception as e:
         log(f"[DB ERRO] {e}")
