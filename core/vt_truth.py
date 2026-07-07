@@ -540,46 +540,78 @@ def reconcile_db_position(trade_id: int, db_path: Optional[Path] = None) -> Opti
 # ===== 5. validate_order_pre_send =====
 def validate_order_pre_send(
     symbol: str,
-    direction: str,
+    tf: str = "",
+    direction: str = "",
     magic: int = MAGIC_VIBETRADING,
 ) -> bool:
-    """Bloqueia ordem duplicada: se ja existe pos aberta com mesmo magic+symbol,
-    retorna False (NAO envia). Caso contrario True.
+    """Bloqueia ordem duplicada POR TIMEFRAME: se ja existe pos aberta no slot
+    (symbol, tf), retorna False (NAO envia). Caso contrario True.
 
     Args:
         symbol: contrato MT5 (ex: "WINM26", "WDON26").
-        direction: "BUY" ou "SELL" (informativo; bloqueia qualquer direcao nova
-            enquanto existir pos aberta do bot no symbol — reversoes sao feitas
-            em manage_position, nao aqui).
+        tf: timeframe ("M5", "M15", "M30", "H1"). Obrigatorio para o novo
+            modelo per-TF; se vazio, fallback para comportamento legado
+            (bloqueia qualquer pos com mesmo magic+symbol).
+        direction: "BUY" ou "SELL" (informativo; log apenas).
         magic: magic number do bot. Default 555501.
 
     Returns:
         True -> seguro enviar ordem.
-        False -> bloqueado (ja existe pos aberta no symbol com mesmo magic).
+        False -> bloqueado (slot (symbol, tf) ja ocupado).
+
+    Wave Per-TF (Bruno 2026-07-07): cada (symbol, tf) agora eh slot
+    independente. Multiplos TFs podem coexistir no mesmo symbol (ex.: M5 BUY
+    + M15 BUY + M30 SELL em WDO). Fonte de verdade: state.positions
+    (chave = f"{symbol}_{tf}"), que ja eh rebuilt do MT5 no startup via
+    rebuild_state_from_mt5 (Fase 3). Nao consulta mais MT5.status() para o
+    bloqueio — isso elimina o falso positivo onde M15 aberto bloqueava M30.
 
     Comportamento:
-        - Consulta get_open_positions() (cache 2s).
-        - FAIL-SAFE: se MT5 indisponivel, retorna True (permite envio). Mesma
-          politica do validate_order_pre_send original em vt_autotrader.py L1568:
-          bloquear por defeito de leitura = lockup; safe_buy/safe_sell tem retry
-          proprio.
-        - Loga [BLOCKED-DUPLICATE] quando bloqueia (compat com format original).
+        - Consulta state.positions do SessionState importado lazy.
+        - FAIL-SAFE: se state indisponivel, retorna True (permite envio).
+        - Loga [BLOCKED-DUPLICATE-TF] quando bloqueia.
     """
-    try:
-        positions = get_open_positions(magic_filter=magic)
-    except Exception as e:
-        _log(f"validate_order_pre_send({symbol}): falha leitura ({type(e).__name__}: {e}) — FAIL-SAFE: permite")
+    if not tf:
+        # Sem tf: comportamento legado (bloqueia magic+symbol). Caller deveria
+        # passar tf — defensivo apenas.
+        try:
+            positions = get_open_positions(magic_filter=magic)
+        except Exception as e:
+            _log(f"validate_order_pre_send({symbol}): sem tf, MT5 falhou ({type(e).__name__}: {e}) — FAIL-SAFE: permite")
+            return True
+        for p in positions:
+            if p.symbol == symbol:
+                _log(
+                    f"[BLOCKED-DUPLICATE-LEGACY] {symbol} sem tf, ja tem pos aberta "
+                    f"ticket={p.ticket} type={p.direction} "
+                    f"— bloqueando novo {direction}"
+                )
+                return False
         return True
 
-    for p in positions:
-        if p.symbol == symbol:
-            _log(
-                f"[BLOCKED-DUPLICATE] {symbol} ja tem pos aberta "
-                f"ticket={p.ticket} type={p.direction} "
-                f"magic={p.magic} volume={p.volume} "
-                f"— bloqueando novo {direction}"
-            )
-            return False
+    # Per-TF: consulta state.positions[ f"{symbol}_{tf}" ]
+    try:
+        # Import lazy para evitar ciclo (vt_autotrader importa vt_truth).
+        from core.vt_autotrader import state as _autotrader_state  # type: ignore
+    except Exception as e:
+        _log(f"validate_order_pre_send({symbol}_{tf}): state indisponivel ({type(e).__name__}: {e}) — FAIL-SAFE: permite")
+        return True
+
+    slot_key = f"{symbol}_{tf}"
+    try:
+        existing = _autotrader_state.positions.get(slot_key)
+    except Exception as e:
+        _log(f"validate_order_pre_send({slot_key}): state.positions falhou ({type(e).__name__}: {e}) — FAIL-SAFE: permite")
+        return True
+
+    if existing:
+        _log(
+            f"[BLOCKED-DUPLICATE-TF] {slot_key} slot ocupado "
+            f"direction={existing.get('direction')} ticket={existing.get('entry_ticket')} "
+            f"— bloqueando novo {direction}"
+        )
+        return False
+
     return True
 
 

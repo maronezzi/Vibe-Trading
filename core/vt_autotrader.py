@@ -165,6 +165,12 @@ class SessionState:
         self.halt_until = {}              # per-symbol: {symbol: datetime} — halt until this time
         self.resolved_symbols = {}        # cache: {"WDO": "WDON26", "WIN": "WINM26"}
         self.resolved_day = ""            # dia do cache (reseta a cada dia)
+        # Wave Per-TF (Bruno 2026-07-07): cooldown cross-TF quando symbol tem
+        # 2+ pos perdendo. Chave: "{symbol_root}" → datetime de desbloqueio.
+        # Bloqueia novas entradas em OUTROS TFs do mesmo symbol ate o tempo
+        # expirar (default 30min). Por symbol_root (WIN/WDO/BIT/WSP), nao por
+        # contracto resolved (WDON26), porque a regra é por ativo, não por letra.
+        self.cross_tf_cooldown = {}       # {symbol_root: datetime}
 
         # FASE 3 (2026-07-01): SessionState NAO le mais /tmp/vt_autotrader_state.json
         # no startup. State vira projecao em memoria, reconstruida do MT5
@@ -1017,6 +1023,77 @@ def _symbol_root(symbol: str) -> str:
     return "WIN"
 
 
+def _resolve_volume(symbol: str, tf: str) -> float:
+    """
+    Volume (qtd contratos) por (symbol, tf) — hierarquia documentada e única:
+
+        CONFIG["volume_by_tf"][f"{symbol_root}_{tf}"]   (mais específico)
+          ↓ (se ausente nesse TF)
+        CONFIG["volume_by_symbol"][symbol_root]          (nível do ativo)
+          ↓ (se ausente no ativo)
+        CONFIG["volume"]                                 (raiz do config)
+          ↓ (se ausente/corrompido)
+        1                                                (safety default)
+
+    Wave Per-TF (Bruno 2026-07-07): libera que cada TF tenha volume proprio
+    (ex.: WDO_M5=2 contratos, WDO_M15=1, WDO_M30=1, WDO_H1=1 — estratégia
+    agressiva no curto + conservadora no longo). Fica CONFIG-driven para o
+    AGI poder tunar granularmente.
+
+    Args:
+        symbol: contrato MT5 resolvido (ex: "WDON26").
+        tf: timeframe ("M5", "M15", "M30", "H1").
+
+    Returns:
+        float >= 1.0 (número de contratos). NUNCA retorna 0 — se config
+        explicitamente quiser zerar um par, isso deve ser feito via
+        disabled_timeframes (não aqui).
+
+    Fail-safe: se config corrompido (string, None, negativo), usa fallback
+    conservador (1.0) e loga WARN.
+    """
+    # Extrai root (WIN/WDO/BIT/WSP/etc.) do symbol resolvido
+    _root = ""
+    for r in ["WIN", "WDO", "BIT", "DOL", "IND", "WSP"]:
+        if r in symbol:
+            _root = r
+            break
+
+    # 1. volume_by_tf (mais específico)
+    vol_by_tf = CONFIG.get("volume_by_tf") or {}
+    if isinstance(vol_by_tf, dict):
+        tf_key = f"{_root}_{tf}"
+        try:
+            v = vol_by_tf.get(tf_key)
+            if isinstance(v, (int, float)) and v >= 1.0:
+                return float(v)
+            elif v is not None:
+                log(f"[VOL] {tf_key}: valor invalido {v!r} em volume_by_tf — usando fallback")
+        except Exception as e:
+            log(f"[VOL] {tf_key}: erro ao ler volume_by_tf ({type(e).__name__}: {e}) — fallback")
+
+    # 2. volume_by_symbol (nivel do ativo)
+    vol_by_sym = CONFIG.get("volume_by_symbol") or {}
+    if isinstance(vol_by_sym, dict):
+        try:
+            v = vol_by_sym.get(_root)
+            if isinstance(v, (int, float)) and v >= 1.0:
+                return float(v)
+        except Exception:
+            pass
+
+    # 3. volume (raiz)
+    try:
+        v = CONFIG.get("volume")
+        if isinstance(v, (int, float)) and v >= 1.0:
+            return float(v)
+    except Exception:
+        pass
+
+    # 4. Safety default
+    return 1.0
+
+
 def _resolve_max_daily_trades(params: dict, symbol_root: str) -> int:
     """
     Limite diário de trades POR SÍMBOLO — hierarquia documentada e única:
@@ -1112,6 +1189,69 @@ def _check_consecutive_losses(symbol: str) -> bool:
     return True
 
 
+# Wave Per-TF (Bruno 2026-07-07): cross-TF cooldown defensivo.
+#
+# Modelo per-TF libera até 4 posições simultâneas no mesmo symbol (M5/M15/M30/H1).
+# Se 2+ TFs estão perdendo ao mesmo tempo, o sinal macro é adverso → novos TFs
+# entram em cooldown 30min para evitar martelar contra a tendência.
+#
+# Parametros (config-driven, defaults razoáveis):
+#   threshold (default 2): mínimo de posições perdendo do mesmo symbol_root
+#                          para acionar o cooldown.
+#   cooldown_min (default 30): minutos de bloqueio após acionamento.
+#
+# Comportamento:
+#   - Conta posições abertas no MT5 com magic+symbol_root match e profit<0.
+#   - Se losing_count >= threshold E cooldown NÃO ativo: ATIVA cooldown, retorna False.
+#   - Se losing_count >= threshold E cooldown ATIVO: retorna False (continua bloqueado).
+#   - Se losing_count < threshold: limpa cooldown (se houver) e retorna True.
+#   - FAIL-SAFE: MT5 indisponível → retorna True (não bloqueia por defeito de leitura).
+#
+# Reset: state.cross_tf_cooldown eh limpo automaticamente no proximo tick em que
+# losing_count < threshold (liberação automática). Não persiste em disco (Fase 3
+# eliminou save/load); restart mid-cooldown reseta a proteção.
+def _check_cross_tf_cooldown(symbol_root: str, threshold: int = 2, cooldown_min: int = 30) -> bool:
+    """Bloqueia novos TFs do symbol_root se >= threshold posições perdendo."""
+    from datetime import timedelta
+
+    # Conta posições perdendo do symbol_root via truth layer (cache 2s)
+    losing_count = 0
+    try:
+        _open = _truth.get_open_positions(magic_filter=_truth.MAGIC_VIBETRADING)
+        for p in _open:
+            try:
+                if _symbol_root(p.symbol) == symbol_root and float(p.profit or 0) < 0:
+                    losing_count += 1
+            except Exception:
+                continue
+    except Exception as e:
+        log(f"[CROSS-TF] {symbol_root}: leitura MT5 falhou ({type(e).__name__}: {e}) — FAIL-SAFE: permite")
+        return True
+
+    cooldown_key = symbol_root
+    cooldown_until = state.cross_tf_cooldown.get(cooldown_key)
+    now = datetime.now()
+
+    if losing_count < threshold:
+        # Limpa cooldown se estiver setado (situação melhorou)
+        if cooldown_until is not None:
+            log(f"[CROSS-TF] {symbol_root}: {losing_count} pos perdendo (< {threshold}), cooldown removido")
+            state.cross_tf_cooldown.pop(cooldown_key, None)
+        return True
+
+    # losing_count >= threshold
+    if cooldown_until is None or now >= cooldown_until:
+        # Ativa cooldown agora
+        state.cross_tf_cooldown[cooldown_key] = now + timedelta(minutes=cooldown_min)
+        log(f"[CROSS-TF COOLDOWN] {symbol_root}: {losing_count} pos perdendo — cooldown {cooldown_min}min ATIVADO")
+        return False
+
+    # Cooldown ativo
+    remaining = (cooldown_until - now).total_seconds() / 60
+    log(f"[CROSS-TF BLOQUEADO] {symbol_root}: {losing_count} pos perdendo, cooldown ativo {remaining:.0f}min restantes")
+    return False
+
+
 def check_and_trade():
     from monitoring.vt_analyst import fetch_snapshot, save_snapshot, detect_anomalies, log_anomaly, notify as analyst_notify
 
@@ -1150,6 +1290,12 @@ def check_and_trade():
         log(f"🚫 Símbolos desabilitados: {disabled_symbols} (ativos: {active_symbols})")
 
     for symbol_root in active_symbols:
+        # Wave Per-TF (Bruno 2026-07-07): cooldown cross-TF. Se symbol_root já
+        # tem 2+ posições perdendo, bloqueia novos TFs do mesmo symbol por 30min.
+        # Avalia 1x por symbol_root antes de iterar TFs (barato: 1 truth call).
+        if not _check_cross_tf_cooldown(symbol_root):
+            continue
+
         # Se o config tem symbol resolvido (ex: "WDO": "WDON26"), usa direto
         # Caso contrário, resolve e cacheia no state
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -1581,19 +1727,32 @@ def _calc_sl(symbol: str, atr: float, params: dict = None) -> int:
 
 
 def _defenses_ok(symbol: str, tf: str, direction: str, bar_ts) -> bool:
-    """Verifica defesas anti-duplicação."""
-    # Defesa 1: posição no state
+    """Verifica defesas anti-duplicação.
+
+    Wave Per-TF (Bruno 2026-07-07): slot eh (symbol, tf) — Defesa 2 deixa de
+    ser "qualquer pos no MT5 com mesma direction" (que bloqueava cross-TF) e
+    vira "drift detector": se MT5 tem pos no symbol mas state NAO tem no slot
+    (symbol, tf), eh orfao — bloqueia pra evitar duplicar.
+    """
+    # Defesa 1: posição no state (slot per-TF: f"{symbol}_{tf}")
     state_key = f"{symbol}_{tf}"
     if state.positions.get(state_key):
         return False
 
-    # Defesa 2: posição no MT5
+    # Defesa 2: drift MT5↔state — se MT5 tem pos aberta com magic+symbol mas
+    # state NAO tem no slot, eh um orfao (server-side open nao registrado).
+    # Bloqueia para evitar duplicar (estado inconsistente deve parar trading).
+    # Diferente do validate_order_pre_send: checa QUALQUER direcao, nao so a
+    # incoming — porque a defesa eh contra orfao, nao contra reversao.
     try:
-        status_data = status()
-        mt5_positions = status_data.get("positions", [])
-        for p in mt5_positions:
-            if p.get("symbol") == symbol and p.get("type", "").lower().startswith(direction.lower()):
-                return False
+        _open_pos = _truth.get_open_positions()
+        for p in _open_pos:
+            if p.symbol == symbol:
+                # Orfao: MT5 sabe, state nao. Bloqueia.
+                if not state.positions.get(state_key):
+                    log(f"[DEFESA2-DRIFT] {state_key} orfao no MT5 (ticket={p.ticket}) — bloqueando {direction}")
+                    return False
+                break
     except Exception:
         pass
 
@@ -1638,19 +1797,25 @@ def _defenses_ok(symbol: str, tf: str, direction: str, bar_ts) -> bool:
 VT_BOT_MAGIC = 555501  # magic do bot, ver mt5/mt5_executor.py L231/L341
 
 
-def validate_order_pre_send(symbol: str, direction: str, magic: int = VT_BOT_MAGIC) -> bool:
-    """Consulta MT5 status() antes de enviar BUY/SELL. Bloqueia duplicacao.
+def validate_order_pre_send(symbol: str, tf: str = "", direction: str = "", magic: int = VT_BOT_MAGIC) -> bool:
+    """Consulta state.positions (per-TF) antes de enviar BUY/SELL. Bloqueia duplicacao.
+
+    Wave Per-TF (Bruno 2026-07-07): cada (symbol, tf) eh slot independente.
+    Multiplos TFs podem coexistir no mesmo symbol. Verifica slot
+    state.positions[f"{symbol}_{tf}"] em vez de MT5 status magic+symbol.
 
     DELEGADO para core.vt_truth.validate_order_pre_send (Fase 2.5 — truth layer
     autoritativo). Mantido como thin wrapper aqui para nao quebrar callers
     existentes (tests, scripts) que importam de core.vt_autotrader.
 
-    Comportamento preservado:
-      - Retorna False se ja existe pos aberta com mesmo magic+symbol.
-      - FAIL-SAFE: MT5 indisponivel -> True (permite envio, mesma politica
-        do codigo original; ver logica em core.vt_truth.validate_order_pre_send).
+    Args:
+        symbol: contrato MT5 (ex: "WDON26").
+        tf: timeframe ("M5", "M15", "M30", "H1"). Obrigatorio para semantica
+            per-TF; se vazio, truth layer usa fallback legado (magic+symbol).
+        direction: "BUY"/"SELL" (log apenas).
+        magic: magic number do bot. Default 555501.
     """
-    return _truth.validate_order_pre_send(symbol=symbol, direction=direction, magic=magic)
+    return _truth.validate_order_pre_send(symbol=symbol, tf=tf, direction=direction, magic=magic)
 
 
 def _execute_entry(symbol: str, tf: str, direction: str, price: float,
@@ -1665,7 +1830,7 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
     # Phase 1 PLUS (Bruno 2026-07-01): guard anti-duplicacao. Consulta MT5
     # ANTES de enviar BUY/SELL. Se ja tem pos aberta com mesmo magic+symbol,
     # bloqueia (ver validate_order_pre_send).
-    if not validate_order_pre_send(symbol, direction):
+    if not validate_order_pre_send(symbol, tf=tf, direction=direction):
         return {"status": "BLOCKED", "reason": "BLOCKED-DUPLICATE", "symbol": symbol}
 
     # Log
@@ -1680,14 +1845,10 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
         detail_parts.append(f"BB=[{kwargs.get('bb_lower', 0):.0f}|{kwargs.get('bb_mid', 0):.0f}|{kwargs.get('bb_upper', 0):.0f}]")
     log(f"[SINAL] {symbol} {tf}: {direction} @ {price:.2f} | {' | '.join(detail_parts)}")
 
-    # Ordem com auto-recuperação
-    _vol_by_sym = CONFIG.get("volume_by_symbol", {})
-    _root_vol = ""
-    for r in ["WIN", "WDO", "BIT", "DOL", "IND", "WSP"]:
-        if r in symbol:
-            _root_vol = r
-            break
-    _vol = _vol_by_sym.get(_root_vol, CONFIG["volume"])
+    # Volume (Wave Per-TF, Bruno 2026-07-07): prioridade volume_by_tf >
+    # volume_by_symbol > volume. Cada (symbol, tf) pode ter volume proprio
+    # via CONFIG["volume_by_tf"]["WDO_M5"] etc.
+    _vol = _resolve_volume(symbol, tf)
     if direction == "BUY":
         result = safe_buy(symbol, _vol, sl_pts=sl_pts, strategy=strategy)
     else:
