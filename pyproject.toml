@@ -2,7 +2,7 @@
 name = "vibe-trading-ai"
 version = "0.1.9"
 description = "Natural-language finance research AI agent with backtesting"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "MIT"
 readme = "README.md"
 authors = [
@@ -12,7 +12,6 @@ keywords = ["finance", "trading", "backtesting", "agent", "swarm", "quantitative
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Financial and Insurance Industry",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Office/Business :: Financial :: Investment",
 ]
@@ -69,26 +68,16 @@ vibe-trading = "cli:main"
 vibe-trading-mcp = "mcp_server:main"
 
 [tool.setuptools]
-package-dir = {"" = "agent"}
-py-modules = ["api_server", "mcp_server"]
+# agent/ was archived 2026-06-22; tests live in tests/ and modules in
+# core/ mt5/ monitoring/ optimization/ — they self-bootstrap sys.path
+# (mirrored in tests/conftest.py), so packaging is unused. CI runs via
+# PYTHONPATH, not pip install. Wave 19.3.
+package-dir = {"" = "."}
+py-modules = []
 
 [tool.setuptools.packages.find]
-where = ["agent"]
-include = ["src*", "backtest*", "cli*"]
-
-[tool.setuptools.package-data]
-"src" = [
-    "skills/**/*.md",
-    "skills/**/*.yaml",
-    "skills/**/*.json",
-    "providers/*.json",
-    "swarm/presets/*.yaml",
-    "shadow_account/templates/*.j2",
-    "shadow_account/templates/*.html",
-    "shadow_account/templates/*.css",
-]
-"backtest" = ["*.py"]
-"src.factors" = ["zoo/**/*.yaml", "zoo/**/*.md", "zoo/**/NOTICE"]
+where = ["."]
+include = []  # no installable packages — modules loaded via sys.path
 
 [project.optional-dependencies]
 ibkr = [
@@ -98,18 +87,19 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "pytest-socket>=0.7.0",
+    "ruff>=0.5.0",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["agent/tests"]
-pythonpath = ["agent"]
+testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
     "unit: Unit tests (fast, no network)",
     "integration: Integration tests (may need network)",
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 120
 # src removido em 2026-06-25 — antes era ["agent"] (HKUDS legacy),
 # mas o agent/ não existe no projeto (refactor 2026-06-22 o moveu
@@ -121,14 +111,17 @@ extend-exclude = [
     "node_modules",               # deps JS
     ".venv",
     "agent_project",              # redundante com archive/ mas explícito
+    "tests.snapshot_*",           # snapshot dirs (gitignored, but ruff may walk them)
+    "data",                       # data lake — not source
 ]
 
 [tool.coverage.run]
-source = ["agent"]
+source = ["core", "mt5", "monitoring", "optimization"]
 omit = [
-    "agent/tests/*",
-    "agent/tests/**/*",
-    "agent/**/__init__.py",
+    "*/tests/*",
+    "*/tests/**/*",
+    "*/__pycache__/*",
+    "*__init__.py",
 ]
 
 [tool.coverage.report]
