@@ -1294,108 +1294,40 @@ def _check_consecutive_losses(symbol: str) -> bool:
     return True
 
 
-def _is_loss_cooldown_active(symbol: str, direction: str) -> bool:
-    """Wave N+4B (2026-07-08): cooldown per-(symbol, direction) pós-loss consecutivas.
-
-    Default: enabled=True (Wave opt-in via loss_cooldown.enabled).
-    Se 2 losses consecutivos no mesmo (symbol, direction), bloqueia novos
-    sinais dessa direção por 30min. Corta cauda de "revenge-trade"
-    sem ser uma melhoria de edge real.
-
-    Returns:
-        True se cooldown está ativo (= bloquear).
-        False se pode operar.
-    """
-    cfg = CONFIG.get("loss_cooldown", {})
-    if not cfg.get("enabled", True):
-        return False
-    max_consecutive = cfg.get("max_consecutive", 2)
-    cooldown_minutes = cfg.get("cooldown_minutes", 30)
-
-    key = f"{symbol}_{direction}"
-    count = state.consecutive_loss_direction_count.get(key, 0)
-    if count < max_consecutive:
-        return False
-    last_ts = state.last_loss_direction_per_symbol.get(key)
-    if last_ts is None:
-        return False
-    elapsed = (datetime.now() - last_ts).total_seconds() / 60.0
-    if elapsed < cooldown_minutes:
-        log(
-            f"[LOSS_COOLDOWN] {key}: {count}/{max_consecutive} losses, "
-            f"{elapsed:.0f}min/{cooldown_minutes}min restantes"
-        )
-        return True
-    # Cooldown expirou — limpa contador.
-    state.consecutive_loss_direction_count[key] = 0
-    return False
+# ─── Wave N+4B / N+5A — wire-in do módulo position_manager ──────────
+# Refator 3.1 (2026-07-08): helpers de loss-cooldown e day-trade flatten
+# migrados para core/vt_position_manager.py. Wrappers abaixo mantêm a
+# assinatura antiga (state e CONFIG capturados por closure) para preservar
+# a chamada interna nos callsites existentes.
+from core.vt_position_manager import (  # noqa: E402,F401
+    check_loss_cooldown_active as _pm_check_cooldown,
+    bump_loss_cooldown as _pm_bump_cooldown,
+    reset_loss_cooldown as _pm_reset_cooldown,
+    day_trade_flatten_window as _pm_dt_flatten,
+)
+from core.vt_position_manager import _symbol_root as _symbol_root_for_day_trade  # noqa: E402,F401
 
 
-def _bump_loss_cooldown_counter(symbol: str, direction: str) -> None:
-    """Wave N+4B: incrementa contador de losses per-(symbol, direction).
-
-    Chamado quando uma posição nessa direção fecha com PnL negativo.
-    Reset implícito em _reset_loss_cooldown_counter (wave WIN).
-    """
-    key = f"{symbol}_{direction}"
-    cur = state.consecutive_loss_direction_count.get(key, 0)
-    state.consecutive_loss_direction_count[key] = cur + 1
-    state.last_loss_direction_per_symbol[key] = datetime.now()
+def _is_loss_cooldown_active(symbol, direction):
+    """Wrapper que fecha sobre autotrader.state + CONFIG para preservar
+    assinatura antiga nos callsites."""
+    return _pm_check_cooldown(symbol, direction, state=state, config=CONFIG)
 
 
-def _reset_loss_cooldown_counter(symbol: str, direction: str) -> None:
-    """Wave N+4B: reseta contador per-(symbol, direction) após WIN."""
-    key = f"{symbol}_{direction}"
-    state.consecutive_loss_direction_count[key] = 0
-    state.last_loss_direction_per_symbol.pop(key, None)
+def _bump_loss_cooldown_counter(symbol, direction):
+    _pm_bump_cooldown(symbol, direction, state=state)
 
 
-def _is_day_trade_flatten_window(
-    symbol: str,
-    tf: str,
-    pos_minutes: float,
-    *,
-    buffer_minutes: int = 15,
-    now=None,
-) -> bool:
-    """Wave N+5A (2026-07-08): day-trade intent → fechar antes do EOD.
-
-    Quando day_trade_intent[<symbol>_<tf>] = True, força flatten quando:
-      pos_minutes >= (EOD - now) - buffer_minutes
-    Default buffer=15min para evitar slippage caótico no último minuto.
-
-    Args:
-        symbol: contrato resolvido (ex: "WINQ26").
-        tf: timeframe.
-        pos_minutes: idade da posição em minutos.
-        buffer_minutes: janela de segurança antes do EOD.
-        now: datetime opcional (default datetime.now()) para teste.
-
-    Returns:
-        True se precisa fechar agora (dentro da janela de flatten).
-    """
-    if now is None:
-        now = datetime.now()
-    intent_map = CONFIG.get("day_trade_intent", {})
-    is_day_trade = intent_map.get(f"{_symbol_root_for_day_trade(symbol)}_{tf}", True)
-    if not is_day_trade:
-        return False
-
-    eod_hour = CONFIG.get("close_hour", 16)
-    eod_minute = CONFIG.get("close_minute", 45)
-    from datetime import datetime as _dt
-    # Calcula EOD de hoje.
-    eod = now.replace(hour=eod_hour, minute=eod_minute, second=0, microsecond=0)
-    minutes_to_eod = (eod - now).total_seconds() / 60.0
-    return minutes_to_eod <= buffer_minutes
+def _reset_loss_cooldown_counter(symbol, direction):
+    _pm_reset_cooldown(symbol, direction, state=state)
 
 
-def _symbol_root_for_day_trade(symbol: str) -> str:
-    """Root simples (WIN, WDO, BIT, etc.) — sem repetir lógica."""
-    for r in ("WIN", "WDO", "BIT", "DOL", "IND", "WSP"):
-        if r in symbol:
-            return r
-    return symbol
+def _is_day_trade_flatten_window(symbol, tf, pos_minutes,
+                                 buffer_minutes=15, now=None):
+    return _pm_dt_flatten(
+        symbol, tf, pos_minutes,
+        config=CONFIG, buffer_minutes=buffer_minutes, now=now,
+    )
 
 
 # Wave Per-TF (Bruno 2026-07-07): cross-TF cooldown defensivo.

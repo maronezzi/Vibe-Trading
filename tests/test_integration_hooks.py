@@ -31,10 +31,11 @@ def test_aggregate_blackout_called_with_real_config_key():
 
 
 def test_loss_cooldown_helper_symbol_direction():
-    """Confirma que _is_loss_cooldown_active usa last_loss_direction_per_symbol."""
+    """Confirma que _is_loss_cooldown_active (via position_manager) usa
+    last_loss_direction_per_symbol."""
     import inspect
-    from core import vt_autotrader
-    src = inspect.getsource(vt_autotrader._is_loss_cooldown_active)
+    from core.vt_position_manager import check_loss_cooldown_active
+    src = inspect.getsource(check_loss_cooldown_active)
     assert "last_loss_direction_per_symbol" in src
 
 
