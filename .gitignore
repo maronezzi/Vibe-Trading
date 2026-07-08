@@ -75,8 +75,13 @@ data/overnight*.log
 data/*.log
 data/test_write.txt
 
-# Internal docs
-docs/
+# Internal docs — ignore infra/transient content under docs/ but track
+# engineering markdown (plan, gap analyses, proposals) so plan recovery
+# is via git, not on-disk backups alone. Wave 19.1.
+docs/*
+!docs/*.md
+!docs/**/*.md
+!docs/*/
 !wiki/docs/
 !wiki/docs/**
 
@@ -123,3 +128,11 @@ archive/frontend_project/node_modules/
 
 # Hermes Agent working dir (plan files, scratch, etc. — local to this machine)
 .hermes/
+
+# Snapshot dirs created by legacy test-fix scripts (commit footgun:
+# a single `git add -A` would commit 361 files. Wave 19.7).
+tests.snapshot_*/
+tests.snapshot_*
+
+# Timestamped validation reports from data-validation runs (not source).
+data/validation_3days_*.md
