@@ -185,6 +185,12 @@ class SessionState:
         # contracto resolved (WDON26), porque a regra é por ativo, não por letra.
         self.cross_tf_cooldown = {}       # {symbol_root: datetime}
 
+        # Wave N+4B (2026-07-08): per-(symbol, direction) tracking para
+        # cooldown de perda consecutiva. Chave: f"{symbol_root}_{direction}" → datetime.
+        # Bloqueia sinais anti-mesma-causa por 30min após 2 losses.
+        self.last_loss_direction_per_symbol = {}  # {(symbol, direction): datetime}
+        self.consecutive_loss_direction_count = {}  # {(symbol, direction): int}
+
         # Wave N+1 (2026-07-08): rastreia ts da última vez que cada (symbol, tf,
         # strategy) retornou signal (truthy). Usado pela heurística de
         # "setup latente vs sem setup" — se estratégia retornou None agora mas
@@ -1286,6 +1292,43 @@ def _check_consecutive_losses(symbol: str) -> bool:
     if sym_losses > 0:
         log(f"[DEBUG] {symbol} — {sym_losses}/{state.max_consecutive_losses} perdas consecutivas")
     return True
+
+
+def _is_loss_cooldown_active(symbol: str, direction: str) -> bool:
+    """Wave N+4B (2026-07-08): cooldown per-(symbol, direction) pós-loss consecutivas.
+
+    Default: enabled=True (Wave opt-in via loss_cooldown.enabled).
+    Se 2 losses consecutivos no mesmo (symbol, direction), bloqueia novos
+    sinais dessa direção por 30min. Corta cauda de "revenge-trade"
+    sem ser uma melhoria de edge real.
+
+    Returns:
+        True se cooldown está ativo (= bloquear).
+        False se pode operar.
+    """
+    cfg = CONFIG.get("loss_cooldown", {})
+    if not cfg.get("enabled", True):
+        return False
+    max_consecutive = cfg.get("max_consecutive", 2)
+    cooldown_minutes = cfg.get("cooldown_minutes", 30)
+
+    key = f"{symbol}_{direction}"
+    count = state.consecutive_loss_direction_count.get(key, 0)
+    if count < max_consecutive:
+        return False
+    last_ts = state.last_loss_direction_per_symbol.get(key)
+    if last_ts is None:
+        return False
+    elapsed = (datetime.now() - last_ts).total_seconds() / 60.0
+    if elapsed < cooldown_minutes:
+        log(
+            f"[LOSS_COOLDOWN] {key}: {count}/{max_consecutive} losses, "
+            f"{elapsed:.0f}min/{cooldown_minutes}min restantes"
+        )
+        return True
+    # Cooldown expirou — limpa contador.
+    state.consecutive_loss_direction_count[key] = 0
+    return False
 
 
 # Wave Per-TF (Bruno 2026-07-07): cross-TF cooldown defensivo.
