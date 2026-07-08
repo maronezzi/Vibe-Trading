@@ -363,7 +363,9 @@ def reconcile_orphans():
                 from vt_trade_log import get_multiplier
                 multiplier = get_multiplier(trade["symbol"])
             except Exception:
-                multiplier = 0.20 if "WIN" in trade["symbol"] else 1.00
+                # W873: fallback alinhado ao watchdog (WIN/IND=1.0). Outros
+                # mini-contratos caem em 1.0 (conservador — prefere super a sub).
+                multiplier = 1.0 if ("WIN" in trade["symbol"] or "IND" in trade["symbol"]) else 1.0
             net_pnl = pnl_pts * multiplier * (trade["volume"] if trade["volume"] is not None else 1)
 
             conn.execute("""
@@ -712,13 +714,17 @@ def check_intraday_stats() -> dict:
         pnl_realized = round(closed[3] or 0.0, 2)
         conn.close()
 
-        # 2.5) MT5_BALANCE_DELTA (Wave 1C.2): se MT5 history vazio (broker
-        # demo nao persiste deals), usar variacao do saldo MT5 como PnL
-        # realizado broker-truth. Saldo de abertura = saldo do dia
-        # anterior em ~R$ 1.002.230,57 (padrao); mas pra ser exato, le do
-        # DB o saldo inicial = SUM(gross_pnl dos dias anteriores NAO-GHOST)
-        # + balance. Aqui, mais simples: usar truth['balance'] (atual) -
-        # base_dia (snapshot do inicio do dia, se disponivel).
+        # 2.5) MT5_BALANCE_DELTA (Wave 1C.2 + Wave 1C.3): se MT5 history
+        # vazio (broker demo nao persiste deals), usar variacao do saldo
+        # MT5 como PnL realizado broker-truth.
+        #
+        # Wave 1C.3 (08/07): o baseline agora vem de `core.vt_starting_balance`
+        # (gravado pelo autotrader no startup em /tmp/vt_intraday_starting_
+        # balance.json). Antes, o hardcoded 1002230.57 causava drift
+        # acumulado (R$403,83 entre 02/07 e 08/07) — bug pre-diagnosticado
+        # por Hermes + flagado como Pitfall #20 no skill
+        # `vibe-trading-watchdog-sync`.
+        #
         # SEMPRE roda quando MT5 history vazio (mesmo se DB tem dados, o
         # delta do saldo e a verdade do broker e sobrescreve o DB PnL).
         try:
@@ -732,19 +738,22 @@ def check_intraday_stats() -> dict:
             from mt5_orchestrator import status as _mt5_status
             mt5_now = _mt5_status()
             current_balance = mt5_now.get("account", {}).get("balance", 0.0)
-            # Saldo de abertura do dia: tenta pegar do /tmp/vt_intraday_state.json
-            # ou usa 1.002.230,57 como fallback (saldo 01/07 EOD)
+            # Saldo de abertura do dia: tenta pegar do helper centralizado
+            # (Wave 1C.3) ou usa 1.002.230,57 como ULTIMO RECURSO fallback
+            # hardcoded — mantido por seguranca, so eh usado se o helper nao
+            # tem snapshot (autotrader nunca rodou hoje OU MT5 estava down
+            # no startup).
             base_balance = 1002230.57
+            # Wave 1C.3: usa helper centralizado (autotrader grava no startup).
+            # Se helper retorna None (sem snapshot de hoje OU falha de I/O),
+            # mantemos o hardcoded 1002230.57 como last-resort.
             try:
-                import json as _json
-                from pathlib import Path as _Path2
-                _state_path = _Path2("/tmp/vt_autotrader_state.json")
-                if _state_path.exists():
-                    _state = _json.loads(_state_path.read_text())
-                    if _state.get("starting_balance"):
-                        base_balance = _state["starting_balance"]
-            except Exception:
-                pass
+                from core.vt_starting_balance import get_today_starting_balance
+                _today_balance = get_today_starting_balance()
+                if _today_balance is not None and _today_balance > 0:
+                    base_balance = float(_today_balance)
+            except Exception as _e:
+                log(f"[FALLBACK-BALANCE] starting_balance helper falhou: {_e}")
             balance_delta = round(current_balance - base_balance, 2)
             # Sobrescreve pnl_realized com a verdade do broker
             pnl_realized = balance_delta

@@ -44,6 +44,13 @@ from core.vt_config_loader import load_config, load_effective_config
 from core.vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
 from core.vt_order_validator_v2 import validate_order
 from core.vt_calendar import is_trading_day, resolve_all_symbols, get_contract_expiry, _parse_contract_code, is_rollover_contract
+# Wave 1C.3 (Bruno 08/07): snapshot do saldo MT5 no startup para o helper
+# do copilot (FALLBACK-BALANCE em monitoring/vt_copilot.py) ter baseline
+# confiavel do dia. Helper eh idempotente e sanity-checked.
+from core.vt_starting_balance import (
+    get_today_starting_balance as _get_starting_balance,
+    set_today_starting_balance as _set_starting_balance,
+)
 # Fase 2.5 (architecture_proposal_2026_07_01.md, secao 3.2): centraliza acesso
 # MT5 + truth layer. validate_order_pre_send() daqui e re-export da fonte
 # autoritativa em core.vt_truth (toda chamada MT5 sensivel passa por la).
@@ -150,6 +157,12 @@ class SessionState:
         self.positions = {}
         self.last_signals = {}
         self.daily_pnl = 0
+        # Wave 1C.3: baseline do dia, gravado em /tmp/vt_intraday_starting_balance.json
+        # no startup (record_starting_balance). Usado pelo FALLBACK-BALANCE
+        # do copilot quando MT5 history esta vazio. Antes do fix, o copilot
+        # tinha `base_balance = 1002230.57` HARDCODED e dava drift acumulado
+        # (R$403,83 entre 02/07 e 08/07).
+        self.starting_balance = None
         self.trade_count = 0
         self.wins = 0
         self.losses = 0
@@ -229,7 +242,79 @@ class SessionState:
                            for k, v in self.halt_until.items()},
         }
 
-    # Wave 12 — Fase 2 (2026-07-01, Bruno): state espelha MT5 (truth layer).
+    # Wave 1C.3 (Bruno 08/07): snapshot do saldo MT5 no startup. Chamada
+    # APENAS UMA VEZ antes do primeiro ciclo do run_daemon() (ver bloco
+    # startup abaixo). Grava em /tmp/vt_intraday_starting_balance.json via
+    # core.vt_starting_balance — le helper idempotente com sanity check.
+    #
+    # Fixa o bug do FALLBACK-BALANCE do copilot: antes o hardcoded 1002230.57
+    # causava drift acumulado (R$403,83 entre 02/07 e 08/07) quando o saldo
+    # real tinha saido daquele snapshot EOD de 01/07.
+    def record_starting_balance(self):
+        """Grava snapshot do saldo MT5 do dia no helper.
+
+        Comportamento:
+        - Se ja existe snapshot HOJE, NO-OP (idempotente: caller pode chamar
+          em restart mid-day sem estragar o valor original).
+        - Se MT5 status() falhar, NO-OP + log (nao bloqueia startup).
+        - Se balance <= 0 ou > 10M, NO-OP + log (sanity check protege contra
+          retorno lixoso do MT5).
+        """
+        try:
+            # Idempotencia: se ja tem snapshot de hoje, nao sobrescreve.
+            existing = _get_starting_balance()
+            if existing is not None:
+                print(
+                    f"[STARTING-BALANCE] snapshot ja existe para hoje "
+                    f"(R$ {existing:,.2f}); record_starting_balance NO-OP",
+                    flush=True,
+                )
+                self.starting_balance = existing
+                return existing
+
+            s = status()
+            if not isinstance(s, dict):
+                print(
+                    "[STARTING-BALANCE] status() retornou tipo invalido "
+                    f"({type(s).__name__}); record_starting_balance NO-OP",
+                    flush=True,
+                )
+                return None
+
+            balance = float(s.get("account", {}).get("balance", 0.0) or 0.0)
+            if not (0 < balance < 10_000_000):
+                print(
+                    f"[STARTING-BALANCE] balance fora da sanity "
+                    f"(R$ {balance:,.2f}); record_starting_balance NO-OP",
+                    flush=True,
+                )
+                return None
+
+            wrote = _set_starting_balance(balance, source="autotrader_startup")
+            if wrote:
+                self.starting_balance = balance
+                print(
+                    f"[STARTING-BALANCE] baseline gravado no startup: "
+                    f"R$ {balance:,.2f}",
+                    flush=True,
+                )
+            else:
+                # Ja gravado entre o check acima e o set (race com outro
+                # processo); re-le helper pra alinhar state.
+                self.starting_balance = _get_starting_balance()
+            return self.starting_balance
+
+        except Exception as _e:
+            # Falha do helper NAO bloqueia startup — copilot cai no
+            # fallback hardcoded se este snapshot nao existir.
+            print(
+                f"[STARTING-BALANCE] erro nao-tratado (continua): "
+                f"{type(_e).__name__}: {_e}",
+                flush=True,
+            )
+            return None
+
+
     #
     # Mantido apenas o helper _fetch_mt5_truth_symbols (consulta status()
     # filtrada por magic=555501 + comment=VibeTrading). Era usado pelo save()
@@ -501,6 +586,13 @@ state = SessionState()
 # Pos-processamento: _sync_daily_pnl_with_db() ja eh chamado dentro do __init__
 # da SessionState para popular state.daily_pnl com base no DB (nao state file).
 state.rebuild_state_from_mt5()  # Fase 3: state reconstruido do MT5, NAO do disco
+
+# Wave 1C.3 — fixa baseline do dia para FALLBACK-BALANCE no copilot.
+# Chamada UMA VEZ no startup (module-level, executada quando o autotrader
+# eh importado). Idempotente: se ja existe snapshot de HOJE (restart mid-day),
+# NA-OP e reaproveita. Se MT5 indisponivel, loga e segue sem bloquear.
+state.record_starting_balance()
+
 log_file = Path("/tmp/vt_autotrader.log")
 
 
@@ -3202,8 +3294,9 @@ def reconcile_positions_with_mt5():
                         # 2b) Inserir no DB (orphan recuperado)
                         try:
                             _multiplier_map = {
-                                "WIN": 0.20, "WDO": 10.0, "BIT": 0.20,
-                                "DOL": 10.0, "IND": 0.20, "WSP": 0.20,
+                                # W873: broker-truth MT5 (alinhado com watchdog/trade_log)
+                                "WIN": 1.0, "WDO": 0.0015, "BIT": 0.01,
+                                "DOL": 0.0018, "IND": 1.0, "WSP": 0.01,
                             }
                             _root_pv = next(
                                 (r for r in _multiplier_map if r in symbol), "WIN"
