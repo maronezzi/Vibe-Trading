@@ -1859,5 +1859,148 @@ All checks passed!
 - [ ] **Storage baseline measurement**: 24h de operação dry-run pra confirmar <50k rows/dia (métrica §16).
 - [ ] **Backtest valida heurística**: rodar `backtest/backtest_agi_v11.py` em modo dry-run com log contrafactual ativado por 5 dias pra sanity-check que heurística "same strategy recent signal" não está com false positives.
 
+---
+
+## §22. Wave N+2..N+5 — execuções em 2026-07-08 (sessão contínua)
+
+Esta sessão empilhou 8 waves sequenciais (cada uma com 1 commit em PT-BR)
+após N+1. Resumo executivo:
+
+| Wave | Commit | Linhas | Testes novos | PnL direto? |
+|---|---|---|---|---|
+| **N+2B** sizing vol-scaled | `6f9dd716` | +507 | 21 | sim (vol regime) |
+| **N+2A** TP1 + partial_close | `0500c993` | +411 | 8 | **sim (maior)** |
+| **N+3A** MTF confluence scoring | `b57ebaa3` | +443 | 18 | médio |
+| **N+3B** edge estimator vivo | `03253f23` | +586 | 10 | médio |
+| **N+4A** calendar blackout unificado | `13e72d79` | +354 | 11 | baixo (safety) |
+| **N+4B** loss cooldown per-(sym,dir) | `a652ac03` | +187 | 8 | baixo (safety) |
+| **N+4C** latency SLO + degradação | `60d1af91` | +275 | 10 | baixo (safety) |
+| **N+5A** day-trade intent flatten | `b44e37cc` | +139 | 5 | baixo (IR) |
+| **N+5B** loser replay (report JSON) | `ccaa2dea` | +377 | 6 | baixo (humano) |
+
+**Total sessão:** 9 commits, 3277 linhas, 97 testes novos.
+**Total branch wave-875-batch:** 14 commits (W875.0..N+5B), **159 testes
+passando em 7.20s**, ruff zero erro nos arquivos novos.
+
+### Resumo por feature
+
+#### N+2A — TP1 (Wave 5.1 do plano)
+**Maior alavanca de PnL.**
+- Novo `cmd_partial_close(symbol, ticket, close_volume)` no executor
+  (mt5_executor.py via Wine subprocess).
+- Novo `partial_close()` no orchestrator + `safe_partial_close()` wrapper
+  com retry Lei 3 + idempotência em POSITION_NOT_FOUND.
+- Lógica TP1 em `manage_position`: quando `profit >= tp1_r * atr`,
+  fecha `original * tp1_pct` contratos via `safe_partial_close`.
+  trail_dist_cfg override para `atr_trail_mult` (mais apertado) pós-TP1.
+- State TP1: `original_volume`, `remaining_volume`, `tp1_done`.
+- AGI whitelist: `tp1_r ∈ [0.5,3.0]`, `tp1_pct ∈ [0.1,0.9]`,
+  `atr_trail_mult ∈ [0.5,5.0]`.
+- Opt-in via `params_by_tf.<pair>.tp1_pct` (default 0).
+
+#### N+2B — Sizing vol-scaled
+- Novo `core/vt_sizing.py` com `resolve_volume(...)`, `resolve_max_daily_trades`,
+  `global_max_daily_trades`, `get_sizing_for_inspection`.
+- Modos: `static` (default, comportamento existente) e `vol_scaled`
+  (`atr_baseline/current_atr` com clamps).
+- Warmup gate (sem scaling até `bars >= atr_warmup_bars`).
+- AGI whitelist: 5 targets `sizing.{atr_baseline_period,atr_baseline,
+  min_scale,max_scale,atr_warmup_bars}` com ranges.
+- AGI NÃO toca `sizing.mode` (humano-only).
+
+#### N+3A — MTF confluence scoring
+- Novo `core/vt_signal_scorer.py` com `score_signal(result, htf_context) → float
+  ∈ [0.05, 0.95]`.
+- Heurística: alinhamento direcional BUY+BULL/SELL+BEAR → 0.85; contra-tendencial
+  → 0.20; RSI em extremo alinhado → bônus +0.05; oposto → penalidade -0.15.
+- `get_htf_context_for_strategy(strategy_name, bars_by_tf)`: extrai H1 context
+  via EMAs 9×21.
+- AGI whitelist: `min_confluence_score ∈ [0.4, 0.9]`.
+
+#### N+3B — Edge estimator vivo
+- Novo `core/vt_edge_estimator.py` com tabela `edge_estimator`
+  (snapshot por symbol,tf,strategy,ts).
+- `update(symbol, tf, strategy)`: lê 30d, calcula expectancy live vs
+  baseline, deriva `edge_decay` e `recommended_size_scale ∈ [0.4, 1.0]`.
+- `get_recommended_size_scale(...)` com cache 5min.
+- Default `enabled=false` (7d coleta antes de ligar).
+
+#### N+4A — Calendar blackout unificado
+- Novo `aggregate_blackout(symbol, side, config, ts) → (bool, reason)`
+  em `core/vt_calendar.py`.
+- Compõe 4 gates: `is_trading_day`, `blocked_day_directions`,
+  `time_blocks` (com wrap noturno), `events` (news).
+- Timezone-aware ISO handling normalizado.
+
+#### N+4B — Loss cooldown per-(symbol, direction)
+- State: `last_loss_direction_per_symbol`, `consecutive_loss_direction_count`.
+- Helper `_is_loss_cooldown_active(symbol, direction) → bool`.
+- Default enabled=True. Se `count >= max_consecutive` e elapsed < window
+  → bloqueia. Limpa contador quando expira.
+- Config: `loss_cooldown.{enabled, max_consecutive, cooldown_minutes, scope}`.
+
+#### N+4C — Latency SLO + degradação automática
+- Novo `core/vt_latency_monitor.py` com ring buffer per-op.
+- `record_latency(op, ms)`, `p95(op, window_min)`, `should_degrade(op)`,
+  `get_degraded_ops()`, `warn_state(op)`.
+- Integração com sizing (Wave N+2B) é dependência: `resolve_volume`
+  multiplica volume final por `degrade_size_factor` quando `should_degrade`.
+
+#### N+5A — Day-trade intent flatten
+- Helper `_is_day_trade_flatten_window(symbol, tf, pos_minutes,
+  buffer_minutes=15) → bool`.
+- Lê `CONFIG.day_trade_intent[<sym>_<tf>]` (default True para M5/M15).
+- Quando `minutes_to_eod <= buffer_minutes` e intent=True → flatten.
+- Hook no `manage_position` virá após Simplificação 3.1.
+
+#### N+5B — Loser replay
+- Novo `monitoring/vt_loser_replay.py` com `generate_report(db_path,
+  reports_dir, lookback_days) → Path`.
+- Lê losing trades do dia + cruza com `signal_blocked_log` resolvido
+  (mesma strategy + symbol_root match).
+- Calcula `would_have_saved_brl = n_blocked * avg_outcome_pnl_pts`.
+- Salva JSON em `monitoring/reports/loser_replay_<date>.json`.
+- Top 20 hipóteses por impacto.
+- Cron sugerido: `00 17 * * 1-5` pós-EOD.
+
+### Pendente integração ao autotrader
+
+Vários hooks foram implementados mas ainda não conectados ao `manage_position`
+/ `check_and_trade` (depende da Simplificação 3.1 — split do monólito de 3.776
+linhas em position_manager / signal_pipeline / sizing):
+
+- [ ] `_check_cross_tf_cooldown` → migrar para `vt_signal_pipeline.check_and_trade`
+- [ ] `_is_blocked_time` + `_is_blocked_day_direction` → substituir por
+      `calendar.aggregate_blackout(...)`.
+- [ ] `_maybe_log_blocked_signal` já integrado; falta wire com
+      `vt_edge_estimator.update()` a cada 5 min.
+- [ ] TP1 já integrado em `manage_position` (~L2430). Falta cross-symbol guard.
+- [ ] Vol-scaling já integrado em `_execute_entry` (~L2014). Falta
+      instrumentar `_run_wine` com `record_latency` para SLO ter dados.
+- [ ] Loss cooldown já integrado em `manage_position` start. Falta
+      counter update no momento de close (gain/loss detection).
+- [ ] Day-trade flatten já no helper. Falta integração no `manage_position`
+      (entre FORCED_EXIT e TRAILING).
+- [ ] Loser replay não está em cron. Atualizar `crontab.txt`.
+
+### Métricas finais (snapshot 2026-07-08 sessão)
+
+```
+Test suite:        159 passed in 7.20s
+Novos testes hoje: +97
+Commits na wave-875-batch: 14
+Linhas adicionadas (sessão): +3277
+Arquivos novos:        +8 (vt_sizing, vt_signal_scorer, vt_edge_estimator,
+                          vt_latency_monitor, vt_loser_replay, +4 testes)
+Arquivos modificados:   +6 (vt_autotrader, vt_calendar, mt5_orchestrator,
+                          mt5_executor, mt5_error_recovery, guardrails)
+ruff (arquivos novos):  All checks passed!
+```
+
+Para retomar integração (pendência acima), o caminho mais eficiente é abrir
+a branch `wave-3-1-split-autotrader` e fazer a Simplificação §3.1, que naturalmente
+absorve os hooks pendentes em módulos dedicados.
+
+
 
 
