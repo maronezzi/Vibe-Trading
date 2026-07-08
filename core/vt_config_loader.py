@@ -56,8 +56,12 @@ LOCK_PATH = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".lock")
 ALLOWED_WRITERS = (
     # este próprio módulo (loader) — entry point via save_params/save_full_config
     "core/vt_config_loader.py",
-    # AGI canônico + filhos diretos
-    "optimization/agi_tuning_17h.py",
+    # AGI v4 canônico (otimizador oficial desde W873, 2026-07-07).
+    # NOTA: agi_tuning_17h.py (AGI v3) foi DESCONTINUADO em W873 — era writer,
+    # reintroduziu o ERRO 6 (multipliers bugados) e entrou em race com o v4.
+    # Agora é um shim inerte que só redireciona para o v4; REMOVIDO daqui para
+    # que mesmo que algo o invoque, não possa escrever no config (defesa em
+    # profundidade). NÃO re-adicionar.
     "optimization/agi_bayesian_optimizer.py",
     "optimization/agi_evidence_validator.py",
     "optimization/strategy_explorer.py",
@@ -69,6 +73,25 @@ ALLOWED_WRITERS = (
     "scripts/simulate_today_wave9.py",
     "scripts/warmup_search.py",
     "scripts/reenable_scope_and_live_vol.py",
+    # scripts/w873_recovery_20260707.py: recovery do incidente W873 — re-aplica
+    # calibração broker-truth contract_specs sobrescrita pelo AGI v3 restaurado.
+    # Uso ÚNICO/PONTUAL; rodar com autotrader fora do pregão (como agora).
+    "scripts/w873_recovery_20260707.py",
+    # scripts/w873_pause_losing_tfs_20260707.py: pause dos 12 TFs negativos
+    # após AGI v4 não convergir (specs W873 corretas). Lei 5 (nunca negativo).
+    "scripts/w873_pause_losing_tfs_20260707.py",
+    # scripts/unblock_tuesday_sell_win.py: remove [1,"SELL"] do
+    # blocked_day_directions (decisão humana 2026-07-08 ter). Rodar com
+    # autotrader pausado.
+    "scripts/unblock_tuesday_sell_win.py",
+    # scripts/unblock_win_buy_20260708.py: libera win.buy_enabled=true
+    # (decisão humana 2026-07-08 ter). Rodar com autotrader pausado.
+    "scripts/unblock_win_buy_20260708.py",
+    # scripts/w874_13h_trader_ia_pause_losing.py: trader-IA sessão 13h W874
+    # pausa BIT_M5/BIT_M30/WIN_M15 (Lei 5: WR<35% E PnL<0 E n>=15) + ajusta
+    # breakeven/cooldown/max_daily em WIN/WDO/WSP para reduzir overtrading.
+    # Rodar com autotrader PAUSADO (data/autotrader.paused presente).
+    "scripts/w874_13h_trader_ia_pause_losing.py",
     "backtest/apply_optimization.py",
     # monitoring/vt_pre_flight.py roda 8h55 ANTES do autotrader (pre-flight
     # gate) — é seguro persistir resolved_symbols nessa janela.
@@ -76,6 +99,18 @@ ALLOWED_WRITERS = (
     # monitoring/vt_resolve_symbols.py: script CLI manual de sincronização
     # de contratos. Requer autotrader PAUSADO para uso.
     "monitoring/vt_resolve_symbols.py",
+    # Wave Per-TF (Bruno) — AGI apply changes (script cirúrgico de mudanças)
+    "optimization/agi_apply_changes.py",
+    # ─── Wave W874 (2026-07-08): FIX BUG CRÍTICO ──────────────────────────
+    # agi_v4/stage5_apply.py é o ÚNICO módulo do AGI v4 que escreve no config
+    # (chama save_full_config em line 160). Runner/pipeline/stage1-4 só orquestram.
+    # Bug original: este módulo NÃO estava na whitelist, então o cron 12:00/17:10
+    # do AGI v4 falhava silenciosamente em aplicar QUALQUER mudança desde o
+    # deploy W873 (2026-07-07). Telegram continuava reportando winners (não
+    # depende do apply) mas vt_config.json nunca era atualizado. Descoberto
+    # durante W874 ao tentar apply do winner HTF_BIAS_LTF_ENTRY.
+    # DOC: data/W874_STRATEGIES_HANDOFF_20260708.md seção 5.
+    "optimization/agi_v4/stage5_apply.py",
 )
 
 # Cache
