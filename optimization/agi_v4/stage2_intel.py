@@ -152,8 +152,14 @@ def _ask_llm_for_hypotheses(
     try:
         from core.vt_hermes_helper import ask_llm
     except ImportError:
-        log.debug("ask_llm não disponível — stage2 sem hipóteses LLM")
-        return []
+        # Wave 875.0: este caminho só ocorre se vt_hermes_helper.ask_llm for
+        # removido por regressão. Se cair aqui, é bug — alerta explícito.
+        log.warning(
+            "ask_llm não disponível em vt_hermes_helper — stage2 sem hipóteses LLM. "
+            "Regressão? Ver Wave 875.0 fix-llm-bridge."
+        )
+        return []  # Fallback silencioso era o problema raiz — Wave 875.0 corrige
+
 
     # Construir prompt com fatos web + dados DB
     web_summary = _format_web_for_prompt(web_results)

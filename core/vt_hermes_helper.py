@@ -13,6 +13,10 @@ Solução: split_and_send divide mensagens longas em múltiplos envios.
 """
 import os
 import shutil
+import subprocess
+import time
+import logging
+from pathlib import Path as _Path
 
 
 # Limites do Telegram Bot API (com margem de segurança)
@@ -189,3 +193,125 @@ def hermes_send_caption(telegram_target: str, message: str, timeout: int = 30) -
         return all_ok
     except Exception:
         return False
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Provider LLM — usado pelo AGI v4 (stage2_intel, stage4_generate)
+# Adicionado em Wave 875.0 (2026-07-08) — antes desta wave, stage2/stage4
+# caiam em `except ImportError` silencioso e o AGI não iterava (Lei 5 violada).
+# ═══════════════════════════════════════════════════════════════════
+_ASK_LLM_LOG_PATH = _Path("/tmp/vt_ask_llm.log")
+_ASK_LLM_LOGGER: logging.Logger | None = None
+
+
+def _get_ask_llm_logger() -> logging.Logger:
+    """Logger único para ask_llm — arquivo dedicado pra debug + telemetria."""
+    global _ASK_LLM_LOGGER
+    if _ASK_LLM_LOGGER is None:
+        ask_logger = logging.getLogger("vt_ask_llm")
+        if not ask_logger.handlers:
+            ask_handler = logging.FileHandler(_ASK_LLM_LOG_PATH)
+            ask_handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+            )
+            ask_logger.addHandler(ask_handler)
+            ask_logger.setLevel(logging.DEBUG)
+            ask_logger.propagate = False
+        _ASK_LLM_LOGGER = ask_logger
+    return _ASK_LLM_LOGGER
+
+
+# Provedores LLM — mesma cadeia de fallback de core/vt_order_validator_v2.py
+# (minimax-oauth primário fail-fast, xiaomi fallback com mais budget).
+# Refator para DRY total fica pra wave posterior (não toca validator_v2 vivo).
+_ASK_LLM_PROVIDERS = [
+    {"provider": "minimax-oauth", "model": "MiniMax-M3",    "timeout": 10},
+    {"provider": "xiaomi",        "model": "mimo-v2.5-pro", "timeout": 25},
+]
+
+
+def ask_llm(
+    prompt: str,
+    *,
+    timeout: int = 60,
+    system: str | None = None,
+) -> str | None:
+    """Provider LLM único para o AGI e futuros callers cross-module.
+
+    Tenta provedores em ordem (MiniMax-M3 OAuth → MiMo v2.5 Pro). Retorna a
+    primeira resposta não-vazia ou ``None`` em qualquer falha — nunca levanta.
+
+    Args:
+        prompt: texto a enviar.
+        timeout: budget total em segundos (default 60). Cada provedor tem
+            seu próprio timeout interno; o deadline global limita a soma.
+        system: prompt de sistema (opcional). Pré-penda via flag ``-s`` do
+            hermes se suportado; ignorado silenciosamente caso contrário.
+
+    Returns:
+        Resposta (str) ou ``None`` se todos os provedores falharam/hermes ausente.
+
+    Notas:
+        - Adicionado em Wave 875.0 (2026-07-08) — corrige ImportError silencioso
+          que deixava ``optimization/agi_v4/stage2_intel.py:153`` e
+          ``stage4_generate.py:268`` retornando listas vazias em vez de
+          hipóteses.
+        - Logs em ``/tmp/vt_ask_llm.log`` (separado do validator_v2).
+        - Cache explícito por prompt fica fora deste contrato — callers que
+          quiserem cache devem implementar wrapper próprio (validator_v2 já
+          tem cache próprio em ``_llm_cache``).
+    """
+    ask_log = _get_ask_llm_logger()
+    hermes_bin = find_hermes()
+    if not hermes_bin:
+        ask_log.debug("ask_llm: hermes não encontrado no PATH")
+        return None
+
+    deadline = time.time() + timeout
+    for prov in _ASK_LLM_PROVIDERS:
+        remaining = deadline - time.time()
+        if remaining <= 2:
+            ask_log.debug("ask_llm: sem budget restante para próximo provedor")
+            break
+        per_timeout = min(prov["timeout"], int(remaining))
+
+        args = [
+            hermes_bin, "-z", prompt,
+            "-m", prov["model"],
+            "--provider", prov["provider"],
+        ]
+        if system:
+            args += ["-s", system]
+
+        t0 = time.time()
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=per_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            ask_log.warning(
+                f"ask_llm: {prov['model']} timeout após {per_timeout}s"
+            )
+            continue
+        except Exception as exc:
+            ask_log.warning(f"ask_llm: {prov['model']} erro: {exc}")
+            continue
+
+        elapsed = time.time() - t0
+        if result.returncode == 0 and result.stdout and result.stdout.strip():
+            resp = result.stdout.strip()
+            ask_log.debug(
+                f"ask_llm: {prov['model']} OK ({elapsed:.1f}s, {len(resp)} chars)"
+            )
+            return resp
+        stderr_snip = (result.stderr or "")[:200]
+        ask_log.debug(
+            f"ask_llm: {prov['model']} falhou rc={result.returncode} "
+            f"stderr={stderr_snip}"
+        )
+
+    ask_log.debug("ask_llm: todos os provedores falharam")
+    return None

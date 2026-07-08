@@ -267,7 +267,12 @@ def _generate_code_via_llm(strat_name: str, hypothesis: dict) -> str | None:
     try:
         from core.vt_hermes_helper import ask_llm
     except ImportError:
-        log.debug("ask_llm não disponível — stage4 não gera código")
+        # Wave 875.0: este caminho só ocorre se vt_hermes_helper.ask_llm for
+        # removido por regressão. Se cair aqui, é bug — alerta explícito.
+        log.warning(
+            "ask_llm não disponível em vt_hermes_helper — stage4 sem código gerado. "
+            "Regressão? Ver Wave 875.0 fix-llm-bridge."
+        )
         return None
 
     description = hypothesis.get("description", "")
