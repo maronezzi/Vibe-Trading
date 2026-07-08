@@ -1770,4 +1770,94 @@ All checks passed!
 
 Recomendação operacional: **commitar separadamente** cada wave num branch próprio (`wave-875-0-fix-llm-bridge`, `wave-875-g-agi-guardrails`, `wave-19-1-docs-and-snapshots-ignore`, `wave-19-2-ci-real-packaging`). 4 PRs pequenos > 1 PR monolítico.
 
+---
+
+## §21. Wave N+1 — log contrafactual (entregue ✅)
+
+**Timestamp:** 2026-07-08 ~20:00–20:25 (commitado `3190779c`)
+**Commit:** `Wave N+1 feat(core): signal_blocked_log + signal_journal + heurística setup-latente (Bruno)`
+
+### Arquivos tocados
+
+| Arquivo | Tipo | Linhas |
+|---|---|---|
+| `core/vt_signal_journal.py` | **NEW** | +390 |
+| `tests/test_signal_journal.py` | **NEW** | +440 |
+| `core/vt_trade_log.py` | modified | +30 (schema no init_db) |
+| `core/vt_config_loader.py` | modified | +4 (whitelist) |
+| `core/vt_autotrader.py` | modified | +60 (SessionState field, helper, hook) |
+| `tests/conftest.py` | modified | +35 (schema mirror + monkeypatch DB_PATH) |
+
+### Mudanças por arquivo
+
+**`core/vt_trade_log.py:131`** — adicionado `CREATE TABLE IF NOT EXISTS signal_blocked_log` ao `executescript` de `init_db()`. Schema mirror do módulo novo. Indexes `idx_blocked_sym_tf_strat_ts` e `idx_blocked_resolved_ts`.
+
+**`core/vt_signal_journal.py`** (NEW) — API pública:
+- `ensure_schema(conn=None)` — idempotente.
+- `log_blocked_signal(symbol, tf, strategy, *, direction, block_reason, sl_pts=None, atr_pts=None, regime=None, ts=None)` — enfileira + auto-flush em 50 rows OU 30s elapsed desde último flush. Falha de DB mantém row no buffer (nunca interrompe tick loop).
+- `flush() -> int` — batch `INSERT OR IGNORE`. Idempotente via `UNIQUE(ts, symbol, tf, direction, strategy)`.
+- `resolve_blocked_outcomes(window_minutes=120, fetcher=None) -> int` — busca preço futuro via `mt5_orchestrator.bars` (override `fetcher` para testes). Computa win/loss/pnl com clamp em `-sl_pts`.
+- `compute_selectivity(strategy=None, days=7) -> dict` — `{strategies: {<s>: {entries, blocked, selectivity, reject_reasons}}, global: {entries, blocked, selectivity}}`. Cruza `signal_blocked_log` ↔ `trades.entries`.
+- `LATENT_LOOKBACK_MINUTES = 30` — heurística.
+- `reset_buffer_for_test()` — só para tests.
+
+**`core/vt_autotrader.py:186`** — `SessionState.recent_signal_ts: dict[(symbol, tf, strategy), datetime]`. Atualizado em `check_and_trade` quando `result` é truthy (L1547).
+
+**`core/vt_autotrader.py:1354` `_maybe_log_blocked_signal`** — helper. Heurística: se strategy retornou None AGORA E `recent_signal_ts[(s,t,strat)]` é dos últimos `LATENT_LOOKBACK_MINUTES` minutos, chama `log_blocked_signal(..., block_reason="STRATEGY_RETURNED_NONE_AFTER_SIGNAL")`. Try/except interno: falha nunca quebra tick.
+
+**`core/vt_autotrader.py:check_and_trade` (L1480+)** — quando `strategy_func(...)` retorna None, chama `_maybe_log_blocked_signal(state, symbol, tf, strategy, last_bar_ts)`.
+
+**`core/vt_config_loader.py:ALLOWED_WRITERS`** — adicionado `"core/vt_signal_journal.py"` (módulo whitelist pra escrita em `signal_blocked_log`).
+
+**`tests/conftest.py:_isolate_trades_db`** — estendido:
+- Adicionado `signal_blocked_log` ao schema mirror do tmp DB.
+- `monkeypatch.setattr(vt_signal_journal, "DB_PATH", tmp_db)` (mesma DB do orchestrator).
+- `reset_buffer_for_test()` chamado.
+- `ImportError` silencioso se `core.vt_signal_journal` não instalado (subset de testes continua funcionando).
+
+### Validação
+
+```text
+$ .venv/bin/python -m pytest tests/test_ask_llm_bridge.py \
+                          tests/test_agi_guardrails.py \
+                          tests/test_signal_journal.py -q
+62 passed in 2.12s
+
+$ ruff check core/vt_signal_journal.py tests/test_signal_journal.py
+All checks passed!
+```
+
+16 testes novos do N+1 (`tests/test_signal_journal.py`):
+1. Schema + indexes idempotentes (2 testes).
+2. log_blocked_signal enqueue + flush (3 testes: básico, idempotência UNIQUE, auto-flush em batch).
+3. Defesa contra DB failure (1 teste).
+4. resolve_blocked_outcomes (4 testes: winner, loser com clamp, recente pula, fetcher exception).
+5. compute_selectivity (2 testes: agregação + filtro por estratégia).
+6. Hook `_maybe_log_blocked_signal` (4 testes: fires within lookback, no-fire outside, no-fire sem recent signal, exceção defensiva).
+
+### Antes/depois (comportamento)
+
+**Antes:**
+- Estratégia retornava None → descartado silenciosamente. Zero memória do que poderia ter sido.
+- Sem como medir seletividade (entries vs blocked).
+- Wave N+3B (edge decay) impossível: sem dado de "se filtro X não existisse".
+- Wave N+5B (loser replay) impossível: sem contrafactual.
+
+**Depois:**
+- Log persiste em `signal_blocked_log` com auto-flush (não bloqueia tick).
+- Daemon pode chamar `resolve_blocked_outcomes()` a cada 5 min → 2h depois rows ganham `outcome_win` + `outcome_pnl_pts`.
+- Telegram selector report pode chamar `compute_selectivity()` diariamente; flag `selectivity < 0.3` indica filtro que está barrando demais.
+- Wave N+3B pode ler `outcome_pnl_pts` por estratégia pra detectar edge decay.
+- Wave N+5B pode cruzar losing trades vs blocked setups do mesmo par — hipóteses de filtros candidatos.
+
+### Pendente pós-merge
+
+- [ ] **Adicionar `compute_selectivity` ao `monitoring/vt_daily_report.py`** (top-5 estratégias por selectivity). Wire ao Telegram do copilot.
+- [ ] **Adicionar `resolve_blocked_outcomes` ao loop do daemon** em `vt_autotrader.py:run_daemon` (a cada 5 min).
+- [ ] **Atualizar §10 do plano** com a whitelist REAL do `optimization/agi_v4/guardrails.py` (substituir aspiracional `_SAFE_TARGETS`).
+- [ ] **Vacuum semanal** em `signal_blocked_log` (DELETE WHERE created_at < now - 90 days) — script `scripts/vacuum_signal_journal.py`.
+- [ ] **Storage baseline measurement**: 24h de operação dry-run pra confirmar <50k rows/dia (métrica §16).
+- [ ] **Backtest valida heurística**: rodar `backtest/backtest_agi_v11.py` em modo dry-run com log contrafactual ativado por 5 dias pra sanity-check que heurística "same strategy recent signal" não está com false positives.
+
+
 
