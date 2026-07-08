@@ -85,7 +85,10 @@ SAFE_WRITE_TARGETS: list[tuple[str, type | tuple[type, ...], tuple[float, float]
     (r"^sizing\.min_scale$", float, (0.1, 1.0)),
     (r"^sizing\.max_scale$", float, (1.0, 5.0)),
     (r"^sizing\.atr_warmup_bars$", int, (10, 500)),
-]
+    # ── Wave N+3A (2026-07-08): MTF confluence score threshold.
+    # Range apertado: <0.5 rejeita quase tudo, >0.9 aceita quase nada útil.
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.min_confluence_score$", float, (0.4, 0.9)),
+] 
 
 
 # ─── Hard wall ─────────────────────────────────────────────────────────────
