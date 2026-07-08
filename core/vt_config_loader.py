@@ -56,6 +56,11 @@ LOCK_PATH = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".lock")
 ALLOWED_WRITERS = (
     # este próprio módulo (loader) — entry point via save_params/save_full_config
     "core/vt_config_loader.py",
+    # Wave N+1 (2026-07-08): signal_journal escreve em signal_blocked_log
+    # (mesma DB do orchestrator, tabela separada). Adicionado via whitelist
+    # para que check_write_authorized() não bloqueie quando autotrader
+    # chama signal_journal.log_blocked_signal() em tick loop.
+    "core/vt_signal_journal.py",
     # AGI v4 canônico (otimizador oficial desde W873, 2026-07-07).
     # NOTA: agi_tuning_17h.py (AGI v3) foi DESCONTINUADO em W873 — era writer,
     # reintroduziu o ERRO 6 (multipliers bugados) e entrou em race com o v4.

@@ -132,6 +132,32 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_trades_date ON trades(entry_time);
         CREATE INDEX IF NOT EXISTS idx_trades_exit_reason ON trades(exit_reason);
         CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_summary(date);
+
+        -- Wave N+1 (2026-07-08): log contrafactual de sinais filtrados.
+        -- Schema mirror em core/vt_signal_journal.py:_BLOCKED_SCHEMA. Se este
+        -- bloco rodar antes do módulo existir (caso de import order),
+        -- a tabela já existe via ensure_schema() chamado por init_db.
+        CREATE TABLE IF NOT EXISTS signal_blocked_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            tf TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            direction TEXT,
+            block_reason TEXT NOT NULL,
+            hypothetical_sl_pts INTEGER,
+            hypothetical_atr_pts REAL,
+            regime TEXT,
+            resolved INTEGER DEFAULT 0,
+            outcome_win INTEGER,
+            outcome_pnl_pts REAL,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            UNIQUE(ts, symbol, tf, direction, strategy)
+        );
+        CREATE INDEX IF NOT EXISTS idx_blocked_sym_tf_strat_ts
+            ON signal_blocked_log(symbol, tf, strategy, ts);
+        CREATE INDEX IF NOT EXISTS idx_blocked_resolved_ts
+            ON signal_blocked_log(resolved, ts);
     """)
     conn.commit()
     conn.close()

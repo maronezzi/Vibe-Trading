@@ -185,6 +185,13 @@ class SessionState:
         # contracto resolved (WDON26), porque a regra é por ativo, não por letra.
         self.cross_tf_cooldown = {}       # {symbol_root: datetime}
 
+        # Wave N+1 (2026-07-08): rastreia ts da última vez que cada (symbol, tf,
+        # strategy) retornou signal (truthy). Usado pela heurística de
+        # "setup latente vs sem setup" — se estratégia retornou None agora mas
+        # tinha retornado signal há <LATENT_LOOKBACK_MINUTES, é filter-reject
+        # e deve ser logado em core/vt_signal_journal.log_blocked_signal.
+        self.recent_signal_ts = {}        # {(symbol, tf, strategy): datetime}
+
         # FASE 3 (2026-07-01): SessionState NAO le mais /tmp/vt_autotrader_state.json
         # no startup. State vira projecao em memoria, reconstruida do MT5
         # via rebuild_state_from_mt5() (chamado no startup, ver linha 429).
@@ -1344,6 +1351,56 @@ def _check_cross_tf_cooldown(symbol_root: str, threshold: int = 2, cooldown_min:
     return False
 
 
+def _maybe_log_blocked_signal(state, symbol: str, tf: str, strategy: str, bar_ts) -> bool:
+    """Wave N+1 (2026-07-08): heurística "setup latente vs sem setup".
+
+    Se estratégia retornou None AGORA mas a MESMA estratégia no MESMO (symbol,
+    tf) retornou signal há <LATENT_LOOKBACK_MINUTES minutos, é provável que
+    houve filter-reject (volatility, MTF low score, day-dir blocked, etc.).
+    Nesse caso, loga em signal_blocked_log para alimentar N+3B (edge decay) e
+    N+5B (loser replay).
+
+    Returns True se logou, False se foi "sem setup" genuíno.
+
+    Sem raise — falhas de I/O nunca interrompem o tick loop. O log fica em
+    fila no signal_journal (batch flush), consistente com o resto do módulo.
+    """
+    try:
+        from core import vt_signal_journal
+    except ImportError:
+        return False
+    try:
+        last_signal_ts = state.recent_signal_ts.get((symbol, tf, strategy))
+        if not last_signal_ts:
+            return False
+        # last_signal_ts pode ser datetime (do state) — compara com datetime.now()
+        from datetime import datetime as _dt
+        now = _dt.now()
+        if isinstance(last_signal_ts, str):
+            try:
+                last_signal_ts = _dt.fromisoformat(last_signal_ts)
+            except ValueError:
+                return False
+        delta_min = (now - last_signal_ts).total_seconds() / 60.0
+        if delta_min > vt_signal_journal.LATENT_LOOKBACK_MINUTES:
+            return False
+        # Heurística acionada → loga contrafactual.
+        vt_signal_journal.log_blocked_signal(
+            symbol=symbol,
+            tf=tf,
+            strategy=strategy,
+            direction=None,         # filtro barrou ANTES de decidir direcao
+            block_reason="STRATEGY_RETURNED_NONE_AFTER_SIGNAL",
+            sl_pts=None,
+            atr_pts=None,
+            regime=None,
+        )
+        return True
+    except Exception as exc:  # defense-in-depth: nunca quebra tick loop
+        log(f"[N+1] signal_journal falhou silenciosamente: {exc!r}")
+        return False
+
+
 def check_and_trade():
     from monitoring.vt_analyst import fetch_snapshot, save_snapshot, detect_anomalies, log_anomaly, notify as analyst_notify
 
@@ -1477,7 +1534,19 @@ def check_and_trade():
                     result = strategy_func(symbol, tf, last_close, atr,
                                            bar_ts=last_bar_ts, bars=bars,
                                            params=params, utils=_strategy_utils)
+                    # Wave N+1 (2026-07-08): heurística "setup latente vs
+                    # sem setup". Estratégia retornou None — pode ser filter-
+                    # reject (mesma estratégia gerou signal recentemente) ou
+                    # ausencia genuína de setup. Logga contrafactual só no
+                    # primeiro caso (alimenta Wave N+3B + N+5B).
+                    if not result:
+                        _maybe_log_blocked_signal(
+                            state, symbol, tf, strategy, last_bar_ts
+                        )
                     if result:
+                        # Wave N+1 (2026-07-08): registra ts do signal para
+                        # heurística de setup-latente usar depois.
+                        state.recent_signal_ts[(symbol, tf, strategy)] = datetime.now()
                         info = result.get("info", {})
                         # Pitfall #2 fix: pop TODOS os campos que conflitam com
                         # _execute_entry params (strategy, atr, sl_pts, direction, price, symbol, tf, bar_ts).

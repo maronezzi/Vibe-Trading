@@ -151,6 +151,30 @@ def _isolate_trades_db(request, monkeypatch, tmp_path):
         updated_at TEXT DEFAULT (datetime('now', 'localtime'))
     );
     CREATE INDEX IF NOT EXISTS idx_trades_entry_ticket ON trades(entry_ticket);
+
+    -- Wave N+1 (2026-07-08): table espelhada para isolar testes que usam
+    -- core/vt_signal_journal.py (mesmo path de DB).
+    CREATE TABLE IF NOT EXISTS signal_blocked_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        tf TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        direction TEXT,
+        block_reason TEXT NOT NULL,
+        hypothetical_sl_pts INTEGER,
+        hypothetical_atr_pts REAL,
+        regime TEXT,
+        resolved INTEGER DEFAULT 0,
+        outcome_win INTEGER,
+        outcome_pnl_pts REAL,
+        created_at TEXT DEFAULT (datetime('now', 'localtime')),
+        UNIQUE(ts, symbol, tf, direction, strategy)
+    );
+    CREATE INDEX IF NOT EXISTS idx_blocked_sym_tf_strat_ts
+        ON signal_blocked_log(symbol, tf, strategy, ts);
+    CREATE INDEX IF NOT EXISTS idx_blocked_resolved_ts
+        ON signal_blocked_log(resolved, ts);
     """
     conn = sqlite3.connect(str(tmp_db), timeout=30.0)
     conn.executescript(_TRADES_SCHEMA)
@@ -160,6 +184,14 @@ def _isolate_trades_db(request, monkeypatch, tmp_path):
     # Monkeypatch: redireciona TRADES_DB no módulo orchestrator.
     # monkeypatch reverte automaticamente ao final do teste — produção intocado.
     monkeypatch.setattr(mt5_orchestrator, "TRADES_DB", tmp_db)
+
+    # Wave N+1 (2026-07-08): mesmo path para o vt_signal_journal (mesma DB).
+    try:
+        from core import vt_signal_journal
+        monkeypatch.setattr(vt_signal_journal, "DB_PATH", tmp_db)
+        vt_signal_journal.reset_buffer_for_test()
+    except ImportError:
+        pass  # módulo não instalado (sub-conjunto de testes) — skip
 
     yield
 
