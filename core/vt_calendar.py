@@ -9,9 +9,12 @@ Responsabilidades:
 Feriados B3 2025-2027: feriados nacionais + feriados da bolsa.
 Contratos B3: código mês + ano (H=março, J=junho, M=setembro, Z=dezembro)
 """
+import logging
 import re
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+
+log = logging.getLogger("vt_calendar")
 
 # ─── Feriados B3 (nacionais + bolsa) ───
 # Fonte: B3 oficial — atualizar anualmente
@@ -485,7 +488,7 @@ def get_trading_calendar(days: int = 10) -> list[dict]:
         # Verificar vencimentos nesse dia
         expiries = []
         for root in ["WIN", "WDO", "IND", "DOL", "BIT", "WSP"]:
-            rule = EXPIRY_RULES.get(root, "quarterly")
+            rule = EXPIRY_RULES.get(root, "quarterly")  # noqa: F841
             if rule == "quarterly":
                 for m in [3, 6, 9, 12]:
                     if _third_friday(d.year, m) == d:
@@ -501,6 +504,136 @@ def get_trading_calendar(days: int = 10) -> list[dict]:
             "expiries": expiries if expiries else None,
         })
     return calendar
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Wave N+4A (2026-07-08): aggregate_blackout — gate unificado.
+# Substitui _is_blocked_day_direction + _is_blocked_time + events spread
+# (estavam em core/vt_autotrader.py antes). Mais simples testar e evoluir.
+# ══════════════════════════════════════════════════════════════════════
+
+def _now_or_dt(ts):
+    """Aceita None (agora), datetime, ou ISO string.
+
+    Retorna datetime NAIVE (sem timezone) para comparações internas.
+    """
+    if ts is None:
+        return datetime.now()
+    if isinstance(ts, str):
+        return datetime.fromisoformat(ts)
+    # Se vier timezone-aware, strip timezone pra comparar naive.
+    if isinstance(ts, datetime) and ts.tzinfo is not None:
+        return ts.replace(tzinfo=None)
+    return ts
+
+
+def _symbol_root(symbol: str) -> str:
+    for r in ("WIN", "WDO", "BIT", "DOL", "IND", "WSP"):
+        if r in symbol:
+            return r
+    return symbol
+
+
+def aggregate_blackout(
+    symbol: str,
+    side: str,
+    *,
+    config: dict | None = None,
+    ts=None,
+) -> tuple[bool, str]:
+    """Wave N+4A (2026-07-08): gate único de blackout.
+
+    Composição (todas as checks, primeiro hit vence):
+      1. is_trading_day() — feriado nacional/weekend → bloqueia BUY+SELL.
+      2. blocked_day_directions: [[weekday_int, "BUY"|"SELL"]] para dia da semana.
+      3. time_blocks: por (symbol_root) + hora → [{start, end, strategy?, reason}].
+      4. events: lista de news (IPCA, BCB, FOMC, payrolls) com janela ±window_min
+         e side match.
+
+    Args:
+        symbol: contrato resolvido (ex: "WINQ26") ou root.
+        side: "BUY" | "SELL".
+        config: vt_config dict (snapshot).
+        ts: datetime (default now) ou ISO string. None = agora.
+
+    Returns:
+        (is_blocked: bool, reason: str). reason composto (separado por ";").
+        Se liberado, retorna (False, "").
+    """
+    config = config or {}
+    dt = _now_or_dt(ts)
+    root = _symbol_root(symbol)
+
+    parts = []
+
+    # 1. Trading day (feriados, fim de semana).
+    try:
+        is_business, td_reason = is_trading_day(dt.date())
+        if not is_business:
+            parts.append(f"trading_day:{td_reason or 'holiday'}")
+    except Exception as exc:
+        log.debug(f"aggregate_blackout: is_trading_day falhou: {exc!r}")
+
+    # 2. blocked_day_directions.
+    weekday = dt.weekday()  # 0=Mon
+    for entry in (config.get("blocked_day_directions") or []):
+        try:
+            wd, blocked_side = entry[0], entry[1]
+        except Exception:
+            continue
+        if wd == weekday and blocked_side == side:
+            parts.append(f"day_dir:{wd}:{blocked_side}")
+            break
+
+    # 3. time_blocks.
+    hour = dt.hour
+    for tb in (config.get("time_blocks", {}).get(root) or []):
+        try:
+            start, end = tb["start"], tb["end"]
+        except Exception:
+            continue
+        # Suporta wrap noturno (start > end = cruza meia-noite).
+        if start <= end:
+            in_window = start <= hour < end
+        else:
+            in_window = hour >= start or hour < end
+        if in_window:
+            reason_extra = tb.get("reason") or ""
+            extra = f":{reason_extra}" if reason_extra else ""
+            parts.append(f"time_block:{root}:{start}-{end}{extra}")
+            break
+
+    # 4. events (news).
+    for ev in (config.get("events") or []):
+        try:
+            ev_ts_str = ev.get("ts", "")
+            ev_symbol = ev.get("symbol", "")
+            ev_side = ev.get("side")
+            ev_window = int(ev.get("window_min", 30))
+        except Exception:
+            continue
+        try:
+            ev_dt = datetime.fromisoformat(ev_ts_str)
+            if ev_dt.tzinfo is not None:
+                ev_dt = ev_dt.replace(tzinfo=None)
+        except Exception:
+            continue
+        # Match de symbol (ou ALL para todos).
+        if ev_symbol and ev_symbol != root and ev_symbol.upper() != "ALL":
+            continue
+        # Match de side (None = ambos).
+        if ev_side and ev_side != side:
+            continue
+        delta_min = abs((dt - ev_dt).total_seconds() / 60)
+        if delta_min <= ev_window:
+            sev = ev.get("severity", "")
+            source = ev.get("source", "")
+            parts.append(f"event:{source or 'unknown'}:{sev}+-{ev_window}min")
+            break
+
+    if parts:
+        return True, ";".join(parts)
+    return False, ""
 
 
 if __name__ == "__main__":
