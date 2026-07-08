@@ -1331,6 +1331,54 @@ def _is_loss_cooldown_active(symbol: str, direction: str) -> bool:
     return False
 
 
+def _is_day_trade_flatten_window(
+    symbol: str,
+    tf: str,
+    pos_minutes: float,
+    *,
+    buffer_minutes: int = 15,
+    now=None,
+) -> bool:
+    """Wave N+5A (2026-07-08): day-trade intent → fechar antes do EOD.
+
+    Quando day_trade_intent[<symbol>_<tf>] = True, força flatten quando:
+      pos_minutes >= (EOD - now) - buffer_minutes
+    Default buffer=15min para evitar slippage caótico no último minuto.
+
+    Args:
+        symbol: contrato resolvido (ex: "WINQ26").
+        tf: timeframe.
+        pos_minutes: idade da posição em minutos.
+        buffer_minutes: janela de segurança antes do EOD.
+        now: datetime opcional (default datetime.now()) para teste.
+
+    Returns:
+        True se precisa fechar agora (dentro da janela de flatten).
+    """
+    if now is None:
+        now = datetime.now()
+    intent_map = CONFIG.get("day_trade_intent", {})
+    is_day_trade = intent_map.get(f"{_symbol_root_for_day_trade(symbol)}_{tf}", True)
+    if not is_day_trade:
+        return False
+
+    eod_hour = CONFIG.get("close_hour", 16)
+    eod_minute = CONFIG.get("close_minute", 45)
+    from datetime import datetime as _dt
+    # Calcula EOD de hoje.
+    eod = now.replace(hour=eod_hour, minute=eod_minute, second=0, microsecond=0)
+    minutes_to_eod = (eod - now).total_seconds() / 60.0
+    return minutes_to_eod <= buffer_minutes
+
+
+def _symbol_root_for_day_trade(symbol: str) -> str:
+    """Root simples (WIN, WDO, BIT, etc.) — sem repetir lógica."""
+    for r in ("WIN", "WDO", "BIT", "DOL", "IND", "WSP"):
+        if r in symbol:
+            return r
+    return symbol
+
+
 # Wave Per-TF (Bruno 2026-07-07): cross-TF cooldown defensivo.
 #
 # Modelo per-TF libera até 4 posições simultâneas no mesmo symbol (M5/M15/M30/H1).
