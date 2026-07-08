@@ -2011,12 +2011,13 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
     # via CONFIG["volume_by_tf"]["WDO_M5"] etc.
     # Wave N+2B (2026-07-08): sizing extraído para core/vt_sizing.resolve_volume
     # com suporte a vol-scaled (mode="vol_scaled" + sizing.atr_baseline).
+    # bars_count não está em scope aqui; warmup via vt_pre_flight snapshot.
     from core.vt_sizing import resolve_volume as _resolve_volume_new
     _vol = _resolve_volume_new(
         symbol, tf,
         config=CONFIG,
         current_atr=atr,
-        bars_count=len(bars) if isinstance(bars, list) else None,
+        bars_count=None,
     )
     if direction == "BUY":
         result = safe_buy(symbol, _vol, sl_pts=sl_pts, strategy=strategy)
@@ -2264,6 +2265,13 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             "entry_time": datetime.now(),
             "volume": _vol,
             "tf": tf,
+            # Wave N+2A (2026-07-08): TP1 partial close state. original_volume
+            # congelado na abertura; remaining_volume = original * (1 - tp1_pct)
+            # após TP1 fechar fração. tp1_done=True dispara trail em modo
+            # atr_trail_mult (mais apertado que trail_distance).
+            "original_volume": _vol,
+            "remaining_volume": _vol,
+            "tp1_done": False,
         }
 
         # Cooldown (por symbol, tf, direction — evita reversões rápidas)
@@ -2339,11 +2347,79 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     pos["best_price"] = best
     pos["bar_count"] = bar_count + 1
 
-    # Lucro em pontos
+    # Lucro em pontos (Wave N+2A: TP1 abaixo precisa disto)
     if direction == "BUY":
         profit_pts = best - entry_price
     else:
         profit_pts = entry_price - best
+
+    # ════════════════════════════════════════════════════════════════════
+    # Wave N+2A (2026-07-08): TP1 — fechamento parcial em R*ATR de profit.
+    # Dispara UMA vez por posição, em profit >= tp1_r * atr. Fecha fração
+    # tp1_pct da posição original; resto segue sob trailing (que passa a usar
+    # atr_trail_mult após TP1, mais apertado).
+    # ════════════════════════════════════════════════════════════════════
+    tp1_r = params.get("tp1_r", 1.0)
+    tp1_pct = params.get("tp1_pct", 0.5)
+    if (
+        not pos.get("tp1_done", False)
+        and atr > 0
+        and profit_pts >= tp1_r * atr
+        and pos.get("remaining_volume", pos["volume"]) > 0
+        and 0 < tp1_pct < 1
+    ):
+        # tp1_pct: fração da posição ORIGINAL a fechar.
+        original = pos.get("original_volume", pos["volume"])
+        close_volume = original * tp1_pct
+        # Não fechar MAIS do que o que está aberto.
+        actual_close = min(close_volume, pos.get("remaining_volume", pos["volume"]))
+        if actual_close <= 0:
+            pos["tp1_done"] = True  # idempotente — nada a fechar
+        else:
+            try:
+                from mt5.mt5_error_recovery import safe_partial_close
+                tp1_result = safe_partial_close(
+                    symbol, pos["entry_ticket"], actual_close,
+                )
+                if tp1_result.get("status") in ("ok", "already_closed"):
+                    new_remaining = pos["volume"] - actual_close
+                    if tp1_result.get("status") == "already_closed":
+                        new_remaining = 0.0
+                    pos["remaining_volume"] = new_remaining
+                    pos["tp1_done"] = True
+                    tp1_profit_pts = actual_close * (
+                        profit_pts / max(0.001, original)
+                    )
+                    log(
+                        f"[TP1] {symbol} {direction} fechou {actual_close:.2f} "
+                        f"de {original:.2f} @ profit {profit_pts:.1f}pts "
+                        f"(>= {tp1_r}*ATR={tp1_r*atr:.1f}) "
+                        f"→ resta {new_remaining:.2f}"
+                    )
+                    # Telegram alert (não-spam). Se notify_telegram falhar
+                    # (Telegram offline), não bloqueia trading.
+                    try:
+                        notify_telegram(
+                            f"🎯 *TP1* {symbol} {tf}\n"
+                            f"• Fechou {actual_close:.2f} contrato(s) "
+                            f"(de {original:.2f}, {tp1_pct*100:.0f}%)\n"
+                            f"• Trail restante @ atr_trail_mult={params.get('atr_trail_mult', 2.0)}"
+                        )
+                    except Exception:
+                        pass
+                else:
+                    log(
+                        f"[TP1] partial_close falhou ticket={pos['entry_ticket']}: "
+                        f"{tp1_result.get('error', '?')} — mantém estado"
+                    )
+                    # NÃO seta tp1_done — próxima barra tenta de novo.
+            except Exception as exc:
+                log(f"[TP1] erro inesperado: {exc!r} — mantém estado")
+
+    # Após TP1, switch do trail pra atr_trail_mult (mais apertado).
+    # trail_distance regular é largo demais (lock profit parcial não ajuda).
+    if pos.get("tp1_done"):
+        trail_dist_cfg = params.get("atr_trail_mult", 2.0)
 
     # Tempo de posição em minutos (check_interval = 30s por padrão)
     check_interval = CONFIG.get("check_interval", 30)

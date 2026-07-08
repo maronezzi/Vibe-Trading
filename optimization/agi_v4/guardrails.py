@@ -63,6 +63,13 @@ SAFE_WRITE_TARGETS: list[tuple[str, type | tuple[type, ...], tuple[float, float]
     # Limite diário de trades por (symbol, tf) — aceita ``daily_trade_count``
     # ou ``max_daily_trade_count`` (convenção histórica no config).
     (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.(?:max_)?daily_trade_count$", int, (1, 50)),
+    # ── Wave N+2A (2026-07-08): TP1 + ATR trailing.
+    # tp1_r: múltiplo de R pra disparar TP1 (1.0 = "1R de profit", 1.5 = "1.5R").
+    # tp1_pct: fração da posição a fechar em TP1 (0.5 = metade).
+    # atr_trail_mult: multiplicador ATR pro trailing após TP1.
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.tp1_r$", float, (0.5, 3.0)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.tp1_pct$", float, (0.1, 0.9)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.atr_trail_mult$", float, (0.5, 5.0)),
     # disabled_timeframes: AGI pode PAUSAR (adicionar), nunca DESPAUSAR
     # (remover). Validação semântica em classify_disabled_timeframes_change.
     (r"^disabled_timeframes$", list, None),
@@ -78,7 +85,7 @@ SAFE_WRITE_TARGETS: list[tuple[str, type | tuple[type, ...], tuple[float, float]
     (r"^sizing\.min_scale$", float, (0.1, 1.0)),
     (r"^sizing\.max_scale$", float, (1.0, 5.0)),
     (r"^sizing\.atr_warmup_bars$", int, (10, 500)),
-] 
+]
 
 
 # ─── Hard wall ─────────────────────────────────────────────────────────────

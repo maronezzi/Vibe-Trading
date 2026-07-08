@@ -482,6 +482,33 @@ def modify_sl(symbol: str, ticket: int, new_sl_pts: int) -> dict:
     return result
 
 
+def partial_close(symbol: str, ticket: int, close_volume: float) -> dict:
+    """Wave N+2A (2026-07-08): fechamento parcial (TP1).
+
+    Args:
+        symbol: contrato MT5 resolvido (ex: 'WDON26').
+        ticket: ticket da posição no MT5 (int).
+        close_volume: fração em contratos (ex: 0.5 = meio lote).
+
+    Returns:
+        dict com status, ticket, closed_volume, remaining_volume, exit_price,
+        profit, comment. Mesma forma do JSON retornado por
+        mt5_executor.cmd_partial_close.
+    """
+    if close_volume <= 0:
+        return {"status": "error", "error": "close_volume deve ser > 0"}
+    result = _run_wine(
+        EXECUTOR_WIN, "partial_close", symbol,
+        str(ticket), str(float(close_volume)),
+    )
+    status = result.get("status", result.get("error", "?"))
+    _log(
+        f"PARTIAL_CLOSE {symbol} ticket={ticket} close_vol={close_volume} "
+        f"→ {status} (restante={result.get('remaining_volume', '?')})"
+    )
+    return result
+
+
 def symbol_info(symbol: str) -> dict:
     """Contract specs (point, digits, tick_size, tick_value, volume, margin, stops)."""
     return _run_wine(EXECUTOR_WIN, "symbol_info", symbol)

@@ -617,6 +617,58 @@ def safe_close(symbol: str) -> dict:
     return result
 
 
+def safe_partial_close(symbol: str, ticket, close_volume: float) -> dict:
+    """Wave N+2A (2026-07-08): wrapper de partial_close com retry Lei 3.
+
+    Idempotência: se partial_close falhar com POSITION_NOT_FOUND (ticket já
+    fechado pelo TP1 ou emergency close entre detecção e chamada), considera
+    sucesso — o objetivo (livre de risco) foi atingido por outro caminho.
+
+    Args:
+        symbol: contrato MT5 resolvido.
+        ticket: ticket da posição.
+        close_volume: fração em contratos.
+
+    Returns:
+        dict no formato de mt5_orchestrator.partial_close.
+    """
+    from mt5.mt5_orchestrator import partial_close
+    last_result = None
+
+    for attempt in range(MAX_RETRIES):
+        last_result = partial_close(symbol, ticket, close_volume)
+        if last_result.get("status") == "ok":
+            return last_result
+
+        error = last_result.get("error", "")
+        err_type = _classify_error(error)
+        _log(
+            f"PARTIAL_CLOSE {symbol} ticket={ticket} vol={close_volume} "
+            f"falhou [{err_type}]: {error} (tentativa {attempt+1}/{MAX_RETRIES})"
+        )
+
+        if err_type == "POSITION_NOT_FOUND":
+            # Ticket já fechou por outro caminho — objetivo atingido.
+            return {
+                "status": "already_closed",
+                "ticket": ticket,
+                "closed_volume": close_volume,
+                "remaining_volume": 0.0,
+                "comment": "position_vanished",
+            }
+
+        if err_type == "INVALID_VOLUME":
+            return last_result  # permanente — não retry
+
+        if err_type == "REQUOTE":
+            time.sleep(RETRY_DELAY)
+            continue
+
+        time.sleep(RETRY_DELAY)
+
+    return last_result
+
+
 # ─── Helpers ───
 
 def _get_point_val(symbol: str) -> float:

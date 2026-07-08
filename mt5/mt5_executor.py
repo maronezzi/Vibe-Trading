@@ -371,6 +371,102 @@ def cmd_close(symbol):
     return closed == len(positions)
 
 
+def cmd_partial_close(symbol: str, ticket: str, close_volume: str):
+    """Fecha PARCIALMENTE uma posição (close_volume contratos).
+
+    Usado por Wave N+2A (TP1): depois de gatilho tp1_r * ATR profit,
+    fecha fração (tp1_pct) e mantém o resto sob trailing.
+
+    Args (todos strings — interface do Wine subprocess):
+        symbol: contrato MT5 resolvido (ex.: 'WDON26').
+        ticket: ID da posição (str para passar via argv).
+        close_volume: fração a fechar em contratos (ex.: '0.5' = meio lote).
+
+    JSON output:
+        {
+            "status": "ok"|"error",
+            "ticket": int,
+            "closed_volume": float,           # quanto fechou
+            "remaining_volume": float,        # quanto ficou
+            "exit_price": float,              # preço do TP1
+            "profit": float,                  # PnL da parcela fechada
+            "comment": str
+        }
+    """
+    ticket_int = int(ticket)
+    close_vol = float(close_volume)
+
+    positions = mt5.positions_get(ticket=ticket_int)
+    if not positions:
+        print(json.dumps({"status": "error", "error": f"position {ticket_int} não encontrada"}))
+        return False
+    pos = positions[0]
+
+    # Sanity: close_volume <= volume aberto.
+    if close_vol > pos.volume:
+        print(json.dumps({
+            "status": "error",
+            "error": f"close_volume={close_vol} > pos.volume={pos.volume}",
+        }))
+        return False
+    if close_vol <= 0:
+        print(json.dumps({"status": "error", "error": "close_volume deve ser > 0"}))
+        return False
+
+    tick = mt5.symbol_info_tick(pos.symbol)
+    if not tick:
+        print(json.dumps({"status": "error", "error": f"sem tick para {pos.symbol}"}))
+        return False
+
+    if pos.type == mt5.ORDER_TYPE_BUY:
+        price = tick.bid
+        order_type = mt5.ORDER_TYPE_SELL
+    else:
+        price = tick.ask
+        order_type = mt5.ORDER_TYPE_BUY
+
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": pos.symbol,
+        "volume": close_vol,
+        "type": order_type,
+        "position": pos.ticket,
+        "price": price,
+        "deviation": 10,
+        "magic": 555501,
+        "comment": "VibeTrading-TP1",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": _get_filling_type(pos.symbol),
+    }
+    result = mt5.order_send(request)
+
+    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        msg = (result.comment if result else "sem resultado")
+        log(f"❌ Partial close falhou ticket={ticket_int}: {msg}", "ERROR")
+        print(json.dumps({
+            "status": "error",
+            "ticket": ticket_int,
+            "error": msg,
+        }))
+        return False
+
+    remaining = pos.volume - close_vol
+    log(
+        f"✅ TP1 fechou {close_vol} de {pos.symbol} ticket={ticket_int} "
+        f"@ {result.price} → resta {remaining}"
+    )
+    print(json.dumps({
+        "status": "ok",
+        "ticket": ticket_int,
+        "closed_volume": close_vol,
+        "remaining_volume": remaining,
+        "exit_price": result.price,
+        "profit": pos.profit * (close_vol / pos.volume),
+        "comment": "VibeTrading-TP1",
+    }))
+    return True
+
+
 def cmd_close_all():
     """Fecha TODAS as posições."""
     positions = mt5.positions_get()
@@ -720,6 +816,12 @@ def main():
             ticket = sys.argv[3]
             new_sl_pts = int(sys.argv[4])
             cmd_modify(symbol, ticket, new_sl_pts)
+        elif cmd == "partial_close":
+            # Wave N+2A (2026-07-08): TP1 partial close.
+            symbol = sys.argv[2]
+            ticket = sys.argv[3]
+            close_volume = sys.argv[4]
+            cmd_partial_close(symbol, ticket, close_volume)
         else:
             print(f"Comando desconhecido: {cmd}")
             print(__doc__)
