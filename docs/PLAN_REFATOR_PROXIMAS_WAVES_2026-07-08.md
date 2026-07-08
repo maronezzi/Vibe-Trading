@@ -2001,6 +2001,71 @@ Para retomar integração (pendência acima), o caminho mais eficiente é abrir
 a branch `wave-3-1-split-autotrader` e fazer a Simplificação §3.1, que naturalmente
 absorve os hooks pendentes em módulos dedicados.
 
+---
+
+## §23. Wave N+2.5 + 3.1 — integração final pendente (commit `82ae0d69`)
+
+Sessão continuou após §22. Resolveu 7 das 8 pendências listadas em §22.
+
+### Pendências resolvidas
+
+| # | Pendência | Onde | Status |
+|---|---|---|---|
+| 1 | `_check_cross_tf_cooldown` migrar para `check_and_trade` | autotrader:1505 | ✅ já estava (existente) |
+| 2 | `_is_blocked_time`+`_is_blocked_day_direction` → `aggregate_blackout` | autotrader:~1650 | ✅ substituído |
+| 3 | edge_estimator.update() a cada 5 min no daemon | autotrader:4021+ | ✅ wire-in |
+| 4 | TP1 cross-symbol guard | não implementado | ⏸️ defer (baixo impacto) |
+| 5 | `_run_wine` com `record_latency` | orchestrator:98+ | ✅ instrumentado |
+| 6 | loss cooldown counter em close | autotrader:2698/2703 | ✅ _bump/_reset |
+| 7 | day-trade flatten hook em `manage_position` | autotrader:2617 | ✅ integrado |
+| 8 | loser replay em cron | crontab.txt | ✅ agendado 17:30 |
+| 9 | signal_journal_vacuum em cron | crontab.txt | ✅ agendado dom 5:00 |
+
+### Simplificação 3.1 — split conservador
+
+`wave 3.1 refactor` extraiu `core/vt_position_manager.py` (~155 linhas)
+com:
+
+- `check_loss_cooldown_active(symbol, direction, *, state, config) -> bool`
+  (Wave N+4B)
+- `bump_loss_cooldown/reset_loss_cooldown` (helpers state-mutating)
+- `day_trade_flatten_window(symbol, tf, pos_minutes, *, config, ...)`
+  (Wave N+5A)
+- `_symbol_root` helper
+
+Substitui ~100 linhas de wrappers hard-coded em `vt_autotrader.py` por
+5 thin wrappers com closure sobre `state`+`CONFIG`.
+
+**Não foi feito o split completo de `manage_position`** (970 linhas)
+nem de `check_and_trade` (~900 linhas) por:
+
+1. **Risco de ciclo circular** — ambas funções leem `state`/`CONFIG`
+   módulo-globais do autotrader em ~80 callsites cada. Late-imports
+   (`_at.X`) seriam ugly mas quebrariam muitos sites.
+2. **Zero benefício comportamental** — funções estão corretas e testadas.
+3. **Padrão estabelecido** — helpers NOVOS ficam em módulos dedicados;
+   função principal fica onde tem histórico. Permite crescer sem mexer
+   em código estável.
+
+### Métricas pós-integração
+
+```text
+Total tests: 173 passed in 7.70s
+Novos nesta sessão: test_integration_hooks.py (+14 testes)
+Arquivos no split:    core/vt_position_manager.py (NEW)
+                      core/vt_autotrader.py (-97 / +12)
+Commits wave-875-batch: 17 (W875.0..N+5B + 3 docs + N+2.5 + 3.1)
+```
+
+### Pendência residual
+
+TP1 cross-symbol guard (item 4 acima) — atualmente cada (symbol, tf)
+tem TP1 independente. Em estratégia de portfolio, dois TFs do mesmo
+symbol podem fechar TP1 simultaneamente sem coordenation. Sugestão:
+adicionar state.shared_tp1_lock[(symbol_root, +window)] que bloqueia
+novo TP1 por N min após o primeiro. Wave dedicado de baixo impacto.
+
+
 
 
 
