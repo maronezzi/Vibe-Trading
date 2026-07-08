@@ -70,7 +70,15 @@ SAFE_WRITE_TARGETS: list[tuple[str, type | tuple[type, ...], tuple[float, float]
     # até ~5; BTC similar. AGI não toca volume_by_symbol.*[volume] num
     # futuro próximo, mas a regra fica preemptiva.
     (r"^volume_by_symbol\.[A-Z]+$", (int, float), (0, 10)),
-]
+    # ── Wave N+2B (2026-07-08): sizing vol-scaled.
+    # AGI pode tunar parâmetros quantitativos do scaling, mas NÃO o mode
+    # (humano-only, ver FORBIDDEN_TARGETS abaixo).
+    (r"^sizing\.atr_baseline_period$", int, (60, 1440)),    # 1h..24h
+    (r"^sizing\.atr_baseline$", float, (10.0, 500.0)),       # pts (symbol-agnóstico)
+    (r"^sizing\.min_scale$", float, (0.1, 1.0)),
+    (r"^sizing\.max_scale$", float, (1.0, 5.0)),
+    (r"^sizing\.atr_warmup_bars$", int, (10, 500)),
+] 
 
 
 # ─── Hard wall ─────────────────────────────────────────────────────────────

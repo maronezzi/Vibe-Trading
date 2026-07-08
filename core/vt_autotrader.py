@@ -2009,7 +2009,15 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
     # Volume (Wave Per-TF, Bruno 2026-07-07): prioridade volume_by_tf >
     # volume_by_symbol > volume. Cada (symbol, tf) pode ter volume proprio
     # via CONFIG["volume_by_tf"]["WDO_M5"] etc.
-    _vol = _resolve_volume(symbol, tf)
+    # Wave N+2B (2026-07-08): sizing extraído para core/vt_sizing.resolve_volume
+    # com suporte a vol-scaled (mode="vol_scaled" + sizing.atr_baseline).
+    from core.vt_sizing import resolve_volume as _resolve_volume_new
+    _vol = _resolve_volume_new(
+        symbol, tf,
+        config=CONFIG,
+        current_atr=atr,
+        bars_count=len(bars) if isinstance(bars, list) else None,
+    )
     if direction == "BUY":
         result = safe_buy(symbol, _vol, sl_pts=sl_pts, strategy=strategy)
     else:
