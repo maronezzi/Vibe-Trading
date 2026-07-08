@@ -24,8 +24,12 @@
 # ─── RELATÓRIO DIÁRIO 16:50 (seg-sex) — fecha posições + P&L do dia ──────────────
 50 16 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_daily_report.py >> /tmp/vt_daily_report.log 2>&1
 
-# ─── AGI OTIMIZADOR 17:10 (seg-sex) — análise 7d + LLM + apply_changes ──────────
-10 17 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 optimization/agi_tuning_17h.py >> /tmp/vt_agi.log 2>&1
+# ─── AGI v4 OTIMIZADOR 12:00 + 17:10 (seg-sex) — W873: v3 descontinuado ────────
+#     W873 (2026-07-07): agi_tuning_17h.py (v3) foi descontinuado e substituído
+#     por um shim inerte. O otimizador canônico é o AGI v4. Execuções almoço
+#     (12h00, fora do pico) + fechamento (17h10).
+00 12 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 optimization/agi_v4/runner.py >> /tmp/vt_agi_v4.log 2>&1
+10 17 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 optimization/agi_v4/runner.py >> /tmp/vt_agi_v4.log 2>&1
 
 # ─── SELF-HEAL MONITOR 5min (seg-sex 9-17h) — 6 health checks + auto-cura ──────
 #     Fase 2.2: autotrader/MT5/DB/state/lock/cron. Auto-cura conservadora (restart
@@ -46,3 +50,14 @@
 
 # ─── RELATÓRIO SEMANAL sexta 17:30 — resumo + 6 gráficos PNG + CSV ─────────────
 30 17 * * 5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_weekly_report.py >> /tmp/vt_weekly.log 2>&1
+
+# ─── WAVE N+5B (2026-07-08): LOSER REPLAY pós-EOD 17:30 ────────────────────────
+#     Cron que gera monitoring/reports/loser_replay_<date>.json cruzando
+#     losing trades vs signal_blocked_log. Saída revisada por humano
+#     semanalmente antes de virar input do AGI v4 stage2_intel
+#     (futuro Wave N+5B.2).
+30 17 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 -c "from monitoring.vt_loser_replay import generate_report; from pathlib import Path; generate_report(db_path=Path('/home/bruno/Projects/Vibe-Trading/vt_trades.db'))" >> /tmp/vt_loser_replay.log 2>&1
+
+# ─── WAVE N+1 (2026-07-08): VACUM SEMANAL signal_blocked_log domingo 5:00 ──────
+#     Limpa rows > 90 dias pra controlar storage growth (< 50k rows/dia target).
+0 5 * * 0 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 -c "import sqlite3, datetime; conn=sqlite3.connect('/home/bruno/Projects/Vibe-Trading/vt_trades.db'); conn.execute(\"DELETE FROM signal_blocked_log WHERE created_at < datetime('now', '-90 days')\"); conn.commit(); conn.close(); print('vacuum OK')" >> /tmp/vt_signal_journal_vacuum.log 2>&1

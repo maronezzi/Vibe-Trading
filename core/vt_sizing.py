@@ -170,8 +170,63 @@ def resolve_volume(
     base = _base_volume(config, symbol, tf)
     scale = _vol_scale(config, symbol, tf, current_atr, bars_count)
     vol = base * scale
+    # Wave N+4C (2026-07-08): degradação automática se Wine bridge está
+    # lento (p95 > degrade_ms). Last-mile defense para evitar martelar
+    # contra bridge broken.
+    vol = _apply_latency_degradation(vol)
+    # Wave N+3B (2026-07-08): edge decay layer. Se expectancy viva da
+    # (symbol, tf, strategy) caiu abaixo do threshold, reduce scale.
+    vol = _apply_edge_decay(vol, symbol, tf)
     # Convenção de floors: nunca abaixo de 1 contrato.
     return float(max(1.0, round(vol)))
+
+
+def _apply_latency_degradation(vol: float) -> float:
+    """Wave N+4C: reduz vol se p95(latency) > degrade_ms.
+
+    Late import para evitar ciclo com vt_latency_monitor (que por sua
+    vez importa config do autotrader).
+    """
+    try:
+        from core.vt_latency_monitor import should_degrade, get_degraded_ops
+        if should_degrade("buy") or should_degrade("sell") or get_degraded_ops():
+            slo_cfg = _latency_cfg_safe()
+            factor = slo_cfg.get("degrade_size_factor", 0.5)
+            vol *= factor
+    except Exception:
+        pass
+    return vol
+
+
+def _apply_edge_decay(vol: float, symbol: str, tf: str) -> float:
+    """Wave N+3B: aplica recommended_size_scale do edge_estimator."""
+    try:
+        from core.vt_edge_estimator import get_recommended_size_scale
+        scale = get_recommended_size_scale(symbol, tf, _current_strategy())
+        vol *= scale
+    except Exception:
+        pass
+    return vol
+
+
+def _latency_cfg_safe() -> dict:
+    """Lê CONFIG.latency_slo com fallback safe."""
+    try:
+        # Late import para evitar ciclo
+        from core.vt_autotrader import CONFIG as _A_CFG
+        return _A_CFG.get("latency_slo") or {}
+    except Exception:
+        return {}
+
+
+def _current_strategy() -> str:
+    """Lê strategy atual do autotrader state (sem ciclo)."""
+    try:
+        from core.vt_autotrader import state as _a_state
+        # Strategy padrão é WIN/BIT... usamos a mais recente.
+        return _a_state.last_strategy or "VWAP"
+    except Exception:
+        return "VWAP"
 
 
 def resolve_max_daily_trades(

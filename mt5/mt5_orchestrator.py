@@ -18,6 +18,7 @@ import subprocess
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -96,15 +97,29 @@ CREATE INDEX IF NOT EXISTS idx_trades_entry_ticket ON trades(entry_ticket);
 
 
 def _run_wine(script: str, *args, timeout=30) -> dict:
-    """Roda um script Python dentro do Wine e retorna o JSON do stdout."""
+    """Roda um script Python dentro do Wine e retorna o JSON do stdout.
+
+    Wave N+4C (2026-07-08): instrumenta latência via core.vt_latency_monitor
+    automaticamente para todas as chamadas. Identifica a op pelo argv[1]
+    (primeiro arg pos-script) — ex.: 'buy', 'sell', 'modify', 'close',
+    'partial_close', 'status', etc.
+    """
     cmd = ["wine", WINE_PYTHON, script, *args]
     env = {**os.environ, "WINEDEBUG": "-all"}
+
+    # Wave N+4C: mede latência Wine end-to-end (start subprocess → retorno).
+    op = args[0] if args else script.split("_")[0]
+    _t0 = time.perf_counter()
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
+        _record_latency_safe(op, time.perf_counter() - _t0)
         return {"error": "timeout"}
     except Exception as e:
+        _record_latency_safe(op, time.perf_counter() - _t0)
         return {"error": str(e)}
+
+    _record_latency_safe(op, time.perf_counter() - _t0)
 
     out = r.stdout.strip()
     err = r.stderr.strip()
@@ -123,6 +138,15 @@ def _run_wine(script: str, *args, timeout=30) -> dict:
                 pass
     # Se não tem JSON, retorna raw
     return {"raw_stdout": out[-500:] if out else "", "raw_stderr": err[-500:] if err else "", "returncode": r.returncode}
+
+
+def _record_latency_safe(op: str, ms: float) -> None:
+    """Wave N+4C: anota latência; nunca propaga exceção."""
+    try:
+        from core.vt_latency_monitor import record_latency
+        record_latency(op, ms * 1000.0)  # s → ms
+    except Exception as exc:
+        _log(f"latency_monitor record falhou: {exc!r}")
 
 
 def _log(msg):

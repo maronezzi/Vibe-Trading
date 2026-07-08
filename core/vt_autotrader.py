@@ -1331,6 +1331,25 @@ def _is_loss_cooldown_active(symbol: str, direction: str) -> bool:
     return False
 
 
+def _bump_loss_cooldown_counter(symbol: str, direction: str) -> None:
+    """Wave N+4B: incrementa contador de losses per-(symbol, direction).
+
+    Chamado quando uma posição nessa direção fecha com PnL negativo.
+    Reset implícito em _reset_loss_cooldown_counter (wave WIN).
+    """
+    key = f"{symbol}_{direction}"
+    cur = state.consecutive_loss_direction_count.get(key, 0)
+    state.consecutive_loss_direction_count[key] = cur + 1
+    state.last_loss_direction_per_symbol[key] = datetime.now()
+
+
+def _reset_loss_cooldown_counter(symbol: str, direction: str) -> None:
+    """Wave N+4B: reseta contador per-(symbol, direction) após WIN."""
+    key = f"{symbol}_{direction}"
+    state.consecutive_loss_direction_count[key] = 0
+    state.last_loss_direction_per_symbol.pop(key, None)
+
+
 def _is_day_trade_flatten_window(
     symbol: str,
     tf: str,
@@ -1644,18 +1663,29 @@ def check_and_trade():
                         # Sem isso, spread **info causa "got multiple values for argument X".
                         for k in ("strategy", "atr", "sl_pts", "direction", "price", "symbol", "tf", "bar_ts"):
                             info.pop(k, None)
-                        # Wave 3.2 (2026-06-26): bloqueio day+direction perdedor.
-                        # Padrão claro do DB 30d: quarta-BUY (-R$6.776), terça-SELL (-R$2.946).
-                        # Bloqueia ANTES de qualquer defesa custosa.
-                        if _is_blocked_day_direction(result["direction"]):
-                            log(f"[DAY-DIR BLOQUEADO] {symbol} {tf} {result['direction']} em {datetime.now().strftime('%A')}")
-                            _bc["day_dir"] += 1
+                        # Wave N+4A (2026-07-08): consolida os 2 gates antigos.
+                        # Antes: _is_blocked_day_direction + _is_blocked_time.
+                        # Agora: calendar.aggregate_blackout() une trading_day +
+                        # day_direction + time_blocks + events/news num gate único.
+                        from core.vt_calendar import aggregate_blackout
+                        _blocked, _reason = aggregate_blackout(
+                            symbol, result["direction"],
+                            config=CONFIG,
+                            ts=last_bar_ts or datetime.now(),
+                        )
+                        if _blocked:
+                            log(f"[BLACKOUT] {symbol} {result['direction']} → {_reason}")
+                            # Mantém o counter pra relatório do copilot
+                            # (compatibilidade com a estrutura anterior).
+                            if _reason.startswith("day_dir"):
+                                _bc["day_dir"] += 1
+                            elif _reason.startswith("time_block"):
+                                _bc["time"] += 1
                             continue
-                        # Wave 8.4 (2026-06-26): bloqueio time_block (symbol+hora).
-                        # Achado DB: BITM26 09h-11h -R$3.234; WINQ26 VWAP 23% WR.
-                        if _is_blocked_time(symbol, datetime.now().hour, tf):
-                            log(f"[TIME-BLOK] {symbol} {tf} hora={datetime.now().hour}")
-                            _bc["time"] += 1
+                        # Wave N+4B (2026-07-08): cooldown por loss consecutiva
+                        # per-(symbol, direction). Corta cauda de "revenge-trade".
+                        if _is_loss_cooldown_active(symbol, result["direction"]):
+                            log(f"[LOSS_COOLDOWN] {symbol} {result['direction']} bloqueado")
                             continue
                         # DEFESAS: plugins não chamam _defenses_ok — validar aqui
                         if not _defenses_ok(symbol, tf, result["direction"], last_bar_ts):
@@ -2603,6 +2633,25 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         pos["trail_on"] = True
         log(f"[TIME_TRAIL] Ativado por tempo {symbol} após {pos_minutes:.0f}min | Lucro: {profit_pts:.0f}pts")
 
+    # ===== Wave N+5A (2026-07-08): DAY-TRADE FLATTEN =====
+    # Para day-trade (intent=True), força flatten quando faltam <buffer
+    # minutos pro EOD (CLOSE_TIME). Default buffer=15min para evitar
+    # slippage caótico no último minuto.
+    if _is_day_trade_flatten_window(symbol, tf, pos_minutes):
+        log(f"[DAY_TRADE_FLATTEN] {symbol} {direction} — perto do EOD, fechando a mercado")
+        try:
+            _dd_close = safe_close(symbol)
+            if _dd_close and _dd_close.get("status") == "ok":
+                notify_telegram(
+                    f"🕒 *DAY-TRADE FLATTEN* {symbol} {tf}\n"
+                    f"• {direction} | Posição: {pos_minutes:.0f}min\n"
+                    f"• Motivo: buffer pre-EOD (day-trade intent)\n"
+                    f"• PnL dia: R$ {state.daily_pnl:+.2f}"
+                )
+                return  # posição será detectada como fechada no próximo ciclo
+        except Exception as exc:
+            log(f"[DAY_TRADE_FLATTEN] Falha: {exc!r}")
+
     # ===== TRAILING STOP =====
     # Calcula novo SL mas NÃO aplica no state até MT5 confirmar.
     # Convenção: sl_pts é ALWAYS POSITIVO (distância em executor units).
@@ -2729,9 +2778,14 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
                 state.wins += 1
                 state.consecutive_losses[symbol] = 0  # reset streak per symbol
                 state.halt_until.pop(symbol, None)  # clear halt on win
+                # Wave N+4B (2026-07-08): reset per-(sym,dir) cooldown
+                # streak on WIN.
+                _reset_loss_cooldown_counter(symbol, direction)
             else:
                 state.losses += 1
                 state.consecutive_losses[symbol] = state.consecutive_losses.get(symbol, 0) + 1
+                # Wave N+4B: incrementa per-(sym,dir) cooldown counter.
+                _bump_loss_cooldown_counter(symbol, direction)
                 if state.consecutive_losses[symbol] >= state.max_consecutive_losses:
                     from datetime import timedelta
                     state.halt_until[symbol] = datetime.now() + timedelta(hours=1)
@@ -3982,6 +4036,22 @@ def run_daemon():
                         _sync_daily_pnl_with_db(state)
             except Exception as _e_periodic:
                 log(f"[AUTO-SYNC] falha (não-crash): {_e_periodic}")
+
+        # Wave N+3B (2026-07-08): edge estimator update a cada 10 ticks ≈ 5min.
+        # Cria snapshot da expectancy viva por (symbol, tf, strategy) no
+        # DB edge_estimator; vt_sizing pode usar get_recommended_size_scale
+        # para degradação automática de exposição.
+        try:
+            from core.vt_edge_estimator import update as _ee_update
+            for _key, _strat in (CONFIG.get("strategy_by_tf") or {}).items():
+                # _key formato "<WIN>_<M5>" — splita no '_' final
+                if "_" not in _key:
+                    continue
+                _sym_root, _tf = _key.rsplit("_", 1)
+                if _sym_root in CONFIG.get("symbols", []):
+                    _ee_update(_sym_root, _tf, _strat, config=CONFIG)
+        except Exception as _e_ee:
+            log(f"[EDGE-EST] tick falhou: {_e_ee!r}")
 
         time.sleep(CONFIG["check_interval"])
 
