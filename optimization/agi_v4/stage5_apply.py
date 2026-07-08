@@ -148,16 +148,54 @@ def _write_to_config(config, change, pair):
 
     Agora: load_config(force=True) busca sempre a versão mais recente do disco,
     aplica a mudança por cima, e salva. Cada mudança é atômica e incremental.
+
+    Wave 875.G (2026-07-08): adicionado guardrail de write — toda chave passa
+    por ``validate_write_target`` antes de tocar o config. Default-deny: target
+    fora de SAFE_WRITE_TARGETS é rejeitado com log warning + gate="guardrail_reject"
+    (Lei 1 + segurança contra regressão silenciosa do AGI).
     """
     from core.vt_config_loader import save_full_config, load_config
+    # Wave 875.G — guardrail integration (ver optimization/agi_v4/guardrails.py)
+    try:
+        from optimization.agi_v4.guardrails import (
+            GuardrailReject,
+            validate_target_block,
+        )
+        _GUARDRAILS_AVAILABLE = True
+    except ImportError:
+        _GUARDRAILS_AVAILABLE = False
+
     # SEMPRE recarregar do disco — nunca confiar no config em memória do caller
     new_cfg = load_config(force=True)
     target = change.get("target", {})
+
+    # Wave 875.G: validar ANTES de aplicar. Se violar guardrail, abort sem save.
+    if _GUARDRAILS_AVAILABLE:
+        try:
+            validate_target_block(target, new_cfg)
+        except GuardrailReject as exc:
+            log.warning(
+                f"AGI GUARDRAIL rejeitou {_format_target_for_log(target, pair)}: "
+                f"{exc.reason}"
+            )
+            return  # não escreve nada; mantém estado anterior do disco
+
     for k, v in target.get("strategy_by_tf", {}).items():
         new_cfg.setdefault("strategy_by_tf", {})[k] = v
     for k, v in target.get("params_by_tf", {}).items():
         new_cfg.setdefault("params_by_tf", {}).setdefault(k, {}).update(v)
     save_full_config(new_cfg, updated_by="agi_v4_stage5")
+
+
+def _format_target_for_log(target: dict, pair: str) -> str:
+    """Compacta o target para log — não vaza valores grandes."""
+    parts = []
+    for k, v in (target.get("strategy_by_tf") or {}).items():
+        parts.append(f"strategy_by_tf[{k}]={v}")
+    for k, v in (target.get("params_by_tf") or {}).items():
+        sub = ",".join(f"{sk}={sv}" for sk, sv in v.items())
+        parts.append(f"params_by_tf[{k}]{{{sub}}}")
+    return f"{pair}({';'.join(parts) or 'noop'})"
 
 
 def _maybe_promote_generated(strategy_name: str, cand: dict, dry_run: bool) -> str | None:
