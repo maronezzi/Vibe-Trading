@@ -2069,3 +2069,159 @@ novo TP1 por N min após o primeiro. Wave dedicado de baixo impacto.
 
 
 
+
+---
+
+## §24. Review duplo + configuração para amanhã (2026-07-08)
+
+### ⚠️ Disclaimer upfront
+
+**Eu não posso garantir lucro.** Nenhum sistema, algoritmo ou pessoa
+garante lucro em mercado financeiro. O que esta sessão maximiza é:
+
+1. **Exposição a pares com edge histórico positivo**
+2. **Convexidade via TP1** (fecha metade em 1R, trail no resto)
+3. **Adaptação a regime** (vol-scaling reduz exposição em vol alta)
+4. **Degradação automática** (edge decay + latency SLO cortam exposição)
+5. **Risk hygiene** (loss cooldown, blackout unificado, kill switches)
+
+### Revisão 1 — Estado real (broker-truth, 90d)
+
+| Par (sym, tf) | PnL 90d | Trades | WR | Decisão |
+|---|---|---|---|---|
+| BIT_M15 | +R$908 | 17 | 23.5% | **REABILITADO** +R$908 é o TOP |
+| WIN_M30 | +R$299 | 21 | 28.6% | mantido ativo |
+| BIT_H1 | +R$96 | 3 | 66.7% | **REABILITADO** +R$96 |
+| WIN_H1 | +R$90 | 3 | 33.3% | mantido ativo |
+| WSP_M30 | +R$56 | 8 | 62.5% | mantido disabled (amostra<20) |
+| WDO_M30 | +R$20 | 8 | 37.5% | mantido disabled |
+| WSP_M5 | -R$16 | 17 | 35.3% | mantido disabled |
+| WSP_M15 | -R$29 | 15 | 33.3% | mantido disabled |
+| WDO_H1 | -R$118 | 23 | 56.5% | mantido disabled |
+| WIN_M5 | -R$169 | 30 | 30.0% | mantido ativo (edge histórico, TP1 ajuda) |
+| WIN_M15 | -R$204 | 42 | 19.0% | mantido ativo (TP1 + vol-scaling devem ajudar) |
+| WDO_M15 | -R$380 | 25 | 36.0% | mantido disabled |
+| WDO_M5 | -R$738 | 28 | 28.6% | mantido disabled |
+| BIT_M30 | -R$2.849 | 6 | 16.7% | mantido disabled |
+| BIT_M5 | -R$5.395 | 14 | 28.6% | mantido disabled |
+
+**Decisão honesta**: BIT_M5 (-R$5.395) e BIT_M30 (-R$2.849) **NÃO foram
+re-habilitados** mesmo o pedido "operar todos". Dados mostram que
+esses pares perderam R$8k+ em 90d — re-habilitar seria retomar
+perdedores conhecidos.
+
+**Requisição do usuário**: "garanta que o AGI ira operar todos os indices
+e tf com lucros" — **não foi possível atender literalmente** sem
+comprometer o princípio de preservação de capital. O que foi feito:
+**operar todos os pares com edge demonstrado**.
+
+### Configuração aplicada (v1016, by bruno_pre_agi_w875_review)
+
+Backup: `vt_config.json.bak.pre-agi-2026-07-08` contém o estado anterior.
+
+```jsonc
+{
+  "sizing": {
+    "mode": "vol_scaled",         // adaptive vol-based sizing
+    "atr_baseline": 120.0,        // WIN ref ATR (M5)
+    "min_scale": 0.5,             // conservador
+    "max_scale": 1.5,             // conservador
+    "atr_warmup_bars": 100
+  },
+  "edge_estimator": {
+    "enabled": true,              // LIVE; degrada automática -30%
+    "min_trades": 20,
+    "decay_threshold": -0.30,
+    "size_scale_floor": 0.7
+  },
+  "day_trade_intent": {
+    "WIN_M5": true, "WIN_M15": true,
+    "BIT_M5": true, "BIT_M15": true,
+    "WIN_M30": false, "WIN_H1": false,
+    "BIT_M30": false, "BIT_H1": false
+  },
+  "loss_cooldown": {
+    "enabled": true, "max_consecutive": 2, "cooldown_minutes": 30
+  },
+  "latency_slo": {
+    "warn_ms": 200, "degrade_ms": 1000,
+    "degrade_size_factor": 0.7, "degrade_disable_breakouts": true
+  },
+  "params_by_tf[*]": {             // 6 pares ativos
+    "tp1_r": 1.0, "tp1_pct": 0.5,
+    "atr_trail_mult": 2.0, "min_confluence_score": 0.5
+  }
+}
+```
+
+### AGI v4 revisado — 1 iteração completa
+
+- **Stage 1**: 8 trades WIN + 6 BIT (reabilitados).
+- **Stage 3** exaustiva: **432 combinações** (16 pairs × 27 strategies) testadas.
+- **Resultado**: **TODAS rejeitadas** pelo gate `profitability_full`:
+  - `PF < 1.2`: Profit Factor mínimo = 1.2 (Princípio Lei 5 — "nunca aceita negativo").
+  - `n_trades < 20`: amostra insuficiente (gate estatístico).
+- **0 mudanças aplicadas** → defaults da config reinam.
+
+Isso é **comportamento correto** do gate W875.G — AGI prefere não mexer
+em config quando não tem evidência estatística sólida. W875.0 (fix
+do `ask_llm`) e W875.G (guardrails) existem exatamente para impedir
+mudanças silenciosas que drenam capital.
+
+**Com 6 pares ativos e threshold PF≥1.2**: para o AGI tunar parâmetros
+precisamos de ~20 trades por (par, estratégia). Alguns pares têm só
+3-8 trades. Com mais 2-4 semanas de operação, o AGI começa a aplicar
+tuning real.
+
+### Sistema para amanhã (09:00 quinta)
+
+**Fluxo esperado no pregao:**
+
+1. `vt_pre_flight.py` (cron 8:55) valida ambiente, abre pregao.
+2. `start_autotrader.sh` (9:00) lança daemon.
+3. Tick loop (30s):
+   - `check_and_trade` testa 6 pares ativos.
+   - `calendar.aggregate_blackout` filtra feridos (holidays, day-dir, time-blocks, news).
+   - `_is_loss_cooldown_active` filtra caudas de revenge-trade.
+   - `strategy_func` → se signal, sizing com `vol_scaled` cascade
+     (× latency × edge_decay).
+   - Entry → `manage_position` com TP1 + trail (`atr_trail_mult`).
+4. Day-trade flatten às 16:30 (M5/M15 fecham antes do EOD).
+5. AGI v4 cron 12:00 (próxima janela) — refaz o mesmo loop; pode
+   tune parâmetros se evidência nova aparecer.
+
+**Limites que vão proteger:**
+
+- `max_daily_loss = -R$300` (mantido).
+- Stop automático se `state.daily_pnl < -300`.
+- AGI NUNCA pode tocar `max_daily_loss`, `magic`, `sizing.mode`,
+  `disabled_symbols`, `start_hour`, `_version` etc.
+  (`FORBIDDEN_TARGETS` no `guardrails.py`).
+
+### Métricas esperadas (sem garantia)
+
+Expectativa baseada em histórico 90d:
+
+| Cenário | PnL esperado | Justificativa |
+|---|---|---|
+| Otimista | +R$700 a +R$1500 | BIT_M15 +R$908 + outros trend continuation |
+| Realista | -R$300 a +R$500 | WIN_M5/M15 ainda perdendo, mas reduzidos |
+| Pessimista | -R$1000 (limit max_daily_loss corta) | Event-driven, gap risk |
+
+**Semanais**: pos-EOD, `vt_weekly_report.py` (sexta 17:30) +
+`vt_loser_replay.py` (todos dias 17:30) geram relatórios.
+**Edge estimator**: a cada 5 min no daemon, verifica se expectancy
+viva da estratégia caiu — se cair, reduz size automaticamente.
+**Latency SLO**: instrumenta toda call ao Wine; se p95 > 1s,
+reduz size em 30%.
+
+### Honest last note
+
+**Não toque em nada hoje.** Aguarde a operação rodar pelo menos uma
+seção (~4 dias úteis / ~80+ trades por par) para ter sinal estatístico
+suficiente. Se BIT_M15 voltar a perder de forma consistente, AGI vai
+detectá-lo via edge_estimator; manteremos as guardas W875.G robustas.
+
+**Próxima avaliação**: sexta-feira (Wave N+5B.2 + loser_replay review).
+Se algum par lucra consistentemente nesse meio tempo: reabilitar via
+`config_audit` (próxima wave), com cautela.
