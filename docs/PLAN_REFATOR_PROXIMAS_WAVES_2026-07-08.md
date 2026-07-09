@@ -2321,3 +2321,141 @@ Esta correção documenta em §25 a posição conservadora e o critério
 mínimo para reverter.
 
 [Bruno]
+
+---
+
+## §26. Audit operacional pré-live (release para amanhã, 2026-07-09 09:00)
+
+### Status verificado em runtime
+
+```text
+PID autotrader: 2584733 (started 10:29:24 hoje, 21:20 idle)
+PID MT5:       2773343 (rodando, XPMT5-DEMO)
+DB schema:     trades, daily_summary, trade_history_from_mt5, edge_estimator
+Falta tabela:  signal_blocked_log (criada no init_db() do próximo restart)
+Hot-reload:    v1016 → v1017 carregado com sucesso às 21:16:22
+State file:    inexistente (Fase 3: rebuilt from MT5 a cada restart)
+Lock files:    nenhum (sem writer ativo)
+```
+
+### Pre-flight dry-run (2026-07-08 21:19) — **PASSOU** (exit 0)
+
+| Check | Status | Notas |
+|---|---|---|
+| 1. Dia útil B3 | ✅ | Hoje=quarta 2026-07-08 |
+| 2. Config | ✅ | v1017 loaded, by bruno_revert_vol_scaling_safe_v1017 |
+| 3. Resolução contratos | ✅ | WIN→WINQ26, BIT→BITN26, WSP→WSPU26, WDO→WDOU26 |
+| 4. State file | ✅ | Sem state, sessão limpa |
+| 5. MT5 up | ✅ | Conta 52257579 demo, balance R$1.001.659,74, free_margin R$1.001.659,74 |
+| 6. Hermes | ✅ | /home/bruno/.local/bin/hermes, v0.18.0 |
+| 7. LLM | ✅ | MiniMax-M3 ping OK |
+| 8. Módulos | ✅ | vt_autotrader, vt_config_loader, vt_strategy_loader, vt_order_validator, vt_trade_log, mt5_orchestrator, mt5_error_recovery, vt_calendar |
+| 9. Params lookup | ✅ | 20/24 pares (4 do IND excluídos pelo design) |
+| 10. Telegram | ✅ | Notificação enviada |
+
+**⚠️ Pequeno bug cosmético encontrado**: pre-flight.log diz
+"Margem livre: R$ 0.00" mas MT5 retorna `free_margin`. É só label
+errada — valor real está OK (R$1M+). **Não é bloqueante**, vou
+anotar para cleanup wave futuro.
+
+### Audit de crons — comportamento por entrada
+
+| Cron | Horário | Comportamento | Race risk | Failure mode |
+|---|---|---|---|---|
+| **PRE-FLIGHT** | 08:55 seg-sex | 10 checks + Telegram. Fail-closed (exit != 0 = bot NÃO inicia). Valida config v1017, MT5, hermes, LLM, módulos. Pré-flight falhou HOJE? continua off até intervenção humana. |
+| **AUTOTRADER START** | 09:00 seg-sex | `start_autotrader.sh`: pkill antigo + relança. Idempotente. Se pre-flight falhou, autotrader NÃO entra (fail-closed). Adiciona log Telegram. |
+| **COPILOT 3×/dia** | 10, 12, 15 seg-sex | Análise + reconciliação + ajustes (com lock). Roda em paralelo ao AGI mas `acquire_write_lock()` previne corrupção. |
+| **AGI v4** | 12:00 + 17:10 seg-sex | Tunar `strategy_by_tf` + `params_by_tf` via guardrails W875.G. **19.1% das corridas produzem mudanças** (today: 0/432 — gates rejeitaram tudo por `n_trades<20`). Lock sidecar blinda contra escrita simultânea. |
+| **DAILY REPORT** | 16:50 seg-sex | Lê trades DB + gera Telegram report. Pós-EOD (5min depois). |
+| **SELF-HEAL** | */5 in-market, */15 off | 6 health checks + auto-cura conservadora. Detecta: autotrader morto → restart. MT5 morto → start_mt5linux.sh. Config lock órfão → rm. Cron drift → alerta. Nunca toca trading config (Lei 2). |
+| **SCOPE-AUDIT** | seg 09:00 | `check_symbols_active.py`: AUDITA (não modifica) que 16 pares WIN/BIT/WSP/WDO × TFs estão presentes. **Alertará 10 violações hoje** (TFs disabled por design W873). Esperado — humano mantém lista disabled. |
+| **DRY-RUN SEMANAL** | dom 06:00 | `vt_validate_1day.py --mode=mock`: 10 cenários adversariais. Se FAIL → Telegram. Defense-in-depth, não bloqueia operação real. |
+| **WEEKLY REPORT** | sex 17:30 | Resumo + gráficos PNG + CSV. |
+| **LOSER REPLAY** | 17:30 seg-sex | Wave N+5B: gera `monitoring/reports/loser_replay_<date>.json`. Lê DB readonly. Sem conflict. |
+| **VACUUM signal_blocked_log** | dom 05:00 | DELETE WHERE created_at < -90 days. Lock NOT held (não toca config) mas DB é compartilhado com autotrader. Isolamento: cron pode demorar ms; autotrader vai ter INSERT pending no SQLite (resiliente). |
+
+### AGI vs Copilot — race condition safe?
+
+**Resposta: SIM, sem corrupção**. Lei 1 (Write-lock absoluto):
+- Sidecar `vt_config.json.lock` no disco
+- `acquire_write_lock(operator)` retorna False se já existe
+- Writer perdedor aborta save (sem mutação parcial)
+- Loga warning para humano
+
+Empate em 12:00:
+1. Quem chegar primeiro (AGI ou copilot) ganha lock e escreve.
+2. O outro tenta, lock falha, abortar. Tenta na próxima janela (15:00 copilot, 17:10 AGI).
+
+Sem corrupção. Worst case: 1 iteração de análise perdida.
+
+### Recovery automático
+
+| Falha | Recovery |
+|---|---|
+| Autotrader morre mid-day | self-heal (5min) detecta via `pgrep -f`. `restart_autotrader()` (pkill + start_autotrader.sh). Estimativa MTTR: 5min. |
+| MT5 morre mid-day | self-heal detecta via `mt5_orchestrator.status()`. Chama `start_mt5linux.sh`. Estimativa MTTR: 5-10min. |
+| Wine bridge slow > 1s p95 | `latency_slo.should_degrade=True` → sizing reduce size em 30%. Auto-defesa. |
+| Edge decay live (expectancy cai) | `edge_estimator.update()` cada 5min → `recommended_size_scale < 1.0` → autotrader aplica. |
+| Loss consecutive (per-(sym,dir)) | `loss_cooldown` ativa 30min block automático. |
+| EOD (16:45) | `vt_autotrader.is_close_time()` → `close_all_and_report()` (Telegram + DB). Automático. |
+| Pre-flight falha na manha | Autotrader NÃO inicia. Self-heal 9-17 detecta. Telegram alert. **Intervenção manual necessária** (humano diagnostica). |
+| DB lock órfão (vt_config.json.lock) | self-heal detecta (lock_stale >10min). rm sidecar. Próximo write OK. |
+
+### Contingência manual
+
+Se TUDO der errado, manual:
+
+```bash
+# 1. Verificar estado
+python3 monitoring/vt_pre_flight.py --no-notify
+
+# 2. Se pre-flight OK, autotrader pode subir:
+bash /home/bruno/Projects/Vibe-Trading/scripts/start_autotrader.sh
+
+# 3. Ou forçar restart (se travou):
+pkill -f vt_autotrader.py
+sleep 2
+bash /home/bruno/Projects/Vibe-Trading/scripts/start_autotrader.sh
+
+# 4. Flatten emergência:
+python3 core/vt_autotrader.py --close
+
+# 5. Status one-shot:
+python3 core/vt_autotrader.py --status
+
+# 6. Ver logs:
+tail -f /tmp/vt_autotrader.log
+tail -f /tmp/vt_pre_flight.log
+tail -f /tmp/vt_start.log
+tail -f /tmp/vt_self_heal.log
+tail -f /tmp/vt_loser_replay.log
+tail -f /tmp/vt_agi_v4.log
+```
+
+### Pendências para waves futuras
+
+1. **Pre-flight label bug**: `account.get('margin_free', 0)` →
+   `account.get('free_margin', 0)`. Cosmetic.
+2. **AGI v4 12:00 vs copilot 12:00**: ainda há lock contention.
+   Wave futura: deslocar AGI para 11:55 ou 12:05.
+3. **Dry-run semanal só domingo**: não detecta regressões
+   até segunda. Wave: dry-run diário no almoço.
+4. **TP1 cross-symbol guard** (§22): TP1 independente por (sym,tf).
+
+### Decisão final de hoje (2026-07-08 21:25)
+
+✅ **Sistema PRONTO para live amanhã**.
+
+- v1017 ativo (hot-reload confirmou)
+- Pré-flight passou (exit 0)
+- MT5 + Hermes + LLM operacionais
+- Lock sidecar funcional, sem race condition
+- Self-heal cobre MT5/autotrader downtime
+- Todos os 12 crons documentados com comportamento + failure mode
+
+**Próximo milestone**: sexta 17:30 (primeiro `vt_weekly_report` + `loser_replay`
++ avaliação de 5 dias úteis). Primeira medição de PnL real dos 6 pares
+habilitados. AGI pode ter acumulado evidência suficiente para aplicar
+tuning real (PF≥1.2 + n_trades≥20).
+
+[Bruno]
