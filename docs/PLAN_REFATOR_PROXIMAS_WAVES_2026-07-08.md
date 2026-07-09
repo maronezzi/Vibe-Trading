@@ -2225,3 +2225,99 @@ detectá-lo via edge_estimator; manteremos as guardas W875.G robustas.
 **Próxima avaliação**: sexta-feira (Wave N+5B.2 + loser_replay review).
 Se algum par lucra consistentemente nesse meio tempo: reabilitar via
 `config_audit` (próxima wave), com cautela.
+
+---
+
+## §25. Correção de segurança: vol_scaled_max reduzido para 1.0 (2026-07-08 21:15)
+
+### Contexto
+
+Usuário sinalizou (corretamente) que a config inicial tinha
+`max_scale = 1.5` no `sizing` — o que permitia produzir **até 2 contratos**
+em regime calmo (ATR baixo). Isso dobraria a exposição por trade.
+
+### O que NÃO foi feito (faltou na revisão 24)
+
+1. **AGI NÃO analisou volumes > 1**. Run de 1 iteração produziu
+   0 mudanças — gates `profitability_full` rejeitaram 432 combinações
+   por `PF < 1.2` ou `n_trades < 20`. AGI nunca tocou em `sizing.*`
+   nessa sessão.
+2. **Backtests existentes** (`backtest_autotrader_v6.py:6`,
+   `backtest_agi_v11.py`, etc.) **assumem `volume = 1`**.
+   Não há cenário volume=2 validado em nenhum backtest histórico.
+3. **TP1 com `original_volume = 2`**: `tp1_pct=0.5` → partial_close=1.0
+   (inteiro). MT5 aceita. Sem edge case.
+4. **Mas `max_scale=1.5`**: edge_decay=1.0 + latency=1.0 → scale 1.5 →
+   `round(1*1.5) = 2 contratos`. **Risco dobrado por trade**.
+
+### Correção aplicada (v1017)
+
+```diff
+   "sizing": {
+     "mode": "vol_scaled",
+     "atr_baseline": 120.0,
+-    "min_scale": 0.5,
+-    "max_scale": 1.5,        // ⚠️ permitia 2 contratos
++    "min_scale": 0.4,        // corte mais agressivo em vol alta
++    "max_scale": 1.0,        // ✅ NUNCA escala acima de 1 contrato
+     "atr_warmup_bars": 100
+   }
+```
+
+**Comportamento:** vol_scaled agora **só corta** exposição em regime
+volátil; nunca escala. Vale em todos os regimes de ATR.
+
+| ATR regime | vol_scaled (v1017) | nota |
+|---|---|---|
+| ATR = 40 (super calmo) | 1 contrato | seria 1.5 antes (risco) |
+| ATR = 120 (baseline) | 1 contrato | idem |
+| ATR = 400 (vol alta) | 0.3 → floor 1 | **corta** exposição |
+| ATR = 800 (vol extrema) | 0.15 → floor 1 | **defende** capital |
+
+**O que mudou (positivamente):**
+- Regime calmo → 1 contrato (estável, sem risco dobrado).
+- Regime vol → 0.4-1.0 contratos (defesa).
+- **Nenhum cenário produz volume > 1**.
+
+**O que perdeu (aceitável):**
+- Upside hipotético de "capturar convexidade dobrando em calmo" foi
+  desconsiderado. Não foi validado em backtest.
+
+### Backtest planejado para hoje (noturna, não-bloqueante)
+
+Antes de habilitar `max_scale > 1` em qualquer wave futura, rodar:
+
+```bash
+python3 backtest/backtest_autotrader_v6.py \\
+    --vol-mode vol_scaled \\
+    --atr-baseline 120 \\
+    --max-scale 1.5 \\
+    --min-scale 0.5 \\
+    --bars 200 \\
+    --pairs WIN_M5 WIN_M15 BIT_M15 \\
+    --report out/backtest_vol_scaled_v1017.csv
+```
+
+Critério para reverter `max_scale > 1`:
+- **PF ≥ 1.5** (muito acima da baseline de 1.2 — sem folga).
+- **max_drawdown < R$300** (não estourar max_daily_loss numa única entrada).
+- **consistência ≥ 4 janelas walk-forward**.
+
+Sem esses critérios comprovados, `max_scale` permanece em 1.0 (defesa,
+não upside hipotético).
+
+### AGI guardrail behavior
+
+O guardrails W875.G já permite AGI tunar `sizing.min_scale` e
+`sizing.max_scale` em ranges `(0.1, 1.0)` e `(1.0, 5.0)`
+respectivamente. Mas por padrão o AGI **não toca sizing.mode** (em
+`FORBIDDEN_TARGETS`). Para HUMAN ligar `max_scale > 1` requer:
+
+1. Backtest com pelo menos 200 bars × 4 windows walk-forward.
+2. PF documentado ≥ 1.5.
+3. Auto-explicação em commit PR.
+
+Esta correção documenta em §25 a posição conservadora e o critério
+mínimo para reverter.
+
+[Bruno]
