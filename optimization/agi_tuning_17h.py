@@ -3694,24 +3694,42 @@ def main():
     discovery_results = {}
     if HAS_BAYESIAN and HAS_OPTUNA and args.optimizer_engine == "bayesian":
         try:
-            from strategy_explorer import load_trades, ALL_STRATEGIES
+            from strategy_explorer import ALL_STRATEGIES
             from strategy_explorer import get_all_symbols, get_timeframes_for_symbol
 
-            log.info("🧬 Stage 3.5: Running Multi-Stage Discovery Engine...")
-            notify_telegram("🧬 Discovery Engine rodando (Bayesian Optimization)...")
-
-            # Build trades_by_pair for the discovery engine
+            # Wave 13 (Bruno 2026-07-12): trades_by_pair baseado em PnL passado
+            # foi REMOVIDO de strategy_explorer (load_trades NotImplementedError).
+            # Caminho correto para Stage 3.5 = optimization.vt_forward_backtest
+            # ::simulate_forward() sobre dados brutos MT5 — já é o caminho do
+            # Stage 3 (run_exhaustive_search acima). Bayesiava do discovery engine
+            # aqui era redundante e usava evidência inadequada; foi desativada.
+            # Para reativar com forward sim, ver tests/manual_run_stage35.py.
+            log.warning(
+                "🧬 Stage 3.5 (Bayesian discovery engine) DESATIVADO em Wave 13. "
+                "Use optimization.vt_forward_backtest.simulate_forward() "
+                "Stage 3 já roda busca exaustiva via simulate_forward."
+            )
+            notify_telegram(
+                "🧬 Stage 3.5 desativado (Wave 13) — evidência deve ser "
+                "forward sim sobre MT5."
+            )
             symbols = get_all_symbols()
-            trades_by_pair = {}
+            trades_by_pair = {}  # vazio → engine no-op como já era abaixo
             for sym in symbols:
                 tfs = get_timeframes_for_symbol(sym)
                 for tf in tfs:
                     pair_key = f"{sym}_{tf}"
                     if pair_key in config.get("disabled_timeframes", []):
                         continue
-                    pair_trades = load_trades(days=analysis_days, symbol=sym, tf=tf)
-                    if pair_trades and len(pair_trades) >= 3:
-                        trades_by_pair[pair_key] = pair_trades
+                    # Não carregamos load_trades (removido). Mantemos só o
+                    # loop para preservar warnings caso surja config inválida.
+                    current_strategy = (
+                        config.get("strategy_by_tf", {}).get(pair_key)
+                        or config.get("strategy", {}).get(sym)
+                    )
+                    if not current_strategy:
+                        continue
+                    # trades_by_pair fica vazio → fallback no-op em frente
 
             if trades_by_pair:
                 discovery_results = run_discovery_engine(

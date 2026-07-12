@@ -21,19 +21,43 @@ from optimization.vt_forward_backtest import (
     fetch_bars_for_backtest, simulate_forward, BAR_COUNT_PER_TF, DEFAULT_BAR_COUNT
 )
 
-# All 28 strategies (file names = lowercase, display names = UPPER)
-ALL_STRATEGIES = [
-    "ADX_TREND", "BOLLINGER", "CANDLE_PATTERNS", "DIVERGENCE_RSI",
-    "DONCHIAN_BREAKOUT", "EMA_CROSSOVER", "EMA_PULLBACK", "ENHANCED_BOLLINGER",
-    "ENHANCED_MACD_MOMENTUM", "ENHANCED_RSI_REVERSION", "FIBONACCI_RETRACEMENT",
-    "HEIKIN_ASHI", "ICHIMOKU", "KELTNER_CHANNEL", "MACD_MOMENTUM",
-    "MEAN_REVERSION_ZSCORE", "MOMENTUM_BREAKOUT", "PIVOT_POINTS",
-    "RANGE_TRADING", "RSI_REVERSION", "SMART_EMA", "STRONG_TREND",
-    "SUPERTREND", "TRIPLE_EMA", "VOLATILITY_BREAKOUT", "VWAP", "WIN_REVERSION",
-]
+# ALL_STRATEGIES agora é auto-descoberto de strategies/ (sem hardcode).
+# Wave 13 (Bruno 2026-07-12): antes era uma lista hardcoded de 27 nomes
+# que excluía silenciosamente qualquer plugin novo (e ficava desatualizada
+# sempre que alguém adicionava strategy). Agora espelha core/vt_strategy_loader
+# e super_agi_v5 — adicionou uma estratégia nova? Ela aparece em todos os
+# pontos de enumeração na próxima execução.
+import re as _re_exhaust
+from pathlib import Path as _Path_exhaust
+
+
+def _discover_all_strategies() -> list:
+    found: list = []
+    seen: set = set()
+    strategies_dir = _Path_exhaust(__file__).resolve().parent.parent / "strategies"
+    if not strategies_dir.exists():
+        return found
+    for py in sorted(strategies_dir.glob("*.py")):
+        if py.name == "__init__.py":
+            continue
+        try:
+            t = py.read_text(encoding="utf-8")
+            m = _re_exhaust.search(r"^STRATEGY_NAME\s*=\s*[\"\'](.+?)[\"\']", t, _re_exhaust.MULTILINE)
+            if m:
+                name = m.group(1)
+                if name not in seen:
+                    seen.add(name)
+                    found.append(name)
+        except Exception:
+            continue
+    return found
+
+
+ALL_STRATEGIES = _discover_all_strategies()
 
 ALL_SYMBOLS = ["WIN", "BIT", "WSP", "WDO"]
 ALL_TIMEFRAMES = ["M5", "M15", "M30", "H1"]
+
 
 # ─── Parameter Grid for Optimization ─────────────────────────────────────────
 # Strategic sampling: 3-5 values per param, chosen from PARAM_BOUNDS ranges.
@@ -43,6 +67,15 @@ ALL_TIMEFRAMES = ["M5", "M15", "M30", "H1"]
 UNIVERSAL_PARAMS = {
     "sl_atr_mult":       [1.0, 1.5, 2.0, 2.5],
     "cooldown_seconds":  [120, 300, 600],
+    # Wave Melhoria 1 (Bruno 12/07): circuit breaker AGI-tunable.
+    # max_consecutive_losses: após N losses seguidas no slot, pausa.
+    # halt_duration_minutes: tempo de pausa. Defaults 999/60 = efetivamente off.
+    "max_consecutive_losses":   [2, 3, 4, 5],
+    "halt_duration_minutes":    [30, 45, 60, 90],
+    # Wave Melhoria 2 (Bruno 12/07): profit-lock por R (AGI-tunable).
+    # Quando lucro atinge profit_lock_r × risco inicial, move SL pro entry.
+    # 0.0 = desligado. O AGI testa se travar cedo (0.3) ou tarde (1.0) é melhor.
+    "profit_lock_r":            [0.3, 0.5, 0.7, 1.0],
 }
 
 # Strategy-specific param grids

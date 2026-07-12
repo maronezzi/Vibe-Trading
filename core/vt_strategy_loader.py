@@ -32,12 +32,19 @@ _file_mtimes: dict = {}  # path → mtime (para detecção de mudanças)
 
 
 def _get_file_mtimes() -> dict:
-    """Retorna {path: mtime} de todos os .py em strategies/."""
+    """Retorna {path: mtime} de todos os .py em strategies/.
+
+    Filtra apenas __init__.py (infraestrutura do package). Quaisquer outros
+    arquivos são plugins válidos, incluindo nomes com prefixo `_` (que antes
+    eram silenciosamente ignorados e quebravam a ponte AGI→autotrader quando o
+    AGI promovia uma estratégia `_pending` para strategy_by_tf).
+    """
     mtimes = {}
     if STRATEGIES_DIR.exists():
         for py_file in STRATEGIES_DIR.glob("*.py"):
-            if not py_file.name.startswith("_"):
-                mtimes[str(py_file)] = py_file.stat().st_mtime
+            if py_file.name == "__init__.py":
+                continue
+            mtimes[str(py_file)] = py_file.stat().st_mtime
     return mtimes
 
 
@@ -65,7 +72,7 @@ def load_strategies(force: bool = False) -> dict:
         return _strategies
 
     for py_file in sorted(STRATEGIES_DIR.glob("*.py")):
-        if py_file.name.startswith("_"):
+        if py_file.name == "__init__.py":
             continue
 
         module_name = py_file.stem
