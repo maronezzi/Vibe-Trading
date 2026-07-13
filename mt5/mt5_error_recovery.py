@@ -201,6 +201,14 @@ def _fix_invalid_stops_modify(symbol: str, ticket: str, sl_pts: int, point_val: 
     `* point` de novo, gerando SLs 100x (BIT), 1000x (WDO/DOL), 1x (WIN/IND)
     maiores do que deveriam. Resultado: 3 retries com SL crescendo
     exponencialmente, todos rejeitados, trade ficava com SL original errado.
+
+    Wave 16 (Bruno 2026-07-13 14:35): race condition onde o `entry_price`
+    passado pelo autotrader fica desatualizado entre o cálculo do sl_pts e
+    a chamada ao modify_sl. O fix recalculava sl_pts baseado no entry_price
+    antigo, gerando SL perto do preço atual — MT5 rejeita de novo → loop.
+    SOLUÇÃO: puxar o SL ATUAL da posição via mt5.positions_get (fonte da
+    verdade) ao invés de calcular do entry_price. Se posição não tem SL ou
+    ticket não existe, fallback conservador baseado em current_bid/ask.
     """
     from mt5_orchestrator import tick, info
     tick_data = tick(symbol)
@@ -212,8 +220,50 @@ def _fix_invalid_stops_modify(symbol: str, ticket: str, sl_pts: int, point_val: 
     # por design do sistema, mas mantemos a divisão explícita.
     pts_per_unit = point_val * _get_point_mult(symbol)  # = 1.0 para todos os símbolos atuais
 
+    # Wave 16: descobrir o SL ATUAL real da posição (fonte MT5, não entry_price).
+    # Usa mt5_orchestrator.status() (módulo-level, não from-import) pra que
+    # monkey-patches de teste peguem — from-import cria uma referência local
+    # que ignora patches do módulo.
+    import mt5_orchestrator as _mt5o
+    actual_sl_price = None
+    try:
+        st = _mt5o.status()
+        positions = st.get("positions", []) or []
+        # Filter by ticket if provided
+        ticket_int = None
+        try:
+            ticket_int = int(str(ticket).split('.')[0])
+        except (ValueError, TypeError):
+            ticket_int = None
+        for p in positions:
+            if ticket_int is None or int(p.get("identifier", 0)) == ticket_int:
+                sl_attr = p.get("sl", 0.0)
+                if sl_attr and float(sl_attr) > 0:
+                    actual_sl_price = float(sl_attr)
+                    break
+    except Exception:
+        actual_sl_price = None
+
+    # Heurística: usa o SL atual se disponível, senão calcula do sl_pts/entry_price.
+    if actual_sl_price is not None:
+        # Calcular sl_pts baseado no SL REAL atual (não no passado pelo caller).
+        # IMPORTANTE: sl_pts aqui é em native pts (unidade que cmd_modify usa
+        # ao fazer new_sl_price = price_open + sl_pts * point_val).
+        # Conversão: sl_pts = (sl_price - entry_price) / point_val
+        if direction == "BUY":
+            actual_sl_pts = int((entry_price - actual_sl_price) / point_val)
+        else:
+            actual_sl_pts = int((actual_sl_price - entry_price) / point_val)
+        current_sl_price = actual_sl_price
+        # Reaproveita sl_pts real do MT5 (não o passado pelo caller, que pode
+        # estar desatualizado por trailing/move).
+        sl_pts = max(actual_sl_pts, 1)
+    else:
+        current_sl_price = None  # será calculado abaixo por direção
+
     if direction == "BUY":
-        current_sl_price = entry_price - sl_pts * point_val
+        if current_sl_price is None:
+            current_sl_price = entry_price - sl_pts * point_val
         if current_sl_price >= current:
             info_data = info(symbol)
             stops = info_data.get("trade_stops_level", 0) if info_data and "error" not in info_data else 0
@@ -223,7 +273,8 @@ def _fix_invalid_stops_modify(symbol: str, ticket: str, sl_pts: int, point_val: 
             _log(f"BUY SL acima do preço! sl={current_sl_price:.2f} current={current:.2f}. Novo: {new_sl_pts}pts")
             return new_sl_pts
     else:
-        current_sl_price = entry_price + sl_pts * point_val
+        if current_sl_price is None:
+            current_sl_price = entry_price + sl_pts * point_val
         if current_sl_price <= current:
             info_data = info(symbol)
             stops = info_data.get("trade_stops_level", 0) if info_data and "error" not in info_data else 0
