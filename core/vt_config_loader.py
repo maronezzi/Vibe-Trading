@@ -131,6 +131,13 @@ ALLOWED_WRITERS = (
     # Backtest 60 barras justificou (n=6 WR=50% vs n=9 WR=33%, +R$565). Rodar
     # com autotrader PAUSADO (data/autotrader.paused presente).
     "scripts/w876_11h_cron_trader_ia_regime_tighten.py",
+    # Wave 877 (2026-07-13, seg, 11h00-11h10): Trader-IA estratégia swap
+    # cirúrgico WIN_M15 (HTF_BIAS_LTF_ENTRY → STRONG_TREND) e BIT_M30
+    # (PIVOT_POINTS → RSI_REVERSION). Validação: backtest 30d/60d via
+    # backtest_v944.py + mt5_fetch. WIN_M15: +R$2764/mês 30d (60d: +R$4176);
+    # BIT_M30: n triplica (22→66), +R$137/mês. Demais pares inalterados
+    # (regra: Bruno não aceita swap marginal <30% improvement).
+    "scripts/w877_11h_cron_trader_ia_strategy_swap.py",
     # Wave 12 (2026-07-12, Sunday, Bruno): SUPER-AGI v5 — busca exaustiva densa
     # (60 combos/estratégia × 27 estratégias × 16 pares) com walk-forward 4 janelas
     # e gates permissivos (PF>=1.05, n>=12, WF>=50%). NUNCA escreve direto —
