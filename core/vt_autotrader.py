@@ -4001,6 +4001,47 @@ def main():
     else:
         RESTART_FLAG = "/tmp/vt_autotrader_restart"
 
+        def _close_positions_on_shutdown(state):
+            """Wave 15 (Bruno 2026-07-13): substitui close_all_and_report() no
+            signal_handler. Mesmo comportamento de fechamento mas rotula
+            exit_reason='USER_CLOSE' em vez de 'EOD_16:45' no DB — porque
+            SIGTERM/SIGINT não é fim de dia, é encerramento operacional.
+            """
+            from datetime import datetime as _dt
+            log("=== FECHANDO TUDO (USER_CLOSE / shutdown) ===")
+            for key, pos in list(state.positions.items()):
+                parts = key.rsplit("_", 1)
+                symbol = parts[0]
+                tf = parts[1] if len(parts) > 1 else "M5"
+
+                result = safe_close(symbol)
+                log(f"Fechei {symbol}: {result}")
+
+                tick_data = tick(symbol)
+                exit_price = (
+                    tick_data.get("bid", pos["entry_price"])
+                    if tick_data else pos["entry_price"]
+                )
+
+                exit_result = log_exit(
+                    pos["trade_log_id"],
+                    exit_price=exit_price,
+                    exit_reason="USER_CLOSE",
+                    exit_ticket="shutdown_bruno",
+                    notes=("Fechamento por shutdown do daemon (SIGTERM/SIGINT). "
+                           "NÃO é EOD_16:45 — rótulo corrigido pelo Wave 15 em "
+                           f"{_dt.now().strftime('%Y-%m-%d %H:%M')}."),
+                    close_source="SHUTDOWN_CLOSE",
+                )
+                if exit_result:
+                    pnl = exit_result.get("net_pnl", 0)
+                    state.daily_pnl += pnl
+                    state.trade_count += 1
+
+            # Relatório EOD fica com o cron monitoring/vt_daily_report.py às 17:00.
+            state.closed = True
+            state.save()
+
         def signal_handler(sig, frame):
             # Se flag de restart existe, NÃO fechar posições
             if os.path.exists(RESTART_FLAG):
@@ -4009,7 +4050,10 @@ def main():
                 sys.exit(0)
             log("Sinal de encerramento recebido. Fechando tudo...")
             if state.positions and not state.closed:
-                close_all_and_report()
+                # Wave 15: antes era close_all_and_report() que rotulava tudo
+                # como exit_reason='EOD_16:45'. Agora usa _close_positions_on_shutdown
+                # que classifica corretamente como USER_CLOSE.
+                _close_positions_on_shutdown(state)
             sys.exit(0)
 
         signal.signal(signal.SIGTERM, signal_handler)
