@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+import json
 from typing import Any, Dict, List, Optional
 
 # Unica ponte MT5 — import lazy-safe para nao crashar import se Wine down.
@@ -415,6 +416,29 @@ def get_daily_pnl(date_iso: Optional[str] = None) -> Decimal:
             continue
 
     total = total.quantize(Decimal("0.01"))
+
+    # Wave 15 (Bruno 2026-07-13): fallback se history vazio (MT5 headless Xvfb
+    # com delay, ou cache stale). Quando deals=0, calcular PnL via
+    # balance - starting_balance do dia (do /tmp/vt_intraday_starting_balance.json).
+    # Garante que watchdog não alerte drift falso enquanto history não sincroniza.
+    # Heurística: se total==0 e target_date == hoje, tenta o fallback.
+    if total == Decimal("0.00") and target_date == datetime.now().strftime("%Y-%m-%d"):
+        try:
+            sb_path = Path("/tmp/vt_intraday_starting_balance.json")
+            if sb_path.exists():
+                sb_data = json.loads(sb_path.read_text(encoding="utf-8"))
+                if sb_data.get("date") == target_date:
+                    sb_balance = Decimal(str(sb_data["balance"]))
+                    # Pull MT5 balance atual via orchestrator
+                    from mt5 import mt5_orchestrator as _mt5o
+                    st = _mt5o.status()
+                    mt5_balance = Decimal(str(st["account"]["balance"]))
+                    fallback = (mt5_balance - sb_balance).quantize(Decimal("0.01"))
+                    _log(f"get_daily_pnl: history vazio, fallback balance-starting = {fallback}")
+                    total = fallback
+        except Exception as e:
+            _log(f"get_daily_pnl: fallback balance-starting falhou ({type(e).__name__}: {e})")
+
     _pnl_cache.set(cache_key, total)
     return total
 
