@@ -714,6 +714,16 @@ def cmd_bars(symbol, tf_str="M5", count=50):
             "volume": int(r["tick_volume"]),
             "real_volume": int(r["real_volume"]),
         })
+    # Wave 15 (Bruno 2026-07-13): mt5.copy_rates_from_pos retorna OLDEST-FIRST
+    # (numpy convention), mas o sistema inteiro assume NEWEST-FIRST — ver
+    # core/vt_autotrader.py:754 "bars are newest-first; reverse to process
+    # chronologically" e :802 "CRITICAL: bars do MT5 são newest-first; inverter
+    # para ordem cronológica". Sem este reverse, bars[0] = vela de dias atrás
+    # e bars[1] = segunda mais velha (autotrader usa bars[1] como "última fechada"
+    # → estratégias operam com dias de atraso). Detectado em 13/jul quando bot
+    # rodou das 09:26 às 09:34 mostrando last_bar_ts de sex 10/jul 12:20 enquanto
+    # mercado já operava em seg 13/jul 09:30. Bruno autorizou fix em 13/jul 09:34.
+    bars = list(reversed(bars))
     print(json.dumps({"symbol": symbol, "timeframe": tf_str, "bars": bars}))
 
 

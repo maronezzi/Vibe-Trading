@@ -104,6 +104,16 @@ ALLOWED_WRITERS = (
     # monitoring/vt_resolve_symbols.py: script CLI manual de sincronização
     # de contratos. Requer autotrader PAUSADO para uso.
     "monitoring/vt_resolve_symbols.py",
+    # core/vt_calendar.py: módulo canônico de resolução de contratos
+    # (WIN→WIN$, BIT→BIT$, rollover WINN26→WINQ26 etc.). Persiste
+    # resolved_symbols em vt_config.json via save_full_config
+    # (updated_by="calendar_resolve"). GAP original: AGENTS.md/CLAUDE.md
+    # listam calendar como tarefa legítima de escrita, mas a whitelist
+    # só permitia monitoring/vt_pre_flight.py e monitoring/vt_resolve_symbols.py
+    # chamarem-no. Em 2026-07-13 (segunda pós-vencimento WIN) isso travou o
+    # pre-flight às 08:50/08:55 e o autotrader abriu sem resolved_symbols
+    # atualizado — corrigido aqui. Bruno autorizou 2026-07-13.
+    "core/vt_calendar.py",
     # Wave Per-TF (Bruno) — AGI apply changes (script cirúrgico de mudanças)
     "optimization/agi_apply_changes.py",
     # ─── Wave W874 (2026-07-08): FIX BUG CRÍTICO ──────────────────────────
@@ -116,6 +126,18 @@ ALLOWED_WRITERS = (
     # durante W874 ao tentar apply do winner HTF_BIAS_LTF_ENTRY.
     # DOC: data/W874_STRATEGIES_HANDOFF_20260708.md seção 5.
     "optimization/agi_v4/stage5_apply.py",
+    # scripts/w876_11h_cron_trader_ia_regime_tighten.py: trader-IA sessão 11h W876
+    # tightening defensivo de WIN_M15 RSI (OB 75→78, OS 30→28) por regime atual.
+    # Backtest 60 barras justificou (n=6 WR=50% vs n=9 WR=33%, +R$565). Rodar
+    # com autotrader PAUSADO (data/autotrader.paused presente).
+    "scripts/w876_11h_cron_trader_ia_regime_tighten.py",
+    # Wave 12 (2026-07-12, Sunday, Bruno): SUPER-AGI v5 — busca exaustiva densa
+    # (60 combos/estratégia × 27 estratégias × 16 pares) com walk-forward 4 janelas
+    # e gates permissivos (PF>=1.05, n>=12, WF>=50%). NUNCA escreve direto —
+    # usa save_full_config via verify_super_agi_v5.py. Auditado em snapshot
+    # vt_config.json.bak.super_agi_pre_<ts>. Rodar com autotrader PAUSADO (Domingo).
+    "optimization/super_agi_v5.py",
+    "optimization/verify_super_agi_v5.py",
 )
 
 # Cache
