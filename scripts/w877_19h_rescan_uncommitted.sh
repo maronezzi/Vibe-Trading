@@ -121,6 +121,30 @@ if open_in_db > 0 and mt5_pos == 0:
 PYEOF
   echo ""
 
+  echo "=== 9. Sanity check modify_sl Invalid stops (Wave 15d) ==="
+  # Wave 15d (Bruno 2026-07-13 13:25): investigar padrão modify_sl falha +
+  # _fix_invalid_stops_modify também falha + emergency_close + GHOST no DB.
+  # Hoje: 8x 'Invalid stops', todas resultaram em close (não emergency).
+  # Heurística: se ratio Invalid_stops/modify_sl_attempts > 30%, há bug.
+  /usr/bin/python3 << 'PYEOF' 2>/dev/null
+import subprocess
+with open('/tmp/vt_autotrader.log') as f:
+    log = f.read()
+inv_stops = log.count('Invalid stops')
+fix_attempts = log.count('MODIFY') + log.count('Fix padrão:')
+em_cl = log.count('EMERGENCY_CLOSE') + log.count('emergency_closed')
+ratio = (inv_stops / max(fix_attempts, 1)) * 100
+print(f"  Invalid stops hoje:    {inv_stops}")
+print(f"  MODIFY attempts:       {fix_attempts}")
+print(f"  Emergency closes:      {em_cl}")
+print(f"  Ratio Invalid/MODIFY:  {ratio:.1f}% (alerta > 30%)")
+if ratio > 30:
+    print(f"  ⚠️  ALTA TAXA DE INVALID STOPS — investigar")
+    print(f"     Sugestão: revisar _fix_invalid_stops_modify em mt5_error_recovery.py")
+    print(f"     (race condition: entry_price do fix vs SL já modificado)")
+PYEOF
+  echo ""
+
   echo "=========================================================="
   echo "  FIM DO RELATÓRIO"
   echo "  Log: $LOG"
