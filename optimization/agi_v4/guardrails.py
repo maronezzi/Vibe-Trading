@@ -88,7 +88,73 @@ SAFE_WRITE_TARGETS: list[tuple[str, type | tuple[type, ...], tuple[float, float]
     # ── Wave N+3A (2026-07-08): MTF confluence score threshold.
     # Range apertado: <0.5 rejeita quase tudo, >0.9 aceita quase nada útil.
     (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.min_confluence_score$", float, (0.4, 0.9)),
-] 
+    # ── Wave N+5 (2026-07-09): desbloquear tuning de indicadores core.
+    # AGI encontrou candidatos reais (WIN_M15 RSI_REVERSION +65% PnL,
+    # WIN_M5 BOLLINGER +38%) bloqueados por esta whitelist ser conservadora.
+    # Ranges apertados para evitar overfitting — AGI já exige PF>=1.2 e
+    # walk-forward consistency no gate de aplicação.
+    # Timing / cooldown
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.cooldown_seconds$", int, (60, 3600)),
+    # RSI
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.rsi_period$", int, (5, 30)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.rsi_overbought$", int, (50, 95)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.rsi_oversold$", int, (5, 50)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.rsi_pullback_level$", int, (20, 60)),
+    # Bollinger Bands
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.bb_period$", int, (10, 30)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.bb_std$", float, (1.0, 3.0)),
+    # Keltner Channel (paralelo a BB)
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.kc_period$", int, (10, 30)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.kc_atr_mult$", float, (1.0, 3.0)),
+    # ADX
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.adx_period$", int, (10, 20)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.adx_threshold$", int, (15, 35)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.adx_min$", int, (10, 25)),
+    # MACD
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.macd_fast$", int, (5, 30)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.macd_slow$", int, (10, 50)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.macd_signal$", int, (5, 20)),
+    # EMA
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.ema_fast$", int, (5, 30)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.ema_slow$", int, (10, 100)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.ema_period$", int, (10, 200)),
+    # ATR period (alguns strategies usam)
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.atr_period$", int, (7, 30)),
+    # Donchian
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.donchian_period$", int, (10, 50)),
+    # VWAP thresholds (em torno de 1.0, range apertado)
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.vwap_period$", int, (5, 50)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.vwap_buy_threshold$", float, (1.000, 1.020)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.vwap_sell_threshold$", float, (0.980, 1.000)),
+    # Volume filter
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.vol_ratio_min$", float, (0.1, 1.0)),
+    # Pullback / touch (fração)
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.pullback_pct$", float, (0.0, 0.5)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.touch_pct$", float, (0.001, 0.05)),
+    # Confluence toggles (on/off por check)
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.candle_required$", bool, None),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.fib_required$", bool, None),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.htf_required$", bool, None),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.adx_required$", bool, None),
+    # Exit timing
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.max_position_minutes$", int, (15, 180)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.breakeven_minutes$", int, (3, 30)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.hard_exit_minutes$", int, (30, 180)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.time_trail_minutes$", int, (10, 60)),
+    # RSI Long bands (WIN_M15 strategies)
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.min_rsi_long$", int, (0, 100)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.max_rsi_long$", int, (0, 100)),
+    # ── Wave Melhoria 1+2 (Bruno 12/07): circuit breaker + profit-lock.
+    # max_consecutive_losses: após N losses seguidas no slot, pausa (1=ultra
+    # agressivo, 999=off). Range [1, 999] permite ao AGI desligar se necessário.
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.max_consecutive_losses$", int, (1, 999)),
+    # halt_duration_minutes: tempo de pausa após circuit breaker disparar.
+    # Range [15, 240] = 15min a 4h (cobre intraday sem travar o dia todo).
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.halt_duration_minutes$", int, (15, 240)),
+    # profit_lock_r: fração de R (risco inicial) que dispara lock zero-loss.
+    # 0.0 = off. Range [0.0, 1.5] — 1.5R permite lock tardio para trend-follow.
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.profit_lock_r$", float, (0.0, 1.5)),
+]
 
 
 # ─── Hard wall ─────────────────────────────────────────────────────────────

@@ -69,8 +69,11 @@ done
 # 1) Inicia Xvfb (se não estiver rodando)
 if ! pgrep -f "Xvfb :99" >/dev/null; then
     echo "🖥️  Iniciando Xvfb display :99 (invisível)..."
-    Xvfb :99 -screen 0 1280x800x24 &
-    sleep 2
+    # Bruno 09/07: resolução subiu 1280x800 → 1920x1080 (Full HD).
+    # 1280x800 deixava MT5 descalibrado no noVNC (paineis pequenos, texto
+    # truncado, botoes sobrepostos). 1920x1080 é o padrao MT5 desktop.
+    # Xvfb +xinerama +render permite compositor completo (sem warnings).
+    Xvfb :99 -screen 0 1920x1080x24 +xinerama -ac &
 fi
 
 # 2) Inicia MT5 (se não estiver rodando)

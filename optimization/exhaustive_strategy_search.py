@@ -63,138 +63,216 @@ ALL_TIMEFRAMES = ["M5", "M15", "M30", "H1"]
 # Strategic sampling: 3-5 values per param, chosen from PARAM_BOUNDS ranges.
 # Each strategy maps to its key parameters. Total combos per strategy: ~10-30.
 
-# Universal params (applied by simulate_forward for all strategies)
+# Universal params (applied by simulate_forward for all strategies).
+# Wave Melhoria 3 (Bruno 13/07): grids expandidos após dry-run mostrar que
+# params atuais já são ótimos do grid antigo (v3.0). Adicionados valores
+# intermediários e extremos leves para refinar a busca sem explodir combos.
 UNIVERSAL_PARAMS = {
-    "sl_atr_mult":       [1.0, 1.5, 2.0, 2.5],
-    "cooldown_seconds":  [120, 300, 600],
+    "sl_atr_mult":       [0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0],
+    "cooldown_seconds":  [60, 120, 180, 300, 450, 600, 900],
     # Wave Melhoria 1 (Bruno 12/07): circuit breaker AGI-tunable.
     # max_consecutive_losses: após N losses seguidas no slot, pausa.
     # halt_duration_minutes: tempo de pausa. Defaults 999/60 = efetivamente off.
-    "max_consecutive_losses":   [2, 3, 4, 5],
-    "halt_duration_minutes":    [30, 45, 60, 90],
+    "max_consecutive_losses":   [2, 3, 4, 5, 6, 8],
+    "halt_duration_minutes":    [15, 30, 45, 60, 90, 120, 180],
     # Wave Melhoria 2 (Bruno 12/07): profit-lock por R (AGI-tunable).
     # Quando lucro atinge profit_lock_r × risco inicial, move SL pro entry.
     # 0.0 = desligado. O AGI testa se travar cedo (0.3) ou tarde (1.0) é melhor.
-    "profit_lock_r":            [0.3, 0.5, 0.7, 1.0],
+    # Wave 13.5: adicionado 0.0 (off) e 1.5, 2.0 (trailing mais largo).
+    "profit_lock_r":            [0.0, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0],
 }
 
 # Strategy-specific param grids
+# Wave Melhoria 3 (Bruno 13/07): grids expandidos. Cada estratégia agora testa
+# mais valores intermediários em vez de só 3-4 pontilhados. SUPERTREND
+# corrigido para usar seus params reais (atr_period, multiplier) ao invés
+# dos adx_* herdados. Estratégias que não tinham grid (HTF_EMA_PULLBACK_TIGHT,
+# IND_INSTITUTIONAL_SELL, TRAIL_HOLDERS_TREND, VOLATILITY_*, VWAP_RECLAIM)
+# ganharam grids baseados nos params.get() reais.
 STRATEGY_PARAM_GRIDS = {
     "RSI_REVERSION": {
-        "rsi_period":      [7, 10, 14, 21],
-        "rsi_overbought":  [70, 75, 80],
-        "rsi_oversold":    [20, 25, 30],
+        "rsi_period":      [5, 7, 10, 14, 17, 21],
+        "rsi_overbought":  [65, 70, 75, 80, 85],
+        "rsi_oversold":    [15, 20, 25, 30, 35],
     },
     "ENHANCED_RSI_REVERSION": {
-        "rsi_period":      [7, 10, 14, 21],
-        "rsi_overbought":  [70, 75, 80],
-        "rsi_oversold":    [20, 25, 30],
+        "rsi_period":      [5, 7, 10, 14, 17, 21],
+        "rsi_overbought":  [65, 70, 75, 80, 85],
+        "rsi_oversold":    [15, 20, 25, 30, 35],
     },
     "MACD_MOMENTUM": {
-        "macd_fast":       [8, 10, 12],
-        "macd_slow":       [20, 24, 26],
-        "macd_signal":     [7, 9, 11],
+        "macd_fast":       [6, 8, 10, 12, 14],
+        "macd_slow":       [18, 20, 22, 24, 26, 28, 30],
+        "macd_signal":     [7, 8, 9, 10, 11, 12, 13],
     },
     "ENHANCED_MACD_MOMENTUM": {
-        "macd_fast":       [8, 10, 12],
-        "macd_slow":       [20, 24, 26],
-        "macd_signal":     [7, 9, 11],
+        "macd_fast":       [6, 8, 10, 12, 14],
+        "macd_slow":       [18, 20, 22, 24, 26, 28, 30],
+        "macd_signal":     [7, 8, 9, 10, 11, 12, 13],
     },
     "BOLLINGER": {
-        "bb_period":       [14, 20, 30],
-        "bb_std":          [1.5, 2.0, 2.5, 3.0],
+        "bb_period":       [10, 14, 18, 20, 25, 30],
+        "bb_std":          [1.0, 1.5, 1.8, 2.0, 2.5, 3.0, 3.5],
     },
     "ENHANCED_BOLLINGER": {
-        "bb_period":       [14, 20, 30],
-        "bb_std":          [1.5, 2.0, 2.5, 3.0],
+        "bb_period":       [10, 14, 18, 20, 25, 30],
+        "bb_std":          [1.0, 1.5, 1.8, 2.0, 2.5, 3.0, 3.5],
     },
     "STRONG_TREND": {
-        "adx_threshold":   [15, 20, 25, 30],
-        "adx_period":      [10, 14, 20],
+        "adx_threshold":   [12, 15, 18, 20, 25, 30, 35],
+        "adx_period":      [7, 10, 14, 18, 20],
     },
     "ADX_TREND": {
-        "adx_threshold":   [15, 20, 25, 30],
-        "adx_period":      [10, 14, 20],
+        "adx_threshold":   [12, 15, 18, 20, 25, 30, 35],
+        "adx_period":      [7, 10, 14, 18, 20],
     },
     "EMA_CROSSOVER": {
-        "ema_fast":        [8, 10, 12],
-        "ema_slow":        [20, 26, 30],
+        "ema_fast":        [5, 8, 10, 12, 15],
+        "ema_slow":        [15, 20, 26, 30, 35],
     },
     "EMA_PULLBACK": {
-        "ema_fast":        [8, 10, 12],
-        "ema_slow":        [20, 26, 30],
+        "ema_fast":        [5, 8, 10, 12, 15],
+        "ema_slow":        [15, 20, 26, 30, 35],
+        "pullback_pct":    [0.10, 0.15, 0.20, 0.25, 0.30],
     },
     "TRIPLE_EMA": {
-        "ema_fast":        [8, 10, 12],
-        "ema_slow":        [20, 26, 30],
+        "ema_fast":        [5, 8, 10, 12],
+        "ema_mid":         [13, 15, 18, 21],
+        "ema_slow":        [20, 26, 30, 35],
     },
     "VWAP": {
-        "vwap_period":         [20, 30, 40],
-        "vwap_buy_threshold":  [1.005, 1.010, 1.015],
-        "vwap_sell_threshold": [0.985, 0.990, 0.995],
+        "vwap_period":         [15, 20, 25, 30, 40, 50],
+        "vwap_buy_threshold":  [1.002, 1.005, 1.008, 1.010, 1.015, 1.020],
+        "vwap_sell_threshold": [0.980, 0.985, 0.988, 0.990, 0.995, 0.998],
     },
     "KELTNER_CHANNEL": {
-        "keltner_period":     [14, 20, 30],
-        "keltner_atr_mult":   [1.5, 2.0, 2.5],
+        "keltner_period":     [10, 14, 18, 20, 25, 30],
+        "keltner_atr_mult":   [1.0, 1.5, 1.8, 2.0, 2.5, 3.0],
     },
     "DONCHIAN_BREAKOUT": {
-        "donchian_period":    [14, 20, 30],
+        "period":             [10, 14, 18, 20, 25, 30],
+        "exit_period":        [5, 8, 10, 14],
     },
     "PIVOT_POINTS": {
         "pivot_timeframe":    ["H1", "H4", "D1"],
     },
     "DIVERGENCE_RSI": {
-        "rsi_period":      [10, 14, 21],
-        "rsi_overbought":  [70, 75, 80],
-        "rsi_oversold":    [20, 25, 30],
+        "rsi_period":      [7, 10, 14, 17, 21],
+        "rsi_overbought":  [65, 70, 75, 80, 85],
+        "rsi_oversold":    [15, 20, 25, 30, 35],
     },
     "MOMENTUM_BREAKOUT": {
-        "adx_threshold":   [15, 20, 25],
-        "adx_period":      [10, 14, 20],
+        "adx_threshold":   [12, 15, 18, 20, 25, 30],
+        "adx_period":      [7, 10, 14, 18, 20],
     },
     "MEAN_REVERSION_ZSCORE": {
-        "bb_period":       [14, 20, 30],
-        "bb_std":          [1.5, 2.0, 2.5],
+        "bb_period":       [10, 14, 20, 30],
+        "bb_std":          [1.0, 1.5, 2.0, 2.5, 3.0],
     },
     "FIBONACCI_RETRACEMENT": {
-        "pullback_pct":    [0.05, 0.10, 0.15, 0.20],
+        "pullback_pct":    [0.05, 0.08, 0.10, 0.15, 0.20, 0.25, 0.30],
     },
     "VOLATILITY_BREAKOUT": {
-        "adx_threshold":   [15, 20, 25],
-        "adx_period":      [10, 14, 20],
+        "adx_threshold":   [12, 15, 18, 20, 25, 30],
+        "adx_period":      [7, 10, 14, 18, 20],
     },
     "RANGE_TRADING": {
-        "rsi_overbought":  [70, 75, 80],
-        "rsi_oversold":    [20, 25, 30],
-        "rsi_period":      [10, 14, 21],
+        "rsi_overbought":  [65, 70, 75, 80, 85],
+        "rsi_oversold":    [15, 20, 25, 30, 35],
+        "rsi_period":      [7, 10, 14, 17, 21],
     },
     "WIN_REVERSION": {
-        "rsi_period":      [10, 14, 21],
-        "rsi_overbought":  [70, 75, 80],
-        "rsi_oversold":    [20, 25, 30],
+        "rsi_period":      [7, 10, 14, 17, 21],
+        "rsi_overbought":  [65, 70, 75, 80, 85],
+        "rsi_oversold":    [15, 20, 25, 30, 35],
     },
     "HEIKIN_ASHI": {
-        "ema_fast":        [8, 10, 12],
-        "ema_slow":        [20, 26],
+        "ema_fast":        [5, 8, 10, 12],
+        "ema_slow":        [15, 20, 26, 30],
     },
     "SMART_EMA": {
-        "ema_fast":        [8, 10, 12],
-        "ema_slow":        [20, 26],
+        "ema_fast":        [5, 8, 10, 12],
+        "ema_slow":        [15, 20, 26, 30],
     },
+    # Wave 13.5: SUPERTREND usa atr_period/multiplier reais (não adx_*).
     "SUPERTREND": {
-        "adx_threshold":   [15, 20, 25],
-        "adx_period":      [10, 14],
+        "atr_period":      [7, 10, 14, 18, 20],
+        "multiplier":      [1.5, 2.0, 2.5, 3.0, 3.5],
     },
     "ICHIMOKU": {
-        "adx_threshold":   [15, 20, 25],
+        "tenkan_period":   [7, 9, 12],
+        "kijun_period":    [22, 26, 30],
+        "senkou_period":   [44, 52, 60],
     },
     "CANDLE_PATTERNS": {
-        "adx_threshold":   [15, 20, 25],
+        "body_ratio":      [0.4, 0.5, 0.6, 0.7],
+        "wick_ratio":      [0.3, 0.5, 0.7],
+    },
+    # Wave 13.5: estratégias que não tinham grid mas usam params reais.
+    "HTF_EMA_PULLBACK_TIGHT": {
+        "adx_min":         [10, 15, 20, 25],
+        "rsi_pullback_level": [35, 40, 45, 50],
+        "volume_mult":     [1.0, 1.2, 1.5, 2.0],
+        "ema_fast":        [5, 8, 10],
+        "ema_slow":        [20, 26, 30],
+    },
+    "IND_INSTITUTIONAL_SELL": {
+        "adx_min":         [15, 20, 25, 30],
+        "rsi_pullback_high": [55, 60, 65, 70],
+        "rsi_pullback_low":  [25, 30, 35, 40],
+        "vwap_touch_atr":  [0.3, 0.5, 0.8, 1.0],
+        "volume_mult":     [1.2, 1.5, 2.0, 2.5],
+    },
+    "TRAIL_HOLDERS_TREND": {
+        "adx_min":         [10, 15, 20, 25, 30],
+        "di_spread_min":   [5, 10, 15, 20],
+        "volume_mult":     [1.0, 1.3, 1.5, 2.0],
+        "ema_fast":        [5, 8, 10, 12],
+        "ema_slow":        [20, 26, 30],
+    },
+    "VOLATILITY_BREAKOUT_TIGHT": {
+        "adx_min":         [15, 20, 25, 30],
+        "breakout_lookback": [10, 15, 20, 30],
+        "rsi_overbought":  [65, 70, 75, 80],
+        "rsi_oversold":    [20, 25, 30, 35],
+        "volume_mult":     [1.0, 1.3, 1.5, 2.0],
+    },
+    "VOLATILITY_MEAN_REVERSION": {
+        "adx_max":         [15, 20, 25, 30],
+        "atr_ratio_max":   [0.8, 1.0, 1.2, 1.5],
+        "max_ema_distance_pct": [0.3, 0.5, 0.8, 1.0],
+        "rsi_overbought":  [65, 70, 75, 80],
+        "rsi_oversold":    [20, 25, 30, 35],
+    },
+    "VOLATILITY_REGIME_TREND": {
+        "adx_min":         [15, 20, 25, 30],
+        "atr_ratio_min":   [1.0, 1.3, 1.5, 1.8],
+        "ema_fast":        [5, 8, 10],
+        "ema_slow":        [20, 26, 30],
+        "volume_mult":     [1.0, 1.3, 1.5, 2.0],
+    },
+    "VWAP_RECLAIM": {
+        "adx_min":         [15, 20, 25, 30],
+        "deviation_atr_mult": [1.0, 1.5, 2.0, 2.5],
+        "reclaim_atr_mult": [0.3, 0.5, 0.8, 1.0],
+        "vwap_period":     [15, 20, 30, 40],
+        "volume_mult":     [1.0, 1.3, 1.5, 2.0],
+    },
+    "OPENING_HOUR_EDGE": {
+        "adx_min":         [15, 20, 25, 30],
+        "rsi_high":        [60, 65, 70, 75],
+        "rsi_low":         [25, 30, 35, 40],
+        "volume_mult":     [1.0, 1.3, 1.5, 2.0],
+        "ema_fast":        [5, 8, 10],
+        "ema_slow":        [20, 26],
     },
 }
 
-# Max combos to test per strategy (cap to avoid explosion)
-MAX_COMBOS_PER_STRATEGY = 30
+# Max combos to test per strategy (cap to avoid explosion).
+# Wave 13.5 (Bruno 13/07): 30 → 80. Com grids expandidos (~3x valores por
+# dim), 30 era subsampling agressivo demais que descartava bons candidatos.
+# 80 ainda cabe em ~33min para 16 pares × 43 estratégias no AGI v4.
+MAX_COMBOS_PER_STRATEGY = 80
 
 
 def _test_pair_worker(args):

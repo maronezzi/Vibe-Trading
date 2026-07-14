@@ -13,4 +13,15 @@ if [ "$HOUR" -eq 16 ] && [ "$MIN" -ge 45 ]; then
     exit 0
 fi
 
-cd /home/bruno/Projects/Vibe-Trading && python3 monitoring/vt_trade_watchdog.py 2>&1 | grep -v "^✅"
+# Bruno 2026-07-08 (Wave 1C.4): filtra stdout pra SÓ emitir alerta critico.
+# Cron a55449e2c025 tem mode=no-agent (script stdout delivered direto Telegram),
+# entao precisamos suprimir TODA saida rotineira. So passa:
+#   - WATCHDOG ALERTA (linhas com "🚨" ou "WATCHDOG ALERTA")
+#   - ORFAO / FANTASMA / GHOST (anomalias reais)
+#   - MODIFY/STATE_ERRO/CRITICAL (problemas de execucao)
+#   - WATCHDOG com "ERRORS" (status != OK)
+# Linhas tipo "[DRIFT OK]", "✅ WATCHDOG: OK", "state sync fix" sao descartadas.
+cd /home/bruno/Projects/Vibe-Trading && python3 monitoring/vt_trade_watchdog.py 2>&1 \
+  | grep -E "🚨|WATCHDOG ALERTA|ORFAO|FANTASMA|GHOST|STATE_ERRO|MODIFY ERROR|CRITICAL|ERRORS|RECONCILED|self-heal|status: critical|drift.*ALERTA" \
+  | grep -v "drift.*R\$0\.00" \
+  || true  # exit 0 mesmo se grep nao encontrar nada (silencio padrao)
