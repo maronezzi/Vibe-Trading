@@ -239,6 +239,15 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
     time_trail_min = params.get("time_trail_minutes", 0)
     max_pos_min = params.get("max_position_minutes", 999)
     hard_exit_min = params.get("hard_exit_minutes", 999)
+    # Wave Melhoria 2 (Bruno 12/07): profit-lock por R — quando lucro atinge
+    # profit_lock_r × risco inicial (1R = distância do SL), move SL pro entry
+    # (zero-loss). Default 0.0 = desligado (AGI otimiza o valor ótimo).
+    profit_lock_r = params.get("profit_lock_r", 0.0)
+    # Wave Melhoria 1 (Bruno 12/07): circuit breaker per-(sym,tf) — após
+    # max_consecutive_losses seguidas, pausa halt_duration_minutes no slot.
+    # Defaults conservadores (999/60) = efetivamente desligado até o AGI afinar.
+    max_consec = params.get("max_consecutive_losses", 999)
+    halt_min = params.get("halt_duration_minutes", 60)
 
     # Carrega plugin real
     func = get_strategy_func(strategy_name)
@@ -271,9 +280,16 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
     last_trade_dt = None
     daily_count = defaultdict(int)
     trades = []
+    # Wave Melhoria 1: estado do circuit breaker (per-(sym,tf) dentro deste combo).
+    consec_losses = 0          # contador de perdas consecutivas
+    halt_until_dt = None       # datetime até o qual novas entradas estão bloqueadas
+    # Wave Melhoria 2: flag de profit-lock aplicado (reseta a cada trade).
+    # Reusamos be_done como flag one-shot do profit-lock também — BE temporal e
+    # profit-lock são mutuamente exclusivos (o que disparar primeiro sela o SL).
 
     def _close(price, dt, reason):
         nonlocal pos, ep, e_dt, e_idx, e_atr, best, sl_price, sl_pts, trail_on, be_done, bars_in_trade
+        nonlocal consec_losses, halt_until_dt
         if pos == 0:
             return None
         if pos == 1:
@@ -293,6 +309,15 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
             "sym": sym_root,
             "tf": tf,
         })
+        # Wave Melhoria 1: bookkeeping do circuit breaker.
+        # Loss incrementa o contador; se atingir threshold, ativa halt.
+        # Win reseta o contador. Robusta a todos os exits (SL/HARD_EXIT/1645/FORCE).
+        if pnl < 0:
+            consec_losses += 1
+            if consec_losses >= max_consec:
+                halt_until_dt = dt + timedelta(minutes=halt_min)
+        elif pnl > 0:
+            consec_losses = 0
         pos = 0
         ep = 0.0
         e_dt = None
@@ -363,7 +388,17 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
             if not trail_on and e_atr > 0 and profit_pts >= trail_activate * e_atr:
                 trail_on = True
 
-            # Breakeven
+            # Wave Melhoria 2: profit-lock por R.
+            # Quando lucro atinge profit_lock_r × risco inicial, move SL pro
+            # entry + 1 tick (zero-loss). Usa sl_pts inicial (distância absoluta)
+            # como 1R. be_done evita re-disparar; BE temporal abaixo também
+            # reusa be_done (mutuamente exclusivos — quem disparar primeiro sela).
+            if not trail_on and not be_done and profit_lock_r > 0 and e_atr > 0 and sl_pts > 0:
+                if profit_pts >= profit_lock_r * sl_pts:
+                    be_done = True
+                    sl_price = ep + tick_size if pos == 1 else ep - tick_size
+
+            # Breakeven (temporal — dispara só se profit-lock ainda não selou)
             if not trail_on and not be_done and breakeven_min > 0 and pos_min >= breakeven_min and e_atr > 0:
                 be_done = True
                 if pos == 1:
@@ -408,6 +443,11 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
 
         # ─── Verifica entrada ───
         if cur_atr <= 0 or len(bars_nf) < 30:
+            continue
+
+        # Wave Melhoria 1: circuit breaker — se o slot está em halt, não entra.
+        # Robusto a None (sem halt ainda). Reseta naturalmente quando dt passa.
+        if halt_until_dt is not None and dt < halt_until_dt:
             continue
 
         # Cooldown
