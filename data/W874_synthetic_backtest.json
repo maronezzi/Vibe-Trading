@@ -1,0 +1,262 @@
+{
+  "VWAP_EXTREME_REVERSION": [
+    {
+      "scenario": "Uptrend (10d)",
+      "expected_bias": "BULL",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Downtrend (10d)",
+      "expected_bias": "BEAR",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Choppy (10d)",
+      "expected_bias": "CHOP",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Vol Shock (5d)",
+      "expected_bias": "BREAKOUT",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Reversal (5d)",
+      "expected_bias": "REVERSAL",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    }
+  ],
+  "LIQUIDITY_SWEEP_REVERSAL": [
+    {
+      "scenario": "Uptrend (10d)",
+      "expected_bias": "BULL",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Downtrend (10d)",
+      "expected_bias": "BEAR",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Choppy (10d)",
+      "expected_bias": "CHOP",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Vol Shock (5d)",
+      "expected_bias": "BREAKOUT",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Reversal (5d)",
+      "expected_bias": "REVERSAL",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    }
+  ],
+  "HTF_BIAS_LTF_ENTRY": [
+    {
+      "scenario": "Uptrend (10d)",
+      "expected_bias": "BULL",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Downtrend (10d)",
+      "expected_bias": "BEAR",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Choppy (10d)",
+      "expected_bias": "CHOP",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Vol Shock (5d)",
+      "expected_bias": "BREAKOUT",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Reversal (5d)",
+      "expected_bias": "REVERSAL",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    }
+  ],
+  "ATR_EXPANSION_BREAKOUT": [
+    {
+      "scenario": "Uptrend (10d)",
+      "expected_bias": "BULL",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Downtrend (10d)",
+      "expected_bias": "BEAR",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Choppy (10d)",
+      "expected_bias": "CHOP",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Vol Shock (5d)",
+      "expected_bias": "BREAKOUT",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Reversal (5d)",
+      "expected_bias": "REVERSAL",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    }
+  ],
+  "SESSION_MOMENTUM_CLOSE": [
+    {
+      "scenario": "Uptrend (10d)",
+      "expected_bias": "BULL",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Downtrend (10d)",
+      "expected_bias": "BEAR",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Choppy (10d)",
+      "expected_bias": "CHOP",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Vol Shock (5d)",
+      "expected_bias": "BREAKOUT",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    },
+    {
+      "scenario": "Reversal (5d)",
+      "expected_bias": "REVERSAL",
+      "buys": 0,
+      "sells": 0,
+      "total": 0,
+      "coherence": 0.0,
+      "first_signal_bar": null,
+      "latency_bars": null
+    }
+  ]
+}
