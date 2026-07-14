@@ -97,6 +97,14 @@ ALLOWED_WRITERS = (
     # breakeven/cooldown/max_daily em WIN/WDO/WSP para reduzir overtrading.
     # Rodar com autotrader PAUSADO (data/autotrader.paused presente).
     "scripts/w874_13h_trader_ia_pause_losing.py",
+    # scripts/w13_5_apply_expanded_grids.py (Wave 13.5, Bruno 2026-07-13):
+    # aplica candidatos BIT_M5:SUPERTREND + WIN_H1:RSI_REVERSION descobertos
+    # pelo AGI v4 com grids expandidos (MAX_COMBOS 30→80, UNIVERSAL 768→16464).
+    # BIT_M5 validado em walk-forward 4/4 (Sharpe=4.09). WIN_H1 validado 3/4
+    # (janela 4: -R$4.549 risco conhecido, baseline pior R$-2.180). Autorizado
+    # explicitamente pelo Bruno na sessão 13/07 18:30. Rodar com autotrader
+    # PAUSADO (fora do horário de trading, como em todas as aplicações manuais).
+    "scripts/w13_5_apply_expanded_grids.py",
     "backtest/apply_optimization.py",
     # monitoring/vt_pre_flight.py roda 8h55 ANTES do autotrader (pre-flight
     # gate) — é seguro persistir resolved_symbols nessa janela.

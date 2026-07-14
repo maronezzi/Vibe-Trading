@@ -92,10 +92,10 @@ def _cache_put(key: str, response: str):
 # Nota: o hermes também tem fallback chain interno, mas o subprocess timeout
 # abaixo é o que realmente limita cada provedor (gateway_timeout interno = 7200s).
 _LLM_PROVIDERS = [
-    {"provider": "minimax-oauth", "model": "MiniMax-M3",   "timeout": 10},   # fail-fast: se não responde em 10s, não vai responder em 20
+    {"provider": "minimax-oauth", "model": "MiniMax-M3",   "timeout": 25},   # Wave 875 (Bruno 10/07): OAuth cold-start 8-10s + margem
     {"provider": "xiaomi",        "model": "mimo-v2.5-pro", "timeout": 25},   # mais budget pro fallback (provou funcionar)
 ]
-MAX_TOTAL_LLM_TIMEOUT = 38  # hard cap: 10+25=35 + margem
+MAX_TOTAL_LLM_TIMEOUT = 53  # hard cap: 25+25=50 + margem
 
 def _ask_llm_provider(prompt: str, provider: str, model: str, timeout: int) -> Optional[str]:
     """

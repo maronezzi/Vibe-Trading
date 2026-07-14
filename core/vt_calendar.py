@@ -431,11 +431,22 @@ def _check_contract_liquidity(symbol: str) -> bool:
     return False
 
 
-def resolve_all_symbols() -> dict:
+def resolve_all_symbols(persist: bool = False) -> dict:
     """
     Resolve todos os símbolos configurados.
     Retorna dict: {"WIN": "WINM26", ...}
-    Também atualiza o config se houver mudança de contrato.
+
+    Args:
+        persist: se True e houver mudança de contrato, escreve em
+            vt_config.json via save_full_config (chamador precisa estar
+            na whitelist de ALLOWED_WRITERS). Default False (read-only).
+
+    Por design (Bruno 2026-07-01 — incidente 09h30 comeu 95% do config
+    porque um caller reescreveu o JSON inteiro durante startup):
+    DEFAULT READ-ONLY. Persistir em disco durante runtime do autotrader
+    é PERIGOSO. Quem precisa persistir (pre-flight 8h55) chama com
+    persist=True explicitamente — o módulo pre-flight já está na
+    whitelist de ALLOWED_WRITERS.
     """
     from vt_config_loader import load_config
 
@@ -453,11 +464,21 @@ def resolve_all_symbols() -> dict:
             changed.append(f"{root}: {current.get(root, '?')} → {resolved}")
 
     if changed:
-        # Atualizar config
-        config["resolved_symbols"] = updated
-        config["_notes"] = f"auto-resolve vencimento: {', '.join(changed)}"
-        _save_config(config)
-        _notify("📅 Rolagem de contrato detectada!\n" + "\n".join(changed))
+        if persist:
+            # Atualizar config (chamador precisa estar em ALLOWED_WRITERS)
+            config["resolved_symbols"] = updated
+            config["_notes"] = f"auto-resolve vencimento: {', '.join(changed)}"
+            _save_config(config)
+            _notify("📅 Rolagem de contrato detectada!\n" + "\n".join(changed))
+        else:
+            # Read-only: apenas loga a mudança detectada, NÃO toca disco
+            # (defesa contra regressões — incidente 2026-07-01 09h30).
+            import logging
+            _cal_log = logging.getLogger("vt_calendar")
+            _cal_log.info(
+                f"[resolve_all_symbols] mudanças detectadas (NÃO persistidas "
+                f"porque persist=False): {', '.join(changed)}"
+            )
 
     return updated
 
@@ -513,7 +534,7 @@ def get_trading_calendar(days: int = 10) -> list[dict]:
 # ══════════════════════════════════════════════════════════════════════
 
 def _now_or_dt(ts):
-    """Aceita None (agora), datetime, ou ISO string.
+    """Aceita None (agora), datetime, ISO string, ou epoch int/float.
 
     Retorna datetime NAIVE (sem timezone) para comparações internas.
     """
@@ -521,6 +542,9 @@ def _now_or_dt(ts):
         return datetime.now()
     if isinstance(ts, str):
         return datetime.fromisoformat(ts)
+    # MT5 retorna epoch int/float → converter pra datetime naive.
+    if isinstance(ts, (int, float)):
+        return datetime.fromtimestamp(ts)
     # Se vier timezone-aware, strip timezone pra comparar naive.
     if isinstance(ts, datetime) and ts.tzinfo is not None:
         return ts.replace(tzinfo=None)

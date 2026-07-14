@@ -705,10 +705,20 @@ def export_csv(month: int = None, year: int = None, filepath: str = None) -> str
 
 
 if __name__ == "__main__":
+    import sys
+    # Wave 875 (Bruno 10/07): guarda contra execução acidental.
+    # Rodar `python3 core/vt_trade_log.py` sem flag agora só faz init_db() (não
+    # polui o journal real com trades fake). Para rodar a demo, use `--demo`.
+    # Causa raiz do bug: este bloco inseria trades com entry_ticket='12345'
+    # no DB de produção sempre que alguém rodava o módulo "só pra testar".
+    # Cleanups: trades #3013 e #3110 (criados 2026-07-09) fechados em
+    # 2026-07-10 09:06 com close_source='ORPHAN_MANUAL_CLEANUP_2026-07-10'.
     init_db()
     print("Trade log inicializado em", DB_PATH)
+    if "--demo" not in sys.argv:
+        print("(demo suprimida — rode com `--demo` se quiser ver relatório IR + CSV)")
+        sys.exit(0)
 
-    # Teste
     tid = log_entry("WINQ26", "BUY", 1.0, 175000.0, 174800.0, "12345",
                      signal_detail={"vwap": 174500, "atr": 246})
     print(f"Trade #{tid} registrado")
