@@ -1,168 +1,244 @@
 """
 test_watchdog_excludes_excluded_trades.py
 =========================================
-Wave 1C.1 (2026-07-02): 28 trades com ticket=12345/99999 eram teste,
-marcados [EXCLUDED_TEST_2026_07_02]. Nao sao operacao real. Bruno confirmou.
+Wave 875 (Bruno 10/07) — REFACTOR: tests usam DB isolado (tmp_path via
+conftest._isolate_trades_db) em vez de depender de poluição no DB real.
+
+ANTES (Wave 1C.1, 2026-07-02): tests conectavam ao vt_trades.db de produção
+e exigiam 28 trades com ticket=12345/99999 marcados [EXCLUDED_TEST_2026_07_02]
+existirem lá. Isso era uma bomba-relógio — qualquer cleanup manual dos
+trades-teste quebrava os 5 testes. Foi o que aconteceu em 10/07 quando
+os trades órfãos foram limpos (close_source=ORPHAN_MANUAL_CLEANUP_2026-07-10).
+
+AGORA: cada test recebe tmp_path (pytest) e cria seu proprio DB isolado
+com 28 trades [EXCLUDED_TEST_2026_07_02] + 3 trades live. A fixture
+autouse _isolate_trades_db (conftest.py) patcha watchdog.DB_PATH para o
+mesmo tmp_db. Tests fazem behavioral verification (chamam
+get_db_open_trades() e check_trade_log() de verdade) em vez de só
+inspecionar source.
 
 Pitfall #12 no-vt-config-write-safety: garantir que o watchdog NAO alarma
 sobre esses trades como "fantasmas".
 
-Testes:
-- test_watchdog_filters_excluded_from_db_query: filtra DB query
-- test_watchdog_filters_excluded_from_open_trades_query: filtra open_trades
-- test_excluded_trades_count_28_in_db: pre-condicao (senao o teste e vazio)
+Tests:
+- test_watchdog_filters_excluded_from_db_query: filtra DB query (source)
+- test_watchdog_filters_excluded_from_get_db_open_trades: filtra get_db_open_trades (source)
+- test_watchdog_filters_excluded_from_diff_query: filtra check_trade_log (source)
+- test_get_db_open_trades_excludes_excluded: BEHAVIORAL — funcao retorna so live
+- test_check_trade_log_excludes_excluded: BEHAVIORAL — diff nao inclui [EXCLUDED]
+- test_fixture_has_28_excluded_trades: sanity check da fixture
 """
-import json
 import os
-import sys
-import unittest
-from unittest.mock import patch, MagicMock
 
 PROJECT_ROOT = "/home/bruno/Projects/Vibe-Trading"
-sys.path.insert(0, PROJECT_ROOT)
 
 
-class TestWatchdogExcludesExcludedTrades(unittest.TestCase):
-    """Wave 1C.1: watchdog NAO deve ver trades com [EXCLUDED] como fantasmas."""
+def _seed_trades(db_path, n_excluded=28, n_live=3):
+    """Insere n_excluded trades [EXCLUDED_TEST] + n_live live no DB isolado."""
+    import sqlite3
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_ticket TEXT,
+            exit_ticket TEXT,
+            magic_number INTEGER DEFAULT 555501,
+            symbol TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            volume REAL NOT NULL,
+            timeframe TEXT DEFAULT 'M5',
+            entry_time TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            entry_sl REAL,
+            exit_time TEXT,
+            exit_price REAL,
+            exit_reason TEXT,
+            exit_sl_price REAL,
+            gross_pnl REAL DEFAULT 0,
+            fees REAL DEFAULT 0,
+            swap REAL DEFAULT 0,
+            net_pnl REAL DEFAULT 0,
+            is_day_trade INTEGER DEFAULT 1,
+            asset_type TEXT DEFAULT 'FUTURE',
+            multiplier REAL DEFAULT 0.20,
+            strategy TEXT DEFAULT 'VWAP',
+            signal_detail TEXT,
+            raw_entry_json TEXT,
+            raw_exit_json TEXT,
+            notes TEXT,
+            close_source TEXT,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+        );
+        """
+    )
+    for i in range(n_excluded):
+        ticket = "12345" if i % 2 == 0 else "99999"
+        conn.execute(
+            "INSERT INTO trades "
+            "(entry_ticket, symbol, direction, volume, entry_time, entry_price, "
+            " exit_time, strategy, notes, close_source) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                ticket,
+                "WINQ26",
+                "BUY",
+                1.0,
+                "2026-07-02 09:00:00",
+                175000.0,
+                None,
+                "VWAP [EXCLUDED_TEST_2026_07_02]",
+                f"Wave 1C.1 fixture (id={i})",
+                "TEST_FIXTURE",
+            ),
+        )
+    for i in range(n_live):
+        conn.execute(
+            "INSERT INTO trades "
+            "(entry_ticket, symbol, direction, volume, entry_time, entry_price, "
+            " exit_time, strategy, notes, close_source) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                f"{2000000000 + i}",
+                "WINQ26",
+                "SELL",
+                1.0,
+                "2026-07-02 09:01:00",
+                175500.0,
+                None,
+                "BOLLINGER",
+                f"live trade {i}",
+                None,
+            ),
+        )
+    conn.commit()
+    conn.close()
 
-    def setUp(self):
-        # Garantir pre-condicao: 28 trades com ticket 12345/99999 no DB
-        import sqlite3
-        db_path = os.path.join(PROJECT_ROOT, "vt_trades.db")
-        db = sqlite3.connect(db_path, timeout=5)
-        n_test = db.execute(
-            "SELECT COUNT(*) FROM trades "
-            "WHERE entry_ticket IN ('12345','99999') OR exit_ticket IN ('12345','99999')"
-        ).fetchone()[0]
-        self.assertGreaterEqual(
-            n_test, 28,
-            f"Pre-condicao quebrada: esperado >=28 trades com ticket teste, achou {n_test}. "
-            f"Se voce rodou este teste antes, os trades podem ter sido deletados. "
-            f"Re-criar via INSERT (ver setUp do conftest)."
+
+# ─── SOURCE INSPECTION (anti-regressão: regex no source) ────────────────────
+
+
+def test_watchdog_filters_excluded_from_db_query():
+    """Query SELECT ... FROM trades em vt_trade_watchdog.py DEVE filtrar [EXCLUDED]."""
+    import re
+    src_path = os.path.join(PROJECT_ROOT, "monitoring", "vt_trade_watchdog.py")
+    src = open(src_path).read()
+    bad_pattern = re.compile(
+        r"FROM trades WHERE\s*\(exit_time IS NULL OR exit_time = .*?\)",
+        re.DOTALL,
+    )
+    matches = list(bad_pattern.finditer(src))
+    assert len(matches) >= 1, "Query SELECT ... FROM trades WHERE (exit_time IS NULL ...) nao encontrada"
+    for m in matches:
+        region = src[m.start():m.start() + 600]
+        assert "[EXCLUDED" in region, (
+            f"Query em offset {m.start()} SEM filtro [EXCLUDED]. "
+            "Pitfall #12: trades [EXCLUDED] serao alarmados como fantasmas. "
+            "Fix: adicionar 'AND (strategy IS NULL OR INSTR(strategy, '[EXCLUDED') = 0)'"
         )
 
-        # Garantir que TODOS esses 28 estao marcados [EXCLUDED]
-        n_excluded = db.execute(
-            "SELECT COUNT(*) FROM trades "
-            "WHERE (entry_ticket IN ('12345','99999') OR exit_ticket IN ('12345','99999')) "
-            "AND INSTR(strategy, '[EXCLUDED') > 0"
-        ).fetchone()[0]
-        self.assertEqual(
-            n_excluded, n_test,
-            f"Trades teste ({n_test}) NAO estao todos marcados [EXCLUDED] "
-            f"(so {n_excluded} estao). Rodar fix Wave 1C.1: UPDATE trades SET strategy = ... [EXCLUDED_TEST_2026_07_02]."
-        )
-        db.close()
 
-    def test_watchdog_filters_excluded_from_db_query(self):
-        """A query em vt_trade_watchdog.py:~L110 DEVE filtrar [EXCLUDED]."""
-        import re
-        src_path = os.path.join(PROJECT_ROOT, "monitoring", "vt_trade_watchdog.py")
-        src = open(src_path).read()
-        # Procura padrao buggy: query sem filtro EXCLUDED
-        bad_pattern = re.compile(
-            r'FROM trades WHERE\s*\(exit_time IS NULL OR exit_time = .*.\)\s*"\s*\)',
-            re.DOTALL,
-        )
-        match = bad_pattern.search(src)
-        # Aceita so se o filtro EXCLUDED esta presente perto
-        self.assertIsNotNone(
-            match,
-            "Query L110 sem filtro EXCLUDED detectado. Pitfall #12: 28 trades teste "
-            "sao alarmados como fantasmas a cada 2min. Fix: adicionar "
-            "'AND (strategy IS NULL OR INSTR(strategy, \\'[EXCLUDED\\') = 0)'"
-        )
-        # Confirmar que a regiao apos a query tem o filtro
-        region = src[match.start():match.start() + 600]
-        self.assertIn(
-            "[EXCLUDED", region,
-            "Query L110 existe mas SEM filtro [EXCLUDED] na regiao subsequente. "
-            "Fix Wave 1C.1 deve adicionar 'AND (strategy IS NULL OR INSTR(strategy, "
-            "'[EXCLUDED') = 0)' logo apos a clausula WHERE."
-        )
-
-    def test_watchdog_filters_excluded_from_get_db_open_trades(self):
-        """A query em get_db_open_trades() (L108) DEVE filtrar [EXCLUDED]."""
-        import re
-        src_path = os.path.join(PROJECT_ROOT, "monitoring", "vt_trade_watchdog.py")
-        src = open(src_path).read()
-
-        # Procura funcao get_db_open_trades() e le ate a primeira "return" no escopo da funcao
-        func_start = src.find("def get_db_open_trades")
-        self.assertGreater(
-            func_start, 0, "Funcao get_db_open_trades() nao encontrada"
-        )
-        # Pega os proximos 1500 chars (query inteira + return)
-        body = src[func_start:func_start + 1500]
-        self.assertIn(
-            "[EXCLUDED", body,
-            "get_db_open_trades() SEM filtro [EXCLUDED]! "
-            "28 trades teste serao alarmados como fantasmas. "
-            "Fix Wave 1C.1: adicionar 'AND (strategy IS NULL OR INSTR(strategy, "
-            "'[EXCLUDED') = 0)' na query."
-        )
-
-    def test_watchdog_filters_excluded_from_diff_query(self):
-        """A query open_trades (L227) usada em diff_db_vs_mt5() DEVE filtrar [EXCLUDED]."""
-        import re
-        src_path = os.path.join(PROJECT_ROOT, "monitoring", "vt_trade_watchdog.py")
-        src = open(src_path).read()
-
-        # Procura trecho de L220-230 (open_trades = conn.execute ...)
-        # Match ate o .fetchall() no fim (pode ter ) aninhados no comment, cuidado)
-        pattern = re.compile(
-            r'open_trades\s*=\s*conn\.execute\([\s\S]+?\.fetchall',
-        )
-        matches = list(pattern.finditer(src))
-        self.assertGreaterEqual(
-            len(matches), 1,
-            "open_trades = conn.execute(...) nao encontrada. "
-            "Verificar se L227 mudou."
-        )
-        for m in matches:
-            # Pega janela de 500 chars apos o match (toda a query)
-            region = src[m.start():m.start() + 500]
-            self.assertIn(
-                "[EXCLUDED", region,
-                f"Query open_trades (offset {m.start()}) SEM filtro [EXCLUDED]:\n{region}\n"
-                "Fix Wave 1C.1: adicionar 'AND (strategy IS NULL OR INSTR(strategy, "
-                "'[EXCLUDED') = 0)'"
-            )
-
-    def test_excluded_trades_count_28_in_db(self):
-        """Pre-condicao: 28 trades com ticket teste devem existir E estar marcados."""
-        import sqlite3
-        db_path = os.path.join(PROJECT_ROOT, "vt_trades.db")
-        db = sqlite3.connect(db_path, timeout=5)
-        n = db.execute(
-            "SELECT COUNT(*) FROM trades "
-            "WHERE (entry_ticket IN ('12345','99999') OR exit_ticket IN ('12345','99999')) "
-            "AND INSTR(strategy, '[EXCLUDED') > 0"
-        ).fetchone()[0]
-        self.assertEqual(
-            n, 28,
-            f"Esperado 28 trades teste marcados [EXCLUDED], achou {n}. "
-            f"Se mudou, atualizar teste (mas antes verificar com Bruno)."
-        )
-        db.close()
-
-    def test_excluded_trades_filtered_from_live_count(self):
-        """Stats live (sem EXCLUDED) nao devem incluir ticket 12345/99999."""
-        import sqlite3
-        db_path = os.path.join(PROJECT_ROOT, "vt_trades.db")
-        db = sqlite3.connect(db_path, timeout=5)
-        n_live_test = db.execute(
-            "SELECT COUNT(*) FROM trades "
-            "WHERE entry_ticket IN ('12345','99999') "
-            "AND (strategy IS NULL OR INSTR(strategy, '[EXCLUDED') = 0)"
-        ).fetchone()[0]
-        self.assertEqual(
-            n_live_test, 0,
-            f"Ticket 12345/99999 contando em LIVE: {n_live_test}. "
-            f"Fix Wave 1C.1 falhou - filtro EXCLUDED nao esta sendo aplicado."
-        )
-        db.close()
+def test_watchdog_filters_excluded_from_get_db_open_trades():
+    """get_db_open_trades() em vt_trade_watchdog.py DEVE filtrar [EXCLUDED]."""
+    src_path = os.path.join(PROJECT_ROOT, "monitoring", "vt_trade_watchdog.py")
+    src = open(src_path).read()
+    func_start = src.find("def get_db_open_trades")
+    assert func_start > 0, "Funcao get_db_open_trades() nao encontrada"
+    body = src[func_start:func_start + 1500]
+    assert "[EXCLUDED" in body, (
+        "get_db_open_trades() SEM filtro [EXCLUDED]! "
+        "Trades [EXCLUDED] serao alarmados como fantasmas."
+    )
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_watchdog_filters_excluded_from_diff_query():
+    """check_trade_log() em vt_trade_watchdog.py DEVE filtrar [EXCLUDED]."""
+    src_path = os.path.join(PROJECT_ROOT, "monitoring", "vt_trade_watchdog.py")
+    src = open(src_path).read()
+    func_start = src.find("def check_trade_log")
+    assert func_start > 0, "Funcao check_trade_log() nao encontrada"
+    body = src[func_start:func_start + 2000]
+    assert "[EXCLUDED" in body, (
+        "check_trade_log() SEM filtro [EXCLUDED]! "
+        "Pitfall #12: trades [EXCLUDED] serao diff_reportados como fantasmas."
+    )
+
+
+# ─── BEHAVIORAL (chamam a função de verdade) ────────────────────────────────
+
+
+def test_get_db_open_trades_excludes_excluded(tmp_path):
+    """get_db_open_trades() retorna APENAS live, nunca [EXCLUDED]."""
+    from monitoring import vt_trade_watchdog
+
+    # A fixture autouse _isolate_trades_db ja fez monkeypatch do watchdog.DB_PATH
+    # para tmp_db = tmp_path / "vt_trades.db" (mesmo path que tmp_path fixture).
+    db_path = tmp_path / "vt_trades.db"
+    _seed_trades(db_path, n_excluded=28, n_live=3)
+
+    result = vt_trade_watchdog.get_db_open_trades()
+
+    assert len(result) == 3, (
+        f"get_db_open_trades() retornou {len(result)} trades; esperado 3 (so live). "
+        "Filtro [EXCLUDED] nao esta funcionando."
+    )
+    for ticket in result.keys():
+        assert ticket not in ("12345", "99999"), (
+            f"Ticket EXCLUDED {ticket} vazou para o resultado do watchdog."
+        )
+    for i in range(3):
+        assert str(2000000000 + i) in result, (
+            f"Trade live {i} (ticket={2000000000 + i}) nao encontrado no resultado."
+        )
+
+
+def test_check_trade_log_excludes_excluded(tmp_path):
+    """check_trade_log(mt5_positions) NAO inclui [EXCLUDED] no diff."""
+    from monitoring import vt_trade_watchdog
+
+    db_path = tmp_path / "vt_trades.db"
+    _seed_trades(db_path, n_excluded=28, n_live=3)
+
+    # MT5 nao conhece nenhum dos 31 trades (estado "todos fantasma no broker").
+    # Sem o filtro do watchdog, o diff retornaria 31 (todos como "ghost").
+    # Com o filtro, retorna apenas os 3 live.
+    mt5_positions = []
+
+    diffs = vt_trade_watchdog.check_trade_log(mt5_positions)
+
+    assert len(diffs) == 3, (
+        f"check_trade_log() retornou {len(diffs)} diffs; esperado 3 (so live). "
+        "Filtro [EXCLUDED] nao esta sendo aplicado na query do diff."
+    )
+    for d in diffs:
+        ticket = str(d.get("entry_ticket", ""))
+        assert ticket not in ("12345", "99999"), (
+            f"Ticket EXCLUDED {ticket} vazou no diff de check_trade_log()."
+        )
+
+
+# ─── FIXTURE SELF-CHECK ─────────────────────────────────────────────────────
+
+
+def test_fixture_has_28_excluded_trades(tmp_path):
+    """Pre-condicao: a fixture cria 28 trades marcadas [EXCLUDED_TEST]."""
+    import sqlite3
+
+    db_path = tmp_path / "vt_trades.db"
+    _seed_trades(db_path, n_excluded=28, n_live=3)
+
+    conn = sqlite3.connect(str(db_path), timeout=5)
+    n_excluded = conn.execute(
+        "SELECT COUNT(*) FROM trades "
+        "WHERE (entry_ticket IN ('12345','99999') OR exit_ticket IN ('12345','99999')) "
+        "AND INSTR(strategy, '[EXCLUDED') > 0"
+    ).fetchone()[0]
+    n_live = conn.execute(
+        "SELECT COUNT(*) FROM trades "
+        "WHERE entry_ticket IN ('2000000000', '2000000001', '2000000002')"
+    ).fetchone()[0]
+    conn.close()
+
+    assert n_excluded == 28, f"Fixture: esperado 28 [EXCLUDED], achou {n_excluded}"
+    assert n_live == 3, f"Fixture: esperado 3 live, achou {n_live}"

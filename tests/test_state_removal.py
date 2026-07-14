@@ -227,14 +227,17 @@ class TestStateInitRebuildsFromMt5(_StateTestBase):
             n = state.rebuild_state_from_mt5()
 
         assert n == 2, f"Esperava 2 reconstruidas, veio {n}"
-        assert "WINM26_M5" in state.positions
-        assert "WDOQ26_M5" in state.positions
+        # Wave Per-TF+ (Bruno 09/07): rebuild usa namespace proprio
+        # `f"{symbol}__MT5_{idx}"` para nao colidir com slots live (`f"{symbol}_{tf}"`).
+        assert "WINM26__MT5_0" in state.positions
+        assert "WDOQ26__MT5_0" in state.positions
 
         # Campos compativeis com manage_position
-        win_pos = state.positions["WINM26_M5"]
+        win_pos = state.positions["WINM26__MT5_0"]
         assert win_pos["direction"] == "BUY"
         assert win_pos["entry_ticket"] == "111"
-        assert win_pos["tf"] == "M5"
+        # MT5 nao expoe TF na Position — usamos UNKNOWN como sentinela honesta.
+        assert win_pos["tf"] == "UNKNOWN"
         assert win_pos["entry_price"] == 100.0
         assert win_pos["volume"] == 1.0
         assert win_pos["from_mt5_rebuild"] is True  # flag de origem
@@ -382,8 +385,8 @@ class TestStateJsonFileIfExistsIsIgnored(_StateTestBase):
 
         # Orfao REMOVIDO (limpa + repopula)
         assert "ORPHAN_M5" not in state.positions, "Orfao NAO foi removido pelo rebuild"
-        # Pos legitima preservada
-        assert "WINM26_M5" in state.positions, "Pos legitima foi removida"
+        # Pos legitima preservada (Wave Per-TF+: namespace proprio `__MT5_{idx}`)
+        assert "WINM26__MT5_0" in state.positions, "Pos legitima foi removida"
 
 
 # ==============================================================================
@@ -465,10 +468,11 @@ class TestRebuildStateFromMt5CalledOnRestart(_StateTestBase):
             n = state.rebuild_state_from_mt5()
 
         assert n == 1
-        assert "BITN26_M5" in state.positions
-        assert state.positions["BITN26_M5"]["entry_ticket"] == "555"
+        # Wave Per-TF+ (Bruno 09/07): rebuild usa namespace proprio `__MT5_{idx}`
+        assert "BITN26__MT5_0" in state.positions
+        assert state.positions["BITN26__MT5_0"]["entry_ticket"] == "555"
         # Flag que indica veio do rebuild
-        assert state.positions["BITN26_M5"]["from_mt5_rebuild"] is True
+        assert state.positions["BITN26__MT5_0"]["from_mt5_rebuild"] is True
 
     def test_rebuild_is_idempotent(self):
         """Rodar rebuild 2x seguidas = mesmo estado (sem duplicacao)."""
@@ -526,9 +530,9 @@ class TestStateRebuildAfterEmergencyClose(_StateTestBase):
         ):
             state = vt_autotrader.SessionState()
 
-            # 1o rebuild: estado inicial com 2 pos
+            # 1o rebuild: estado inicial com 2 pos (Wave Per-TF+: namespace `__MT5_{idx}`)
             state.rebuild_state_from_mt5()
-            assert set(state.positions.keys()) == {"WINM26_M5", "WDOQ26_M5"}
+            assert set(state.positions.keys()) == {"WINM26__MT5_0", "WDOQ26__MT5_0"}
 
             # Cache de posicoes da truth tem TTL 2.0s; sem reset entre
             # rebuilds, o 2o hit devolveria o resultado cacheado do 1o.
@@ -541,7 +545,7 @@ class TestStateRebuildAfterEmergencyClose(_StateTestBase):
             state.rebuild_state_from_mt5()
 
         # Pos fechada pelo emergency NAO aparece mais
-        assert set(state.positions.keys()) == {"WINM26_M5"}, (
+        assert set(state.positions.keys()) == {"WINM26__MT5_0"}, (
             f"Pos fechada pelo emergency ainda aparece. "
             f"Positions: {list(state.positions.keys())}"
         )

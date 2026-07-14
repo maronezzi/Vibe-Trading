@@ -106,11 +106,21 @@ class TestAutotraderDead:
         conn.commit()
         conn.close()
 
+        # Wave Lifecycle (Bruno 12/07): _check_autotrader_alive agora tem gate
+        # de dia útil + horário (09:05-16:50). Para testar que pgrep vazio
+        # reporta critical, precisamos simular dia útil dentro do horário.
+        from datetime import datetime as _dt
+        _mock_trading_now = _dt(2026, 7, 13, 10, 0)  # segunda 10:00
+
         with patch("subprocess.run", side_effect=_mock_run({
             "pgrep": _cp(stdout=""),       # autotrader MORTO
             "crontab": _cp(stdout=""),
         })), patch("monitoring.vt_self_heal._check_mt5_reachable",
-                   return_value=None):
+                   return_value=None), \
+             patch("monitoring.vt_self_heal.datetime") as _mock_dt, \
+             patch("core.vt_calendar.is_trading_day",
+                   return_value=(True, "dia_util")):
+            _mock_dt.now.return_value = _mock_trading_now
             report = health_check()
 
         issue = next(i for i in report.issues if i.type == "autotrader_dead")

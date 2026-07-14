@@ -193,6 +193,30 @@ def _isolate_trades_db(request, monkeypatch, tmp_path):
     except ImportError:
         pass  # módulo não instalado (sub-conjunto de testes) — skip
 
+    # Wave 875 (Bruno 10/07): patchar também o DB_PATH do watchdog
+    # para que tests de reconciliation/watchdog usem tmp_db em vez do
+    # DB de produção. Sem isso, test_watchdog_excludes_excluded_trades
+    # dependeria de poluição no DB real (anti-pattern).
+    try:
+        from monitoring import vt_trade_watchdog
+        monkeypatch.setattr(vt_trade_watchdog, "DB_PATH", tmp_db)
+    except ImportError:
+        pass  # monitoring não instalado — skip
+
+    # Wave 875+1 (Bruno 10/07): patchar também vt_trade_log.DB_PATH.
+    # BUG HISTÓRICO: tests que chamam _execute_entry() (autotrader) executam
+    # log_entry() (de vt_trade_log.py:217), que usa DB_PATH hardcoded para o
+    # arquivo de produção. Sem este patch, test_autotrader_order_tracker_integration
+    # etc. poluem o vt_trades.db real com trades fake (ticket=12345/99999 etc).
+    # Comprovado: rodar 1× o test_filled_valid_ticket_opens_position adicionou
+    # 1 trade real com ticket=12345 ao DB de produção (4→5).
+    # FIX: redirecionar vt_trade_log.DB_PATH para tmp_db.
+    try:
+        from core import vt_trade_log
+        monkeypatch.setattr(vt_trade_log, "DB_PATH", tmp_db)
+    except ImportError:
+        pass  # core não instalado — skip
+
     yield
 
     # Sem cleanup manual necessário — tmp_path é auto-cleaned pelo pytest

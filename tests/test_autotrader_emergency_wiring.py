@@ -114,15 +114,21 @@ class TestAutotraderEmergencyWiring(unittest.TestCase):
         )
 
     def test_wrapper_calls_count_matches_expected(self):
-        """Deve haver EXATAMENTE 5 call sites wrapped (mesmo número que tinha safe_modify_sl)."""
+        """Deve haver EXATAMENTE 6 call sites wrapped.
+
+        Original: 5 sites safe_modify_sl → wrapped (2 validator fix + 2 BE + 1 trail).
+        Wave Melhoria 2 (Bruno 12/07): +1 site profit-lock (cobre BUY+SELL via
+        param direction). Total = 6. Atualizar este literal ao adicionar novos
+        sites de modify_sl que passem pelo wrapper.
+        """
         wrapper_calls = [
             (ln, name) for ln, name in self.calls
             if name == "safe_modify_sl_with_emergency_close"
         ]
         self.assertEqual(
-            len(wrapper_calls), 5,
-            f"Esperado 5 call sites de safe_modify_sl_with_emergency_close "
-            f"(correspondente aos 5 sites safe_modify_sl originais), "
+            len(wrapper_calls), 6,
+            f"Esperado 6 call sites de safe_modify_sl_with_emergency_close "
+            f"(5 originais + 1 profit-lock Wave Melhoria 2), "
             f"encontrado {len(wrapper_calls)}.\n"
             f"Sites: {wrapper_calls}"
         )
