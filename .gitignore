@@ -136,3 +136,12 @@ tests.snapshot_*
 
 # Timestamped validation reports from data-validation runs (not source).
 data/validation_3days_*.md
+
+# Snapshots AGI (backup runtime, vão pra vault, não git)
+vt_config.json.snapshot_*
+
+# ZCode workspace (workflow separado, não parte do VT)
+.zcode/
+
+# Archive docs (sepultura)
+archive/docs/
