@@ -114,10 +114,11 @@ def check_symbols(cfg: dict) -> tuple[bool, str]:
 
     # Resolver (auto-rolla se vence em <=2 dias)
     try:
-        resolved = resolve_all_symbols()
+        resolved = resolve_all_symbols(persist=True)
         log(f"Contratos resolvidos: {resolved}")
-        # resolve_all_symbols() já persiste no config se houve mudança de contrato.
-        # Não tocamos _updated_at/_updated_by para não poluir histórico de autoria.
+        # resolve_all_symbols(persist=True) persiste no config se houve mudança
+        # de contrato. NÃO tocamos _updated_at/_updated_by — save_full_config
+        # do calendar_resolve já é rastreável via _updated_by="calendar_resolve".
         log("OK")
     except Exception as e:
         log(f"❌ Falha ao resolver símbolos: {e}")

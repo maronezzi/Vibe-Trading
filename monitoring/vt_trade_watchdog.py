@@ -84,15 +84,40 @@ def get_mt5_positions():
 
 
 # ===== 2. READ BOT STATE =====
+# Wave N+1C (10/07/2026): STATE_FILE descontinuado na Fase 3 (01/07) — fonte de
+# verdade é core.vt_truth.get_open_positions(). Pitfall #36: o STATE_FILE legado
+# nunca mais é escrito pelo autotrader; lê-lo causa FileNotFoundError e
+# bot_positions={} → falsos positivos de "órfão". Migrado para truth layer.
 def get_bot_positions():
-    """Read autotrader state file for tracked positions."""
+    """Lê posições via truth layer (core.vt_truth.get_open_positions).
+
+    Pitfall #36: NÃO ler /tmp/vt_autotrader_state.json — descontinuado
+    na Fase 3. Se truth layer falhar, retorna {} e loga (silencioso para
+    não duplicar ruído — cron `no-agent` filtra stdout via shell).
+    """
     try:
-        with open(STATE_FILE) as f:
-            data = json.load(f)
-        return data.get("positions", {})
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        log(f"[STATE ERRO] {e}")
+        positions = vt_truth.get_open_positions()
+    except Exception as e:
+        log(f"[STATE ERRO] get_open_positions falhou: {e}")
         return {}
+    out = {}
+    for p in positions:
+        ticket = str(getattr(p, "ticket", "") or "")
+        if not ticket:
+            continue
+        out[ticket] = {
+            "entry_ticket": ticket,
+            "symbol": getattr(p, "symbol", "") or "",
+            "direction": getattr(p, "direction", "") or "",
+            "volume": float(getattr(p, "volume", 0.0) or 0.0),
+            "entry_price": float(getattr(p, "price_open", 0.0) or 0.0),
+            "entry_time": getattr(p, "open_time", "") or "",
+            "sl": float(getattr(p, "sl", 0.0) or 0.0),
+            "tp": float(getattr(p, "tp", 0.0) or 0.0),
+            "magic": int(getattr(p, "magic", 0) or 0),
+            "comment": getattr(p, "comment", "") or "",
+        }
+    return out
 
 
 def get_db_open_trades():
@@ -283,10 +308,16 @@ def get_db_daily_pnl(date_iso: Optional[str] = None) -> Decimal:
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=5.0)
         conn.row_factory = sqlite3.Row
+        # Wave N+1C (Bruno 09/07): filtra [EXCLUDED] alem de GHOST/stale_close.
+        # Trades marcados [EXCLUDED] sao fantasmas (DB so, MT5 nao conhece) -
+        # preservados para auditoria mas fora do PnL realizado.
         row = conn.execute(
             "SELECT COALESCE(SUM(net_pnl), 0.0) AS total "
             "FROM trades "
-            "WHERE date(entry_time) = ? AND exit_time IS NOT NULL",
+            "WHERE date(entry_time) = ? AND exit_time IS NOT NULL "
+            "  AND exit_reason != 'stale_close' "
+            "  AND exit_reason != 'GHOST' "
+            "  AND strategy NOT LIKE '%[EXCLUDED]%'",
             (date_iso,),
         ).fetchone()
         conn.close()

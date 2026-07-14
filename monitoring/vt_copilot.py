@@ -55,6 +55,17 @@ def run_self_heal_hook():
 
 from mt5.mt5_orchestrator import status as mt5_status, _run_wine, EXECUTOR_WIN, history as mt5_history
 from core.vt_config_loader import load_config
+import sys as _sys
+from pathlib import Path as _Path
+_balhist_path = str(_Path(__file__).parent)
+if _balhist_path not in _sys.path:
+    _sys.path.insert(0, _balhist_path)
+from vt_balance_history import (
+    append_snapshot as _bh_append_snapshot,
+    read_history as _bh_read_history,
+    DEFAULT_PATH as _BH_DEFAULT_PATH,
+)
+
 from core.vt_autotrader import get_truth_from_mt5
 
 # ===== TRUTH LAYER (FASE 1) =====
@@ -687,6 +698,7 @@ def check_intraday_stats() -> dict:
         # encontrou exit_price real porque MT5 history vazio). Se contasse,
         # reportaria "WR 0%" mesmo com varios losses reais. Excluir evita
         # esse teatro. Os losses reais aparecem via MT5_BALANCE_DELTA abaixo.
+        # Wave N+1C (Bruno 09/07): filtra [EXCLUDED] alem de GHOST/stale_close.
         closed = conn.execute("""
             SELECT COUNT(*) ops,
                    SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) wins,
@@ -697,6 +709,7 @@ def check_intraday_stats() -> dict:
               AND date(exit_time) = ?
               AND exit_reason != 'stale_close'
               AND exit_reason != 'GHOST'
+              AND strategy NOT LIKE '%[EXCLUDED]%'
         """, (today,)).fetchone()
         pnl_series = conn.execute("""
             SELECT exit_time, net_pnl
@@ -705,6 +718,7 @@ def check_intraday_stats() -> dict:
               AND date(exit_time) = ?
               AND exit_reason != 'stale_close'
               AND exit_reason != 'GHOST'
+              AND strategy NOT LIKE '%[EXCLUDED]%'
             ORDER BY exit_time
         """, (today,)).fetchall()
         pnl_series = [(t, p) for t, p in pnl_series]  # ja vem como tuplas
@@ -758,6 +772,16 @@ def check_intraday_stats() -> dict:
             # Sobrescreve pnl_realized com a verdade do broker
             pnl_realized = balance_delta
             log(f"[FALLBACK-BALANCE] MT5 broker-truth PnL: R$ {balance_delta:+.2f} (base {base_balance:,.2f} -> now {current_balance:,.2f})")
+            # Wave N+1B (09/07/2026): gravar snapshot para gráfico intraday.
+            # Se MT5/DB ficarem vazios, plotaremos a evolução do saldo.
+            try:
+                _bh_append_snapshot(
+                    balance=current_balance,
+                    pnl_delta=balance_delta,
+                    source="MT5_STATUS_FALLBACK",
+                )
+            except Exception as _e:
+                log(f"[BH-SNAPSHOT] erro ao gravar balance history: {_e}")
         except Exception as _e:
             log(f"[FALLBACK-BALANCE] erro ao ler MT5 status: {_e}")
 
@@ -817,16 +841,55 @@ def _normalize_deal_time(t_raw) -> str:
     return str(t_raw)
 
 
-def render_pnl_chart(pnl_cum: list, today: str) -> Path:
-    """Gera PNG da evolução intraday do PnL realizado.
+def build_pnl_series_from_balance_history(path: str | None = None) -> list[tuple[str, float]]:
+    """Wave N+1B: constrói série temporal (ts, pnl_delta) a partir do histórico
+    de saldo MT5. Retorna [] se histórico vazio/ausente/inválido.
 
+    Cada elemento é (timestamp ISO, PnL relativo ao baseline do dia).
+    baseline = primeiro snapshot de hoje (= saldo de abertura).
+    """
+    from pathlib import Path as _P
+    p = _P(path) if path else _BH_DEFAULT_PATH
+    history = _bh_read_history(p)
+    if not history or len(history) < 1:
+        return []
+    try:
+        baseline = history[0]["balance"]
+    except (KeyError, IndexError):
+        return []
+    series = []
+    for h in history:
+        try:
+            series.append(
+                (h["ts"], round(float(h["balance"]) - float(baseline), 2))
+            )
+        except (KeyError, ValueError, TypeError):
+            continue
+    return series
+
+
+def render_pnl_chart(pnl_cum: list, today: str, balance_history_path: str | None = None) -> Path:
+    """Gera PNG da evolução intraday do PnL realizado.
     Tema escuro, igual ao terminal/IDE. Linha verde se último valor >= 0,
-    vermelha se < 0. Se pnl_cum vazio, mostra placeholder.
+    vermelha se < 0. Se pnl_cum vazio, mostra placeholder — exceto quando
+    balance_history_path é fornecido E o histórico tem snapshots de hoje:
+    nesse caso plota a evolução do saldo MT5 (delta a partir do baseline),
+    que é o broker-truth disponível mesmo quando MT5 deals e DB trades
+    estão vazios.
+
+    Wave N+1B (09/07/2026): corrige bug do gráfico placeholder quando
+    MT5 demo não persiste deals + DB trades todos GHOST.
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.dates import DateFormatter
+
+    # Se pnl_cum vazio mas há histórico do saldo → plota broker-truth (delta)
+    if not pnl_cum and balance_history_path is not None:
+        series = build_pnl_series_from_balance_history(balance_history_path)
+        if series:
+            pnl_cum = series
 
     fig, ax = plt.subplots(figsize=(10, 4.5), dpi=110)
     fig.patch.set_facecolor("#1e1e1e")
@@ -1079,7 +1142,9 @@ def main():
         report = generate_report()
         stats = check_intraday_stats()
         today_str = datetime.now().strftime("%Y-%m-%d")
-        chart_path = render_pnl_chart(stats["pnl_cum"], today_str)
+        chart_path = render_pnl_chart(
+            stats["pnl_cum"], today_str, balance_history_path=str(_BH_DEFAULT_PATH)
+        )
 
         # Montar mensagem final
         msg_parts = [

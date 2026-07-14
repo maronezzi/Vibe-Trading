@@ -141,6 +141,30 @@ def _notify_telegram(msg: str) -> bool:
 # ── Health checks (6) ───────────────────────────────────────────────────────
 def _check_autotrader_alive() -> Optional[HealthIssue]:
     """Check 1: pgrep -f core/vt_autotrader.py + log freshness."""
+    # Wave Lifecycle (Bruno 12/07): se NÃO é dia/hora de trading, autotrader
+    # "morto" é o comportamento esperado. O daemon sai sozinho pós-EOD
+    # (sys.exit após 10min de reconcile); não deve ser ressuscitado fora de
+    # horário ou em fim de semana. Sem este guard, o self-heal reinicia o
+    # autotrader no sábado/domingo via start_autotrader.sh, e o daemon fica
+    # idle ("Fora do horário de trading") até ser morto de novo.
+    try:
+        from core.vt_calendar import is_trading_day
+        from datetime import date as _date
+        _ok_day, _motivo = is_trading_day(_date.today())
+        if not _ok_day:
+            return None  # fim de semana/feriado — autotrader ausente é normal
+        # Dentro de dia útil mas fora de horário 09:05-16:50?
+        # (5min de buffer pós-close para o daemon terminar o reconcile e sair)
+        _now_min = datetime.now().hour * 60 + datetime.now().minute
+        _start = 9 * 60 + 5    # 09:05
+        _end = 16 * 60 + 50    # 16:50
+        if _now_min < _start or _now_min >= _end:
+            return None  # fora de horário — autotrader ausente é normal
+    except Exception:
+        # Fail-open: se o import/check falhar, mantém o pgrep original como
+        # rede de segurança. Não quebra o self-heal por causa de um import.
+        pass
+
     try:
         result = subprocess.run(
             ["pgrep", "-f", "core/vt_autotrader.py"],
