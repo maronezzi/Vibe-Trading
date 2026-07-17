@@ -1,8 +1,8 @@
 {
-  "_version": 1081,
-  "_updated_at": "2026-07-15T14:31:43.132212",
-  "_updated_by": "hermes_wave_15_13h_session_20260715",
-  "_notes": "Wave 12 SUPER-AGI v5 (Sunday, 27 strategies × 60 combos × 16 pares, WF 4w 75%): WIN_M5→EMA_CROSSOVER PF=2.57 PnL=R$ 2085 n=17 WF=100%; WIN_M15→BOLLINGER PF=2.46 PnL=R$ 3338 n=13 WF=100%; WIN_M30→EMA_PULLBACK PF=4.18 PnL=R$ 8120 n=22 WF=100%; BIT_M5→DIVERGENCE_RSI PF=3.14 PnL=R$ 206 n=24 WF=75%; BIT_M15→PIVOT_POINTS PF=20.48 PnL=R$ 238 n=18 WF=100%; BIT_M30→RSI_REVERSION PF=2.94 PnL=R$ 225 n=17 WF=67% | Wave14: Bruno pediu para NAO operar IND",
+  "_version": 1095,
+  "_updated_at": "2026-07-17T13:02:16.998271",
+  "_updated_by": "copilot_11h_w878_overtrading_fix",
+  "_notes": "Wave 12 SUPER-AGI v5 (Sunday, 27 strategies × 60 combos × 16 pares, WF 4w 75%): WIN_M5→EMA_CROSSOVER PF=2.57 PnL=R$ 2085 n=17 WF=100%; WIN_M15→BOLLINGER PF=2.46 PnL=R$ 3338 n=13 WF=100%; WIN_M30→EMA_PULLBACK PF=4.18 PnL=R$ 8120 n=22 WF=100%; BIT_M5→DIVERGENCE_RSI PF=3.14 PnL=R$ 206 n=24 WF=75%; BIT_M15→PIVOT_POINTS PF=20.48 PnL=R$ 238 n=18 WF=100%; BIT_M30→RSI_REVERSION PF=2.94 PnL=R$ 225 n=17 WF=67% | Wave14: Bruno pediu para NAO operar IND | 2026-07-17 11:08 BRUNO: max_daily_loss -500 -> -2000 TEMPORARIO (kill switch soltou por falso positivo BITN mult errado - investigar). REVERTER AMANHA no pre-flight 09:00.",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
   "start_minute": 5,
@@ -241,71 +241,71 @@
     "WDO_M30",
     "WDO_H1"
   ],
-  "max_daily_loss": -1500,
+  "max_daily_loss": -2000,
   "global_max_daily_trades": 999,
   "params_by_tf": {
     "WIN_M5": {
-      "cooldown_seconds": 900,
+      "cooldown_seconds": 1200,
       "ema_fast": 10,
       "ema_slow": 26,
-      "halt_duration_minutes": 45,
-      "max_consecutive_losses": 6,
+      "halt_duration_minutes": 60,
+      "max_consecutive_losses": 4,
       "profit_lock_r": 1.5,
       "sl_atr_mult": 1.8
     },
     "WIN_M15": {
-      "cooldown_seconds": 900,
+      "cooldown_seconds": 600,
       "halt_duration_minutes": 45,
-      "max_consecutive_losses": 5,
-      "profit_lock_r": 0.8,
-      "sl_atr_mult": 3.0
+      "max_consecutive_losses": 3,
+      "profit_lock_r": 0.7,
+      "sl_atr_mult": 2.5
     },
     "WIN_M30": {
       "cooldown_seconds": 600,
-      "halt_duration_minutes": 45,
-      "max_consecutive_losses": 4,
-      "profit_lock_r": 1.0,
-      "sl_atr_mult": 2.0
+      "halt_duration_minutes": 30,
+      "max_consecutive_losses": 3,
+      "profit_lock_r": 1.5,
+      "sl_atr_mult": 1.5
     },
     "WIN_H1": {
-      "cooldown_seconds": 900,
-      "halt_duration_minutes": 45,
-      "max_consecutive_losses": 4,
-      "profit_lock_r": 1.5,
+      "cooldown_seconds": 60,
+      "halt_duration_minutes": 15,
+      "max_consecutive_losses": 5,
+      "profit_lock_r": 1.0,
       "rsi_overbought": 80,
       "rsi_oversold": 30,
       "rsi_period": 5,
       "sl_atr_mult": 2.5
     },
     "BIT_M5": {
-      "cooldown_seconds": 60,
-      "halt_duration_minutes": 60,
-      "macd_fast": 12,
-      "macd_signal": 9,
-      "macd_slow": 26,
-      "max_consecutive_losses": 4,
-      "profit_lock_r": 0.3,
-      "sl_atr_mult": 2.5
+      "cooldown_seconds": 180,
+      "halt_duration_minutes": 180,
+      "macd_fast": 14,
+      "macd_signal": 7,
+      "macd_slow": 30,
+      "max_consecutive_losses": 2,
+      "profit_lock_r": 1.5,
+      "sl_atr_mult": 1.2
     },
     "BIT_M15": {
-      "cooldown_seconds": 300,
+      "cooldown_seconds": 600,
       "ema_fast": 5,
       "ema_slow": 20,
       "halt_duration_minutes": 60,
-      "max_consecutive_losses": 8,
+      "max_consecutive_losses": 3,
       "profit_lock_r": 1.0,
       "pullback_pct": 0.15,
       "sl_atr_mult": 3.0
     },
     "BIT_M30": {
-      "cooldown_seconds": 120,
-      "halt_duration_minutes": 90,
-      "max_consecutive_losses": 2,
-      "profit_lock_r": 0.3,
-      "rsi_overbought": 65,
-      "rsi_oversold": 20,
-      "rsi_period": 7,
-      "sl_atr_mult": 1.8
+      "cooldown_seconds": 60,
+      "halt_duration_minutes": 120,
+      "max_consecutive_losses": 5,
+      "profit_lock_r": 0.0,
+      "rsi_overbought": 75,
+      "rsi_oversold": 30,
+      "rsi_period": 5,
+      "sl_atr_mult": 2.5
     },
     "BIT_H1": {
       "sl_atr_mult": 1.0,

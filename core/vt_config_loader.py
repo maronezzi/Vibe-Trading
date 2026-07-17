@@ -105,6 +105,20 @@ ALLOWED_WRITERS = (
     # explicitamente pelo Bruno na sessão 13/07 18:30. Rodar com autotrader
     # PAUSADO (fora do horário de trading, como em todas as aplicações manuais).
     "scripts/w13_5_apply_expanded_grids.py",
+    # scripts/w14_1_apply_agi_v4_candidates.py (Wave 14.1, Bruno 2026-07-14):
+    # aplica 7 candidatos WIN_M5/M15/M30/H1 + BIT_M5/M15/M30 do AGI v4 com
+    # grids expandidos. Delta projetado: +R$ 14.288 em 30d. Reverte BIT_M5
+    # SUPERTREND (Wave 13.5) para MACD_MOMENTUM. Autorizado pelo Bruno em
+    # sessão 14/07 19:50. Rodar com autotrader PAUSADO.
+    "scripts/w14_1_apply_agi_v4_candidates.py",
+    # scripts/w14_6_meio_dia_20260715.py (Wave 14.6, Bruno 2026-07-15):
+    # tuning meio-dia conservador. Briefing: WIN M5/M15/M30/H1 com WR=0%
+    # (-R$ 641 total); BIT +R$ 1615 (skip); WSP/WDO com disabled_timeframes
+    # (skip); IND disabled_symbols (skip Bruno W14). Aplicar 2 params WIN
+    # (bb_std 2.0→2.2, rsi_oversold 15→25) — NÃO troca estratégia, NÃO
+    # mexe em sl_atr_mult, NÃO remove de disabled_timeframes. Rodar com
+    # autotrader PAUSADO.
+    "scripts/w14_6_meio_dia_20260715.py",
     "backtest/apply_optimization.py",
     # monitoring/vt_pre_flight.py roda 8h55 ANTES do autotrader (pre-flight
     # gate) — é seguro persistir resolved_symbols nessa janela.
@@ -153,6 +167,12 @@ ALLOWED_WRITERS = (
     # vt_config.json.bak.super_agi_pre_<ts>. Rodar com autotrader PAUSADO (Domingo).
     "optimization/super_agi_v5.py",
     "optimization/verify_super_agi_v5.py",
+    # Wave 878 (2026-07-17, sex, 11h00-11h15): Copilot sessão 11h tightening
+    # defensivo de cooldown/max_consecutive_losses em WIN_M15/M30 (HTF_BIAS_LTF_ENTRY
+    # com 11L/13 trades hoje) + BIT_M15 (EMA_PULLBACK com -R$215). NÃO troca
+    # estratégia, NÃO mexe em sl_atr_mult, NÃO remove de disabled_timeframes.
+    # Rodar com autotrader PAUSADO (data/autotrader.paused presente).
+    "scripts/w878_11h_copilot_overtrading_cooldown.py",
 )
 
 # Cache
