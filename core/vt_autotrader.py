@@ -154,6 +154,14 @@ def _sync_daily_pnl_with_db(state):
 
 class SessionState:
     def __init__(self):
+        # FIX 3 (Wave 14.3 — 2026-07-14, Bruno): posições são slots
+        # independentes por (symbol, tf). Múltiplos TFs do mesmo symbol
+        # podem coexistir (WINQ26_M5 + WINQ26_M15 + WINQ26_M30 + ...).
+        # Chave sempre no formato `f"{symbol}_{tf}"`. Nenhum código deve
+        # bloquear entrada em um TF por haver posição aberta em outro TF
+        # do mesmo symbol — isso era o bug DEFESA2-DRIFT, corrigido em
+        # _defenses_ok() (L2016+). Ver também manage_position() e
+        # reconcile_positions_with_mt5() que iteram por slot, não por symbol.
         self.positions = {}
         self.last_signals = {}
         self.daily_pnl = 0
@@ -528,16 +536,76 @@ class SessionState:
         for p in positions_mt5:
             # _truth.Position eh frozen dataclass. Campos ja normalizados.
             # monta dict compativel com o que manage_position espera.
+            # IMPORTANTE: manage_position() faz pos["atr"], pos["sl_pts"],
+            # pos["best_price"], pos["trail_on"], pos["bar_count"],
+            # pos["trade_log_id"] hard-access. ANTES do fix 2026-07-14
+            # (Wave 14.2) o rebuild deixava esses campos ausentes → KeyError
+            # a cada tick → autotrader travado em loop de erro. Defaults
+            # abaixo são fail-safe: trajam a posição como "recém-construída"
+            # (trail desligado, sem bar progress, sem link com DB).
             try:
                 state_key = f"{p.symbol}_M5"
+                _entry_price = float(p.price_open or 0.0)
+                _current = float(p.price_current or _entry_price)
+                _direction = "BUY" if p.direction in ("BUY", 0, "0") else "SELL"
+                # best_price: do lado a favor (BUY=max, SELL=min)
+                _best = _current if _direction == "BUY" else _current
+                if _direction == "BUY":
+                    _best = max(_entry_price, _current)
+                else:
+                    _best = min(_entry_price, _current)
+                # bar_count: estimado pelo tempo de abertura. manage_position
+                # usa bar_count para calcular pos_minutes = bar_count *
+                # check_interval/60. Estimar pela idade da posição.
+                _check_interval = 30  # default — autotrader real usa
+                _entry_ts = _parse_mt5_time(p.open_time).timestamp() if p.open_time else None
+                if _entry_ts and _entry_ts > 0:
+                    _age_min = max(0, (datetime.now().timestamp() - _entry_ts) / 60)
+                    _bar_count = max(1, int(_age_min / (_check_interval / 60)))
+                else:
+                    _bar_count = 1
+                # atr: tenta buscar via bars; senão usa fallback razoável.
+                # WINQ26 M5: ATR típico ~150-300. Se não conseguir calcular,
+                # não bloqueia — manage_position tem guards (atr > 0 checks).
+                _atr = 0
+                _sl_pts = 0
+                try:
+                    _bars = fetch_bars(p.symbol, "M5", CONFIG.get("bars_count", 100))
+                    if _bars and len(_bars) >= 20:
+                        _atr = calculate_atr(_bars, 14) or 0
+                except Exception:
+                    pass
+                # trade_log_id: tenta achar no DB
+                _trade_log_id = None
+                try:
+                    import sqlite3 as _sq
+                    _c = _sq.connect("vt_trades.db", timeout=5)
+                    _c.row_factory = _sq.Row
+                    _r = _c.execute(
+                        "SELECT id FROM trades WHERE entry_ticket = ? "
+                        "AND exit_time IS NULL",
+                        (str(p.ticket),),
+                    ).fetchone()
+                    if _r:
+                        _trade_log_id = _r["id"]
+                    _c.close()
+                except Exception:
+                    pass
                 self.positions[state_key] = {
-                    "direction": "BUY" if p.direction in ("BUY", 0, "0") else "SELL",
-                    "entry_price": float(p.price_open or 0.0),
+                    "direction": _direction,
+                    "entry_price": _entry_price,
                     "entry_ticket": str(p.ticket),
                     "entry_time": _parse_mt5_time(p.open_time),
                     "volume": float(p.volume or 0.0),
                     "tf": "M5",
                     "from_mt5_rebuild": True,  # flag: veio do rebuild (nao de _execute_entry)
+                    # Wave 14.2: campos que manage_position() faz hard-access
+                    "atr": _atr,
+                    "sl_pts": _sl_pts,
+                    "best_price": _best,
+                    "trail_on": False,
+                    "bar_count": _bar_count,
+                    "trade_log_id": _trade_log_id,
                 }
             except Exception as _e_rebuild:
                 # FAIL-SAFE: pula pos mal-formada (mesmo padrao do _truth)
@@ -1252,9 +1320,13 @@ def _check_max_trades(params: dict, symbol: str = "") -> bool:
     _global_max_daily_trades() (global_max_daily_trades, backstop 50).
     """
     # ── KILL SWITCH: Max daily loss ──
+    # Wave N+1 B5 fix (Bruno 2026-07-17): usar broker-truth (MT5 deals) em vez
+    # de state.daily_pnl que vem do DB SQLite envenenado por ORPHANs. Confia
+    # no que o MT5 diz, não no que o DB pensa.
     max_daily_loss = CONFIG.get("max_daily_loss", -500)
-    if state.daily_pnl <= max_daily_loss:
-        log(f"🛑 KILL SWITCH: PnL diário R$ {state.daily_pnl:.2f} ≤ limite R$ {max_daily_loss:.2f} — TRAVADO")
+    pnl_broker_truth = float(_truth.get_daily_pnl())
+    if pnl_broker_truth <= max_daily_loss:
+        log(f"🛑 KILL SWITCH: PnL diário R$ {pnl_broker_truth:.2f} ≤ limite R$ {max_daily_loss:.2f} — TRAVADO (broker-truth)")
         return False
 
     # ── KILL SWITCH: disabled_ativos (AGI pode desativar ativos que perdem) ──
@@ -1953,20 +2025,47 @@ def _defenses_ok(symbol: str, tf: str, direction: str, bar_ts) -> bool:
     if state.positions.get(state_key):
         return False
 
-    # Defesa 2: drift MT5↔state — se MT5 tem pos aberta com magic+symbol mas
-    # state NAO tem no slot, eh um orfao (server-side open nao registrado).
-    # Bloqueia para evitar duplicar (estado inconsistente deve parar trading).
-    # Diferente do validate_order_pre_send: checa QUALQUER direcao, nao so a
-    # incoming — porque a defesa eh contra orfao, nao contra reversao.
+    # Defesa 2 (Wave 14.3 — 2026-07-14): drift MT5↔state REAL via OrderTracker.
+    # Antes bloqueava errado: iterava truth.get_open_positions() (que NÃO tem
+    # campo TF) e, para QUALQUER pos aberta com mesmo symbol, considerava o
+    # slot per-TF state["{symbol}_{tf}"] vazio como "órfão" → bloqueava até
+    # WINQ26_M5 coexistir com WINQ26_M15 (multi-TF impossível). Agora orfão
+    # = ticket que MT5 tem aberto MAS o OrderTracker nao conhece
+    # (server-side open nao registrado pelo bot). Reconcilia depois.
+    #
+    # Camada defensiva extra (Wave 14.3, Bruno 2026-07-14): se QUALQUER slot
+    # state.positions[f"{symbol}_*"] gerencia um ticket presente em MT5, NÃO
+    # bloquear — está sendo gerenciado em outro TF do mesmo symbol (per-TF
+    # slot é independente por design).
     try:
         _open_pos = _truth.get_open_positions()
-        for p in _open_pos:
-            if p.symbol == symbol:
-                # Orfao: MT5 sabe, state nao. Bloqueia.
-                if not state.positions.get(state_key):
-                    log(f"[DEFESA2-DRIFT] {state_key} orfao no MT5 (ticket={p.ticket}) — bloqueando {direction}")
-                    return False
-                break
+        _mt5_tickets = {str(int(p.ticket)) for p in _open_pos if getattr(p, 'ticket', None)}
+        # 1) Coletar tickets conhecidos pelo state (qualquer TF)
+        _state_known_tickets = set()
+        for _v in state.positions.values():
+            _t = _v.get("entry_ticket")
+            if _t is not None:
+                try:
+                    _state_known_tickets.add(str(int(_t)))
+                except (ValueError, TypeError):
+                    _state_known_tickets.add(str(_t))
+        # 2) Coletar tickets conhecidos pelo OrderTracker
+        try:
+            from core.vt_order_tracker import OrderTracker
+            _tracker = OrderTracker()
+            _ot_known = set(_tracker._active.keys()) if hasattr(_tracker, '_active') else set()
+            _ot_known_str = {str(int(t)) for t in _ot_known}
+        except Exception:
+            _ot_known_str = set()
+        _known_tickets = _state_known_tickets | _ot_known_str
+        # 3) Só é orfão real se MT5 tem ticket MAS NEM state NEM tracker conhecem
+        _orphan_tickets = _mt5_tickets - _known_tickets
+        if _orphan_tickets:
+            log(
+                f"[DEFESA2-DRIFT] {len(_orphan_tickets)} orfao(s) real(is) no MT5 "
+                f"={_orphan_tickets} — bloqueando {symbol} {tf} {direction}"
+            )
+            return False
     except Exception:
         pass
 
@@ -2325,11 +2424,20 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             "original_volume": _vol,
             "remaining_volume": _vol,
             "tp1_done": False,
+            # Wave 880.B4 (2026-07-19): TP2 ladder — segundo parcial em tp2_r*ATR.
+            "tp2_done": False,
         }
 
         # Cooldown (por symbol, tf, direction — evita reversões rápidas)
+        # Wave 14.3 (Bruno 2026-07-14): NÃO escrever em `state.last_trade_time[symbol]`
+        # puro — isso violava o modelo per-TF, fazendo cooldown de M5 vazar pra
+        # M15/M30. Antes da fix, um trade em WINQ26_M5 bloqueava WINQ26_M15
+        # por cd=300s. Agora só chaves per-TF.
+        # Wave 14.3.1: removida chave _symbol_root (root 3 letras) — ninguém
+        # lia (ver `_check_cooldown` L1183 lê `symbol` completo). Era dead
+        # write que poluía o state. Apenas `f"{symbol}_{tf}_{direction}"`
+        # é consultada em `_defenses_ok:2076`.
         now = datetime.now()
-        state.last_trade_time[symbol] = now
         state.last_trade_time[f"{symbol}_{tf}"] = now
         state.last_trade_time[f"{symbol}_{tf}_{direction}"] = now
         state.daily_trade_count += 1
@@ -2469,27 +2577,98 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             except Exception as exc:
                 log(f"[TP1] erro inesperado: {exc!r} — mantém estado")
 
-    # Após TP1, switch do trail pra atr_trail_mult (mais apertado).
-    # trail_distance regular é largo demais (lock profit parcial não ajuda).
-    if pos.get("tp1_done"):
-        trail_dist_cfg = params.get("atr_trail_mult", 2.0)
+    # ════════════════════════════════════════════════════════════════════
+    # Wave 880.B4 (2026-07-19): TP2 — segundo fechamento parcial em R*ATR.
+    # Dispara UMA vez por posição APÓS TP1, em profit >= tp2_r * atr.
+    # Fecha fração tp2_pct do que resta (remaining_volume). O restante
+    # segue sob trailing (que já está em atr_trail_mult tighter pós-TP1).
+    # Default tp2_r=2.0, tp2_pct=0.5 — alinhado com backtest_v944.py.
+    # ════════════════════════════════════════════════════════════════════
+    tp2_r = params.get("tp2_r", 2.0)
+    tp2_pct = params.get("tp2_pct", 0.5)
+    if (
+        not pos.get("tp2_done", False)
+        and pos.get("tp1_done", False)
+        and atr > 0
+        and profit_pts >= tp2_r * atr
+        and pos.get("remaining_volume", pos["volume"]) > 0
+        and 0 < tp2_pct < 1
+    ):
+        # tp2_pct: fração do REMAINING (não do original) a fechar.
+        current_remaining = pos.get("remaining_volume", pos["volume"])
+        close_volume = current_remaining * tp2_pct
+        actual_close = min(close_volume, current_remaining)
+        if actual_close <= 0:
+            pos["tp2_done"] = True  # idempotente
+        else:
+            try:
+                from mt5.mt5_error_recovery import safe_partial_close
+                tp2_result = safe_partial_close(
+                    symbol, pos["entry_ticket"], actual_close,
+                )
+                if tp2_result.get("status") in ("ok", "already_closed"):
+                    new_remaining = current_remaining - actual_close
+                    if tp2_result.get("status") == "already_closed":
+                        new_remaining = 0.0
+                    pos["remaining_volume"] = new_remaining
+                    pos["tp2_done"] = True
+                    log(
+                        f"[TP2] {symbol} {direction} fechou {actual_close:.2f} "
+                        f"de {current_remaining:.2f} @ profit {profit_pts:.1f}pts "
+                        f"(>= {tp2_r}*ATR={tp2_r*atr:.1f}) "
+                        f"→ resta {new_remaining:.2f}"
+                    )
+                    try:
+                        notify_telegram(
+                            f"🎯 *TP2* {symbol} {tf}\n"
+                            f"• Fechou {actual_close:.2f} contrato(s) "
+                            f"(de {current_remaining:.2f}, {tp2_pct*100:.0f}% do restante)\n"
+                            f"• Restante segue sob trailing apertado"
+                        )
+                    except Exception:
+                        pass
+                else:
+                    log(
+                        f"[TP2] partial_close falhou ticket={pos['entry_ticket']}: "
+                        f"{tp2_result.get('error', '?')} — mantém estado"
+                    )
+            except Exception as exc:
+                log(f"[TP2] erro inesperado: {exc!r} — mantém estado")
 
     # Tempo de posição em minutos (check_interval = 30s por padrão)
     check_interval = CONFIG.get("check_interval", 30)
     pos_minutes = bar_count * check_interval / 60
 
     # Parâmetros de proteção temporal
-    breakeven_min = params.get("breakeven_minutes", 10)
+    # Wave 880.B3: breakeven default 10→20 — antes era agressivo demais e
+    # whipsawava vencedoras lentas. Backtest usa 0 (desligado); 20 é meio-termo.
+    breakeven_min = params.get("breakeven_minutes", 20)
     time_trail_min = params.get("time_trail_minutes", 20)
     max_pos_min = params.get("max_position_minutes", 60)
     trail_act = params.get("trail_activate", 1.0)
+    # Wave 880.B1: BUG CRÍTICO — antes este `trail_dist_cfg = trail_distance`
+    # vinha DEPOIS do bloco "if tp1_done: trail_dist_cfg = atr_trail_mult"
+    # acima, sobrescrevendo silenciosamente o tighter trail pós-TP1. Agora
+    # o default é trail_distance, e SE tp1_done E atr_trail_mult estiver
+    # explicitamente setado no config, aperta (comportamento documentado).
     trail_dist_cfg = params.get("trail_distance", 0.4)
+    if pos.get("tp1_done"):
+        _tp1_trail_mult = params.get("atr_trail_mult", None)
+        if _tp1_trail_mult is not None:
+            trail_dist_cfg = _tp1_trail_mult  # tighter trail pós-TP1
+            log(f"[TP1_TRAIL] {symbol} trail_dist_cfg → atr_trail_mult={_tp1_trail_mult} (pós-TP1)")
     hard_exit_min = params.get("hard_exit_minutes", 45)  # FORÇA exit a mercado após X min
 
     # ===== FORCED EXIT — fecha posição a mercado após hard_exit_min =====
     # Previne desastres como #66 (WDO -R$566 em 375min) e #104 (BIT -R$901 em 104min)
-    if pos_minutes >= hard_exit_min:
-        log(f"[HARD_EXIT] {symbol} {direction} — {pos_minutes:.0f}min >= {hard_exit_min}min. Fechando a mercado.")
+    # Wave 880.B2: hard_exit agora CONDICIONAL a PnL — alinhado com
+    # backtest_v944.py:429. Antes o live fechava TUDO aos 45min, matando
+    # vencedoras no auge. Agora só força saída a mercado se a posição NÃO
+    # estiver em lucro (profit_pts <= 0). Vencedoras seguem sob trailing/EOD.
+    # Justificativa: vencedora com 2×ATR de lucro aos 44min não deve ser
+    # sacrificada; perdedora/flutuante perto de zero sim (proteção anti-desastre).
+    if pos_minutes >= hard_exit_min and profit_pts <= 0:
+        log(f"[HARD_EXIT] {symbol} {direction} — {pos_minutes:.0f}min >= {hard_exit_min}min E profit {profit_pts:.0f}pts<=0. Fechando a mercado.")
         try:
             close_result = safe_close(symbol)
             if close_result and close_result.get("status") == "ok":
@@ -2529,11 +2708,44 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         pos["trail_on"] = True
         log(f"[TRAIL] Ativado trailing {symbol} | Lucro: {profit_pts:.0f} pts ({profit_pts/atr:.1f}x ATR)")
 
+    # ════════════════════════════════════════════════════════════════════
+    # Wave 880.A1 (2026-07-19): PROFIT-LOCK por R — port do
+    # backtest_v944.py:396-399. Quando o lucro atinge profit_lock_r × risco
+    # inicial (1R = distância absoluta do SL em pontos), move SL pra
+    # entry + 1 tick (zero-loss lock). Default 0.0 = desligado (BIT_M5).
+    # be_applied é compartilhado com o BREAKEVEN abaixo — mutuamente
+    # exclusivos (quem disparar primeiro sela o SL). Igual ao backtest.
+    # ════════════════════════════════════════════════════════════════════
+    be_applied = False
+    profit_lock_r = params.get("profit_lock_r", 0.0)
+    if (
+        not trail_on
+        and profit_lock_r > 0
+        and atr > 0
+        and abs(sl_pts) > 0
+    ):
+        _one_r_pts = abs(sl_pts)  # captura antes de possivelmente mutar
+        if profit_pts >= profit_lock_r * _one_r_pts:
+            # SL = entry + 1 tick (acima entry p/ BUY, abaixo p/ SELL).
+            # sl_pts NEGATIVO sinaliza profit-lock (cmd_modify é sign-aware).
+            lock_pts = -max(1, int(1 / point_val))
+            result = safe_modify_sl_with_emergency_close(
+                symbol, pos["entry_ticket"], lock_pts, entry_price, direction
+            )
+            if result.get("status") == "ok":
+                pos["sl_pts"] = lock_pts
+                sl_pts = lock_pts  # refresh local: trailing/BREAKEVEN não afrouxam
+                be_applied = True
+                log(
+                    f"[PROFIT_LOCK] {symbol} {direction} | profit {profit_pts:.0f}pts "
+                    f">= {profit_lock_r}×{_one_r_pts}pts (1R) | SL → entry+1tick (lock)"
+                )
+
     # ===== PROTEÇÃO 1: BREAKEVEN =====
     # Após X minutos sem trailing, move SL pra entry + custo mínimo
-    # sl_pts é ALWAYS POSITIVO (distância). cmd_modify converte pra preço.
-    be_applied = False
-    if not trail_on and pos_minutes >= breakeven_min and atr > 0:
+    # sl_pts é ALWAYS POSITIVE (distância). cmd_modify converte pra preço.
+    # (be_applied já inicializado no bloco PROFIT_LOCK acima — mutuamente exclusivos.)
+    if not trail_on and not be_applied and pos_minutes >= breakeven_min and atr > 0:
         cost_pts = int(5 / point_val)  # custo aprox (comissão + slippage) em pontos
         if direction == "BUY":
             # BUY: breakeven = SL no entry + custo (SL = entry + custo*point)
@@ -3652,20 +3864,95 @@ def reconcile_positions_with_mt5():
                                 f"GHOST_RECONCILED | state tinha, MT5 não tem mais | "
                                 f"reconciled_at {_now_str}"
                             )
-                            conn.execute(
-                                """
-                                UPDATE trades SET
-                                    exit_time = ?,
-                                    exit_price = COALESCE(NULLIF(exit_price, 0), entry_price),
-                                    exit_reason = 'GHOST',
-                                    exit_ticket = COALESCE(exit_ticket, 'ghost_reconcile'),
-                                    notes = COALESCE(notes, '') || ?,
-                                    updated_at = datetime('now', 'localtime'),
-                                    close_source = 'RECONCILE'
-                                WHERE id = ? AND exit_time IS NULL
-                                """,
-                                (_now_str, _notes, trade_log_id),
-                            )
+
+                            # FIX 1 (Wave 14.3 — 2026-07-14, Bruno): antes de zerar
+                            # o PnL do GHOST, consultar MT5 history para tentar
+                            # recuperar profit/swap/comissão reais do broker. Se
+                            # broker tem o deal de saída com position_id ==
+                            # entry_ticket, atualizamos o trade com exit_price,
+                            # net_pnl e gross_pnl reais. FAIL-SAFE: se history
+                            # não retornar nada (executor Wine quirk), mantém
+                            # fallback GHOST pnl=0 — nunca piora o estado atual.
+                            _mt5_exit = None
+                            try:
+                                # FIX 1.1 (Wave 14.3 — 2026-07-14, Bruno): filtrar
+                                # por ticket (position=) em vez de symbol+days.
+                                # Wine MT5 tem bug: history_deals_get(symbol=...) e
+                                # history_deals_get(date_from=...) retornam [] mesmo
+                                # com deals reais. Filtrar por position_id funciona.
+                                _mt5_hist = history(position=ticket_str)
+                                for _d in _mt5_hist.get("history", []) or []:
+                                    if str(_d.get("position_id", "")) == str(ticket_str):
+                                        # deal de saída é o de type oposto à direction
+                                        _want_type = "SELL" if direction == "BUY" else "BUY"
+                                        if _d.get("type") == _want_type:
+                                            _mt5_exit = _d
+                                            break
+                            except Exception as _e_hist:
+                                log(f"[RECONCILE] history lookup falhou (ticket={ticket_str}): {_e_hist}")
+
+                            if _mt5_exit:
+                                _exit_price_real = float(_mt5_exit.get("price", 0) or 0)
+                                _profit = float(_mt5_exit.get("profit", 0) or 0)
+                                _commission = float(_mt5_exit.get("commission", 0) or 0)
+                                _swap = float(_mt5_exit.get("swap", 0) or 0)
+                                _fee = float(_mt5_exit.get("fee", 0) or 0)
+                                _net_pnl = _profit + _commission + _swap + _fee
+                                _exit_time_real = _mt5_exit.get("time", _now_str)
+                                # converter timestamp mt5 (epoch s) se vier como int
+                                try:
+                                    if isinstance(_exit_time_real, int) or (
+                                        isinstance(_exit_time_real, str) and _exit_time_real.isdigit()
+                                    ):
+                                        _ts_int = int(_exit_time_real)
+                                        _exit_time_real = datetime.fromtimestamp(_ts_int).strftime("%Y-%m-%d %H:%M:%S")
+                                except Exception:
+                                    _exit_time_real = _now_str
+
+                                conn.execute(
+                                    """
+                                    UPDATE trades SET
+                                        exit_time = ?,
+                                        exit_price = ?,
+                                        exit_reason = 'BROKER_CLOSE',
+                                        exit_ticket = ?,
+                                        gross_pnl = ?,
+                                        fees = ?,
+                                        swap = ?,
+                                        net_pnl = ?,
+                                        notes = COALESCE(notes, '') || ?,
+                                        updated_at = datetime('now', 'localtime'),
+                                        close_source = 'RECONCILE_HISTORY'
+                                    WHERE id = ? AND exit_time IS NULL
+                                    """,
+                                    (
+                                        _exit_time_real, _exit_price_real,
+                                        str(_mt5_exit.get("ticket", ticket_str)),
+                                        _profit, abs(_commission + _fee), _swap, _net_pnl,
+                                        _notes, trade_log_id,
+                                    ),
+                                )
+                                log(
+                                    f"[RECONCILE-GHOST-FIX] ticket={ticket_str} "
+                                    f"symbol={symbol} PnL real broker=R${_net_pnl:+.2f} "
+                                    f"(profit={_profit} swap={_swap} comm={_commission})"
+                                )
+                            else:
+                                # Fallback FAIL-SAFE: sem history, mantém GHOST pnl=0
+                                conn.execute(
+                                    """
+                                    UPDATE trades SET
+                                        exit_time = ?,
+                                        exit_price = COALESCE(NULLIF(exit_price, 0), entry_price),
+                                        exit_reason = 'GHOST',
+                                        exit_ticket = COALESCE(exit_ticket, 'ghost_reconcile'),
+                                        notes = COALESCE(notes, '') || ?,
+                                        updated_at = datetime('now', 'localtime'),
+                                        close_source = 'RECONCILE'
+                                    WHERE id = ? AND exit_time IS NULL
+                                    """,
+                                    (_now_str, _notes, trade_log_id),
+                                )
                             conn.commit()
                         except Exception as _e_ghost_db:
                             log(f"[RECONCILE] DB UPDATE ghost falhou (trade_id={trade_log_id}): {_e_ghost_db}")

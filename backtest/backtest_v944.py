@@ -286,16 +286,23 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
     # Wave Melhoria 2: flag de profit-lock aplicado (reseta a cada trade).
     # Reusamos be_done como flag one-shot do profit-lock também — BE temporal e
     # profit-lock são mutuamente exclusivos (o que disparar primeiro sela o SL).
+    # Wave 880.B4: TP ladder state (reseta a cada trade em _close).
+    remaining = 1.0     # fração da posição ainda aberta (1.0 = nada fechado)
+    tp1_done = False
+    tp2_done = False
 
     def _close(price, dt, reason):
         nonlocal pos, ep, e_dt, e_idx, e_atr, best, sl_price, sl_pts, trail_on, be_done, bars_in_trade
-        nonlocal consec_losses, halt_until_dt
+        nonlocal consec_losses, halt_until_dt, remaining, tp1_done, tp2_done
         if pos == 0:
             return None
+        # Wave 880.B4: PnL final escala por `remaining` (fração ainda aberta
+        # após TP1/TP2). Se remaining < 1.0, parte já foi realizada como
+        # trade separado no bloco TP1/TP2 acima.
         if pos == 1:
-            pnl = (price - ep) * mult - slip_r - 1.2
+            pnl = ((price - ep) * mult - slip_r - 1.2) * remaining
         else:
-            pnl = (ep - price) * mult - slip_r - 1.2
+            pnl = ((ep - price) * mult - slip_r - 1.2) * remaining
         trades.append({
             "side": "BUY" if pos == 1 else "SELL",
             "entry_dt": e_dt,
@@ -327,6 +334,10 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
         trail_on = False
         be_done = False
         bars_in_trade = 0
+        # Wave 880.B4: reset TP ladder state
+        remaining = 1.0
+        tp1_done = False
+        tp2_done = False
         return pnl
 
     # Pré-calcula janela de candles (rolling)
@@ -383,6 +394,49 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
                 best = min(best, low) if best > 0 else low
 
             profit_pts = (best - ep) if pos == 1 else (ep - best)
+
+            # ═══ Wave 880.B4 (2026-07-19): TP1 + TP2 ladder — port do live ═══
+            # Antes o backtest só simulava trailing; agora modela parcial-close
+            # igual ao autotrader (vt_autotrader.py:2515-2630). Resolve a
+            # divergência live↔backtest: AGI agora otimiza contra um backtest
+            # fiel ao comportamento real.
+            tp1_r = params.get("tp1_r", 1.0)
+            tp1_pct = params.get("tp1_pct", 0.5)
+            tp2_r = params.get("tp2_r", 2.0)
+            tp2_pct = params.get("tp2_pct", 0.5)
+            # tp_done[1]=TP1, tp_done[2]=TP2; remaining = fração da posição ainda aberta
+            if not tp1_done and e_atr > 0 and profit_pts >= tp1_r * e_atr and remaining > 0 and 0 < tp1_pct < 1:
+                close_frac = min(tp1_pct, remaining)
+                # Registra PnL parcial (fechado a mercado no melhor preço)
+                partial_pnl = close_frac * profit_pts * mult - slip_r * close_frac - 1.2 * close_frac
+                trades.append({
+                    "side": "BUY" if pos == 1 else "SELL",
+                    "entry_dt": e_dt, "exit_dt": dt,
+                    "ep": ep, "xp": best,
+                    "pnl": partial_pnl,
+                    "reason": "TP1",
+                    "sl_pts": sl_pts, "strategy": strategy_name,
+                    "sym": sym_root, "tf": tf,
+                })
+                remaining -= close_frac
+                tp1_done = True
+                # Wave 880.B1: tighter trail pós-TP1 (atr_trail_mult se setado)
+                if params.get("atr_trail_mult") is not None:
+                    trail_distance = params.get("atr_trail_mult", trail_distance)
+            if tp1_done and not tp2_done and e_atr > 0 and profit_pts >= tp2_r * e_atr and remaining > 0 and 0 < tp2_pct < 1:
+                close_frac = min(tp2_pct, remaining)
+                partial_pnl = close_frac * profit_pts * mult - slip_r * close_frac - 1.2 * close_frac
+                trades.append({
+                    "side": "BUY" if pos == 1 else "SELL",
+                    "entry_dt": e_dt, "exit_dt": dt,
+                    "ep": ep, "xp": best,
+                    "pnl": partial_pnl,
+                    "reason": "TP2",
+                    "sl_pts": sl_pts, "strategy": strategy_name,
+                    "sym": sym_root, "tf": tf,
+                })
+                remaining -= close_frac
+                tp2_done = True
 
             # Trailing
             if not trail_on and e_atr > 0 and profit_pts >= trail_activate * e_atr:
@@ -496,6 +550,10 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
         bars_in_trade = 0
         last_trade_dt = dt
         daily_count[cur_date] += 1
+        # Wave 880.B4: TP ladder state reset na entrada
+        remaining = 1.0
+        tp1_done = False
+        tp2_done = False
 
     # Force close no fim
     if pos != 0:

@@ -281,23 +281,45 @@ def _check_walk_forward(wf_metrics: list, th: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════════
 
 _DEFAULT_THRESHOLDS = {
-    "min_profit_factor": 1.20,
-    "min_win_rate": 35.0,        # %
+    "min_profit_factor": 1.15,   # Wave 880.A2: 1.05→1.15 (spread+comissão em B3)
+    "min_win_rate": 0.35,        # Wave 880.A4: fração 0-1 (unificado com gates.py). _check_profitability converte.
     "min_trades": 20,
-    "max_drawdown_pct": -25.0,   # não usado em R$ aqui, mantido p/ compat
-    "min_walk_forward_consistency": 0.6,
+    "max_drawdown_pct": -25.0,   # Wave 880.C1: agora CHECADO em _check_profitability
+    "min_walk_forward_consistency": 0.65,  # Wave 880.C3: 0.6→0.65
+    "min_sharpe": 0.5,           # Wave 880.C2: Sharpe por trade annualizado (já computado)
 }
 
 
 def _check_profitability(metrics: dict, th: dict) -> dict:
-    """Gate de profitability nos trades simulados 30d."""
+    """Gate de profitability nos trades simulados 30d.
+
+    Wave 880: max_dd e sharpe agora são checados (antes eram só computados).
+    max_dd do metrics vem em R$ negativo; comparamos contra max_drawdown_pct
+    interpretado como floor de percentual da maior perda individual média.
+    """
     failures = []
     if metrics["pf"] < th["min_profit_factor"]:
         failures.append(f"PF={metrics['pf']:.2f}<{th['min_profit_factor']}")
-    if metrics["wr"] < th["min_win_rate"]:
-        failures.append(f"WR={metrics['wr']:.1f}%<{th['min_win_rate']:.1f}%")
+    # WR: metrics em percent (0-100), threshold em fração (0-1) — Wave 880.A4.
+    wr_frac = metrics["wr"] / 100.0
+    if wr_frac < th["min_win_rate"]:
+        failures.append(f"WR={metrics['wr']:.1f}%<{th['min_win_rate']*100:.0f}%")
     if metrics["n_trades"] < th["min_trades"]:
         failures.append(f"n_trades={metrics['n_trades']}<{th['min_trades']}")
+    # Wave 880.C1: max_dd gate. max_dd está em R$ (negativo); floor em % do
+    # maior entre avg_loss absoluto — evita candidatos com drawdown mordaz
+    # mesmo com PF ok. Se avg_loss==0 (sem losses), não há o que checar.
+    max_dd = metrics.get("max_dd", 0.0)
+    avg_loss = abs(metrics.get("avg_loss", 0.0))
+    if th.get("max_drawdown_pct") and avg_loss > 0:
+        # Razão max_dd/avg_loss como proxy de "ruína" — >2.5× perda média = suspeito.
+        dd_ratio = abs(max_dd) / avg_loss if avg_loss > 0 else 0.0
+        max_dd_ratio = abs(th["max_drawdown_pct"]) / 10.0  # -25% → 2.5
+        if dd_ratio > max_dd_ratio:
+            failures.append(f"max_dd_ratio={dd_ratio:.1f}>{max_dd_ratio:.1f} (drawdown={max_dd:.0f}/avg_loss={avg_loss:.0f})")
+    # Wave 880.C2: Sharpe gate. Só falha se temos trades suficientes p/ significância.
+    if metrics.get("n_trades", 0) >= th["min_trades"] and metrics.get("sharpe", 0.0) < th.get("min_sharpe", 0.0):
+        failures.append(f"sharpe={metrics['sharpe']:.2f}<{th.get('min_sharpe', 0.0)}")
     if failures:
         return {"ok": False, "reason": "; ".join(failures)}
     return {"ok": True, "reason": ""}

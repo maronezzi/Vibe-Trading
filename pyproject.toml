@@ -1,14 +1,18 @@
 [project]
-name = "vibe-trading-ai"
+# Wave 880 (2026-07-19): metadata reflect the LIVE autotrader, not the
+# archived HKUDS framework. Dependencies below are the original HKUDS set
+# and are NOT slimmed here — CI runs `pip install -e ".[dev]"`, so removing
+# any of them risks breaking CI. Slim in a separate wave with testing.
+name = "vibe-trading"
 version = "0.1.9"
-description = "Natural-language finance research AI agent with backtesting"
+description = "Live auto-trading system for BM&F mini-contracts (WDO/WIN/BIT/WSP) on B3 via MetaTrader 5 on Linux/Wine"
 requires-python = ">=3.12"
 license = "MIT"
 readme = "README.md"
 authors = [
-    {name = "HKUDS", email = "hkuds@connect.hku.hk"},
+    {name = "Bruno Maronezzi"},
 ]
-keywords = ["finance", "trading", "backtesting", "agent", "swarm", "quantitative"]
+keywords = ["finance", "trading", "bmf", "mt5", "autotrader", "agi"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Financial and Insurance Industry",
@@ -58,10 +62,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://vibetrading.wiki/"
-Documentation = "https://vibetrading.wiki/docs/"
-Repository = "https://github.com/HKUDS/Vibe-Trading"
-Issues = "https://github.com/HKUDS/Vibe-Trading/issues"
+# Wave 880: drop HKUDS URLs (the framework is archived under archive/).
+# No public homepage — this is a private live-trading repo.
+Repository = "https://github.com/bruno/vibe-trading"
+Issues = "https://github.com/bruno/vibe-trading/issues"
 
 [project.scripts]
 vibe-trading = "cli:main"
