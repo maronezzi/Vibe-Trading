@@ -70,6 +70,11 @@ SAFE_WRITE_TARGETS: list[tuple[str, type | tuple[type, ...], tuple[float, float]
     (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.tp1_r$", float, (0.5, 3.0)),
     (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.tp1_pct$", float, (0.1, 0.9)),
     (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.atr_trail_mult$", float, (0.5, 5.0)),
+    # ── Wave 880.B4 (2026-07-19): TP2 ladder — segundo parcial pós-TP1.
+    # tp2_r: múltiplo de ATR pra disparar TP2 (default 2.0).
+    # tp2_pct: fração do RESTANTE (não do original) a fechar em TP2.
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.tp2_r$", float, (1.5, 4.0)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.tp2_pct$", float, (0.1, 0.9)),
     # disabled_timeframes: AGI pode PAUSAR (adicionar), nunca DESPAUSAR
     # (remover). Validação semântica em classify_disabled_timeframes_change.
     (r"^disabled_timeframes$", list, None),
@@ -154,6 +159,34 @@ SAFE_WRITE_TARGETS: list[tuple[str, type | tuple[type, ...], tuple[float, float]
     # profit_lock_r: fração de R (risco inicial) que dispara lock zero-loss.
     # 0.0 = off. Range [0.0, 1.5] — 1.5R permite lock tardio para trend-follow.
     (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.profit_lock_r$", float, (0.0, 1.5)),
+    # ── Wave LLM-AGI (Bruno 17/07): params canônicos faltantes, usados por
+    # múltiplas estratégias mainstream. Libera a LLM a sugerir ajustes nelas
+    # (antes esses params caiam em default-deny e a sugestão era rejeitada).
+    # lookback: janela de lookback para high/low/zscore/etc (DIVERGENCE_RSI,
+    # MEAN_REVERSION_ZSCORE, MOMENTUM_BREAKOUT, RANGE_TRADING, VWAP_RECLAIM).
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.lookback$", int, (5, 100)),
+    # multiplier: fator ATR do Supertrend (1.0-5.0 cobre clássico 2.0-3.0).
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.multiplier$", float, (1.0, 5.0)),
+    # max_ema_distance_pct: distância máx. do preço à EMA (filtro de sobre-extensão).
+    # Usado por RSI_REVERSION e VOLATILITY_MEAN_REVERSION. Range [0.5, 15.0] %.
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.max_ema_distance_pct$", float, (0.5, 15.0)),
+    # max_ema_dist: alias usado por WIN_REVERSION (mesma semântica).
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.max_ema_dist$", float, (0.5, 15.0)),
+    # ema_mid: EMA intermediária do TRIPLE_EMA.
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.ema_mid$", int, (10, 60)),
+    # period / exit_period: Donchian (high/low lookback + exit lookback).
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.period$", int, (5, 50)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.exit_period$", int, (3, 30)),
+    # z_threshold: limiar de Z-score do MEAN_REVERSION_ZSCORE (típico 1.5-3.0).
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.z_threshold$", float, (1.0, 4.0)),
+    # roc_period / roc_threshold: MOMENTUM_BREAKOUT (rate of change).
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.roc_period$", int, (5, 30)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.roc_threshold$", float, (0.001, 0.05)),
+    # rsi_high / rsi_low: bands RSI do OPENING_HOUR_EDGE (simétricas ao over/sold).
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.rsi_high$", int, (60, 95)),
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.rsi_low$", int, (5, 40)),
+    # range_atr_pct: fração ATR do RANGE_TRADING (largura do range em ATR).
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.range_atr_pct$", float, (0.2, 3.0)),
 ]
 
 

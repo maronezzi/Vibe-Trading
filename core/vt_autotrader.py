@@ -2424,6 +2424,8 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             "original_volume": _vol,
             "remaining_volume": _vol,
             "tp1_done": False,
+            # Wave 880.B4 (2026-07-19): TP2 ladder — segundo parcial em tp2_r*ATR.
+            "tp2_done": False,
         }
 
         # Cooldown (por symbol, tf, direction — evita reversões rápidas)
@@ -2575,27 +2577,98 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             except Exception as exc:
                 log(f"[TP1] erro inesperado: {exc!r} — mantém estado")
 
-    # Após TP1, switch do trail pra atr_trail_mult (mais apertado).
-    # trail_distance regular é largo demais (lock profit parcial não ajuda).
-    if pos.get("tp1_done"):
-        trail_dist_cfg = params.get("atr_trail_mult", 2.0)
+    # ════════════════════════════════════════════════════════════════════
+    # Wave 880.B4 (2026-07-19): TP2 — segundo fechamento parcial em R*ATR.
+    # Dispara UMA vez por posição APÓS TP1, em profit >= tp2_r * atr.
+    # Fecha fração tp2_pct do que resta (remaining_volume). O restante
+    # segue sob trailing (que já está em atr_trail_mult tighter pós-TP1).
+    # Default tp2_r=2.0, tp2_pct=0.5 — alinhado com backtest_v944.py.
+    # ════════════════════════════════════════════════════════════════════
+    tp2_r = params.get("tp2_r", 2.0)
+    tp2_pct = params.get("tp2_pct", 0.5)
+    if (
+        not pos.get("tp2_done", False)
+        and pos.get("tp1_done", False)
+        and atr > 0
+        and profit_pts >= tp2_r * atr
+        and pos.get("remaining_volume", pos["volume"]) > 0
+        and 0 < tp2_pct < 1
+    ):
+        # tp2_pct: fração do REMAINING (não do original) a fechar.
+        current_remaining = pos.get("remaining_volume", pos["volume"])
+        close_volume = current_remaining * tp2_pct
+        actual_close = min(close_volume, current_remaining)
+        if actual_close <= 0:
+            pos["tp2_done"] = True  # idempotente
+        else:
+            try:
+                from mt5.mt5_error_recovery import safe_partial_close
+                tp2_result = safe_partial_close(
+                    symbol, pos["entry_ticket"], actual_close,
+                )
+                if tp2_result.get("status") in ("ok", "already_closed"):
+                    new_remaining = current_remaining - actual_close
+                    if tp2_result.get("status") == "already_closed":
+                        new_remaining = 0.0
+                    pos["remaining_volume"] = new_remaining
+                    pos["tp2_done"] = True
+                    log(
+                        f"[TP2] {symbol} {direction} fechou {actual_close:.2f} "
+                        f"de {current_remaining:.2f} @ profit {profit_pts:.1f}pts "
+                        f"(>= {tp2_r}*ATR={tp2_r*atr:.1f}) "
+                        f"→ resta {new_remaining:.2f}"
+                    )
+                    try:
+                        notify_telegram(
+                            f"🎯 *TP2* {symbol} {tf}\n"
+                            f"• Fechou {actual_close:.2f} contrato(s) "
+                            f"(de {current_remaining:.2f}, {tp2_pct*100:.0f}% do restante)\n"
+                            f"• Restante segue sob trailing apertado"
+                        )
+                    except Exception:
+                        pass
+                else:
+                    log(
+                        f"[TP2] partial_close falhou ticket={pos['entry_ticket']}: "
+                        f"{tp2_result.get('error', '?')} — mantém estado"
+                    )
+            except Exception as exc:
+                log(f"[TP2] erro inesperado: {exc!r} — mantém estado")
 
     # Tempo de posição em minutos (check_interval = 30s por padrão)
     check_interval = CONFIG.get("check_interval", 30)
     pos_minutes = bar_count * check_interval / 60
 
     # Parâmetros de proteção temporal
-    breakeven_min = params.get("breakeven_minutes", 10)
+    # Wave 880.B3: breakeven default 10→20 — antes era agressivo demais e
+    # whipsawava vencedoras lentas. Backtest usa 0 (desligado); 20 é meio-termo.
+    breakeven_min = params.get("breakeven_minutes", 20)
     time_trail_min = params.get("time_trail_minutes", 20)
     max_pos_min = params.get("max_position_minutes", 60)
     trail_act = params.get("trail_activate", 1.0)
+    # Wave 880.B1: BUG CRÍTICO — antes este `trail_dist_cfg = trail_distance`
+    # vinha DEPOIS do bloco "if tp1_done: trail_dist_cfg = atr_trail_mult"
+    # acima, sobrescrevendo silenciosamente o tighter trail pós-TP1. Agora
+    # o default é trail_distance, e SE tp1_done E atr_trail_mult estiver
+    # explicitamente setado no config, aperta (comportamento documentado).
     trail_dist_cfg = params.get("trail_distance", 0.4)
+    if pos.get("tp1_done"):
+        _tp1_trail_mult = params.get("atr_trail_mult", None)
+        if _tp1_trail_mult is not None:
+            trail_dist_cfg = _tp1_trail_mult  # tighter trail pós-TP1
+            log(f"[TP1_TRAIL] {symbol} trail_dist_cfg → atr_trail_mult={_tp1_trail_mult} (pós-TP1)")
     hard_exit_min = params.get("hard_exit_minutes", 45)  # FORÇA exit a mercado após X min
 
     # ===== FORCED EXIT — fecha posição a mercado após hard_exit_min =====
     # Previne desastres como #66 (WDO -R$566 em 375min) e #104 (BIT -R$901 em 104min)
-    if pos_minutes >= hard_exit_min:
-        log(f"[HARD_EXIT] {symbol} {direction} — {pos_minutes:.0f}min >= {hard_exit_min}min. Fechando a mercado.")
+    # Wave 880.B2: hard_exit agora CONDICIONAL a PnL — alinhado com
+    # backtest_v944.py:429. Antes o live fechava TUDO aos 45min, matando
+    # vencedoras no auge. Agora só força saída a mercado se a posição NÃO
+    # estiver em lucro (profit_pts <= 0). Vencedoras seguem sob trailing/EOD.
+    # Justificativa: vencedora com 2×ATR de lucro aos 44min não deve ser
+    # sacrificada; perdedora/flutuante perto de zero sim (proteção anti-desastre).
+    if pos_minutes >= hard_exit_min and profit_pts <= 0:
+        log(f"[HARD_EXIT] {symbol} {direction} — {pos_minutes:.0f}min >= {hard_exit_min}min E profit {profit_pts:.0f}pts<=0. Fechando a mercado.")
         try:
             close_result = safe_close(symbol)
             if close_result and close_result.get("status") == "ok":
