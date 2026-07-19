@@ -34,12 +34,12 @@ log = logging.getLogger("agi_v4.gates")
 # Estes NÃO são hardcode de produção — são bootstrap defaults usados só
 # quando o config não define a chave. Em produção o config é autoritativo.
 _DEFAULT_THRESHOLDS = {
-    "min_profit_factor": 1.20,   # PF do backtest
-    "min_win_rate": 0.35,        # 35%
+    "min_profit_factor": 1.15,   # Wave 880.A2: 1.05→1.15 (PF 1.05 mal cobre spread+comissão)
+    "min_win_rate": 0.35,        # 35% — fração (Wave 880.A4: unificado entre gates.py e backtest_evaluator.py)
     "min_trades": 20,            # trades suficientes p/ significância
     "max_drawdown_pct": -25.0,   # floor de drawdown
     "max_backtest_db_gap_x": 1.5,  # bug B3/B4 do exhaustive antigo
-    "min_walk_forward_consistency": 0.6,  # 60% das janelas devem ser positivas
+    "min_walk_forward_consistency": 0.65,  # Wave 880.C3: 60%→65% das janelas positivas
     "min_30d_projection_improvement": 0.0,  # Regra 1: candidato > baseline
 }
 

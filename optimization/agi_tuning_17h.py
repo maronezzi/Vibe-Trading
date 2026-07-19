@@ -3324,6 +3324,26 @@ def _build_v3_telegram_card(
 
 
 def main():
+    # Wave 880.A5 (2026-07-19): GUARD anti-reativação acidental.
+    # Este módulo foi descontinuado em W873 (2026-07-07) e substituído pelo
+    # AGI v4 (optimization/agi_v4/runner.py). O arquivo foi mantido intacto
+    # como fallback histórico, mas se invocado acidentalmente (cron antigo,
+    # atalho, memory muscle) ele violaria a Lei 2 (--pause-failing pode
+    # desabilitar símbolo/TF, coisa que o v4 nunca faz).
+    #
+    # Override: defina VT_ALLOW_V3=1 no ambiente para forçar (uso histórico
+    # ou auditoria — só Bruno decide).
+    import os as _os
+    if not _os.environ.get("VT_ALLOW_V3"):
+        import sys as _sys
+        _sys.stderr.write(
+            "\n❌ agi_tuning_17h.py (v3) está DESCONTINUADO desde W873 (2026-07-07).\n"
+            "   Use: python3 optimization/agi_v4/runner.py [--dry-run] [--max-iterations N]\n"
+            "   Motivo: v3 pode --pause-failing (viola Lei 2); v4 nunca desabilita símbolo/TF.\n"
+            "   Override auditoria: VT_ALLOW_V3=1 python3 optimization/agi_tuning_17h.py ...\n\n"
+        )
+        _sys.exit(2)
+
     parser = argparse.ArgumentParser(description="AGI 17h Tuning v3.0 — Super Estratégia")
     parser.add_argument("--days", type=int, default=7, help="Janela de análise em dias (default: 7)")
     parser.add_argument("--dry-run", action="store_true", help="Só analisa, não aplica mudanças")

@@ -99,6 +99,13 @@ def run(days: int = 7,
         result = stage1_run(ctx)
         ctx["performance"] = result.get("performance", {})
         ctx["regime"] = result.get("regime", {})
+        # BUG CRÍTICO CORRIGIDO (Wave LLM-AGI, 2026-07-17): antes o pipeline
+        # NÃO copiava failing_pairs do result do stage1 para o ctx. Resultado:
+        # o loop usava ctx["failing_pairs"] vazio → stage3 buscava em TODOS os
+        # 16 pares em vez dos ~4 failing → 4x mais trabalho (runs de 1h30+).
+        # Agora propagamos explicitamente. ctx["failing_pairs"] é a lista de
+        # pares alvo (list[str]) lida por stage2/stage3/stage5.
+        ctx["failing_pairs"] = result.get("failing_pairs", [])
         ctx["audit"].append({"stage": 1, "ok": True, "summary": result.get("summary", "")})
         log.info(f"[{TAG}] Stage 1 (collect) OK — {result.get('summary', '')}")
     except Exception as e:
@@ -109,14 +116,39 @@ def run(days: int = 7,
         ctx["duration_s"] = time.time() - start_ts
         return ctx
 
+    # ── Early-exit: se stage1 não achou pares perdedores, não há o que
+    # otimizar (Wave LLM-AGI, 2026-07-17). Antes este caso caía no loop e
+    # rodava stage3 (busca exaustiva) sobre TODOS os 16 pares mesmo sem
+    # failing — desperdício massivo. Agora convergido de saída.
+    initial_failing = _normalize_failing(ctx.get("failing_pairs", []))
+    if not initial_failing:
+        log.info(f"[{TAG}] ✅ Nenhum par perdedor identificado no stage1 — "
+                 f"nada a otimizar. Pulando stages 2-5, indo direto ao report.")
+        ctx["converged"] = True
+        ctx["failing_pairs"] = []
+        _safe_run_stage(ctx, 6, "report", "stage6_report")
+        ctx["ended_at"] = datetime.now().isoformat()
+        ctx["duration_s"] = time.time() - start_ts
+        log.info(f"[{TAG}] AGI v4 pipeline finalizado (sem failing pairs) — "
+                 f"duration={ctx['duration_s']:.1f}s")
+        return ctx
+
     # ── Loop de convergência SEM LIMITE (Lei 5): itera até TODOS os pares
     # positivos. Para por CONVERGÊNCIA (todo par PnL>0) ou ESTAGNAÇÃO
     # (uma iteração sem melhorar nenhum par = espaço de busca esgotado
     # nesta execução; próxima execução do cron retenta com dados frescos).
     # max_iterations é só teto de segurança anti-bug.
     prev_failing_count = None
-    prev_failing_pairs = set()
+    # Wave LLM-AGI: inicializa prev_failing_pairs com os pares do stage1.
+    # Antes era set() vazio → primeira iteração sempre via "improved=True"
+    # e o log mostrava "0 par(es) pendentes" enganoso. Agora reflete realidade.
+    prev_failing_pairs = set(initial_failing)
     stagnation_counter = 0
+    # Wave 880.A3: deadline hard de 90min (5400s) — impede LLM travado prender
+    # o cron das 17:10 até de madrugada. Comentário do run_agi_v4_cron.sh já
+    # mencionava "90 min" mas era aspiracional; agora é enforced.
+    _deadline_t0 = time.time()
+    _DEADLINE_SECS = 5400
 
     for it in range(1, max_iterations + 1):
         ctx["current_iteration"] = it
@@ -194,6 +226,18 @@ def run(days: int = 7,
             ctx["stagnated"] = True
             break
 
+        # Wave 880.A3: deadline check — se passou de 90min, para com warning.
+        # Não conta como estagnação (que restringiria próximos crons); é só
+        # uma proteção de tempo para o LLM travado. Próxima execução do cron
+        # retoma com janelas de mercado roladas (30d).
+        if time.time() - _deadline_t0 > _DEADLINE_SECS:
+            log.warning(f"[{TAG}] ⏰ DEADLINE 90min atingido ({(time.time()-_deadline_t0)/60:.0f}min) "
+                        f"na iteração {it}. Parando por tempo. "
+                        f"{len(current_failing)} par(es) ainda negativos. "
+                        f"Próxima execução do cron retenta.")
+            ctx["deadline_hit"] = True
+            break
+
         prev_failing_pairs = current_failing
         prev_failing_count = len(current_failing)
         log.info(f"[{TAG}] {len(current_failing)} par(es) ainda negativos — próxima iteração")
@@ -222,6 +266,26 @@ def _all_pairs(ctx: dict) -> list[str]:
     for sym in symbols:
         for tf in tfs_by_sym.get(sym, global_tfs):
             pairs.append(f"{sym}_{tf}")
+    return pairs
+
+
+def _normalize_failing(failing) -> list[str]:
+    """Normaliza failing_pairs (list[str] ou list[dict]) para list[str].
+
+    Stage1 retorna list[str]; o loop de convergência (via
+    _check_convergence_simulated) retorna list[dict] com chave "pair".
+    Este helper unifica para comparação consistente entre iterações.
+    """
+    pairs = []
+    for f in failing or []:
+        if isinstance(f, str):
+            pair = f
+        elif isinstance(f, dict):
+            pair = f.get("pair", "")
+        else:
+            pair = ""
+        if pair:
+            pairs.append(pair)
     return pairs
 
 
@@ -291,6 +355,20 @@ def _check_convergence_simulated(ctx: dict) -> tuple[bool, list[dict]]:
         except Exception:
             pass
 
+    # ── Cache por _version (Wave LLM-AGI, 2026-07-17) ──
+    # Esta função é chamada 2x por iteração do loop de convergência. Cada
+    # chamada re-simula TODOS os pares via evaluate_baseline (fetch MT5 Wine
+    # + backtest bar-by-bar) = ~16 fetches lentos por chamada. Se o config
+    # NÃO mudou desde a última checagem (mesmo _version), o resultado é
+    # idêntico — pular a re-simulação. Só re-simula se stage5 aplicou algo.
+    config_version = config.get("_version", 0)
+    cache_key = f"conv_cache_v{config_version}"
+    cached = ctx.get(cache_key)
+    if cached is not None:
+        log.debug(f"convergência: cache HIT (_version={config_version}) — "
+                  f"{len(cached)} failing pairs")
+        return (len(cached) == 0), cached
+
     symbols = config.get("symbols", [])
     tfs_by_sym = config.get("timeframes_by_symbol", {})
     global_tfs = config.get("timeframes", [])
@@ -317,6 +395,13 @@ def _check_convergence_simulated(ctx: dict) -> tuple[bool, list[dict]]:
             # REGRA ABSOLUTA: par só converge se PnL > 0.
             if pnl <= 0:
                 failing.append({"pair": pair, "pnl": pnl, "n_trades": n_trades})
+
+    # Salvar no cache para esta versão do config (próxima checagem no mesmo
+    # _version pula as 16 simulações). Limpa caches de versões antigas.
+    ctx[cache_key] = failing
+    for key in list(ctx.keys()):
+        if key.startswith("conv_cache_v") and key != cache_key:
+            del ctx[key]
 
     converged = len(failing) == 0
     if failing:
