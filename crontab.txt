@@ -26,10 +26,18 @@
 
 # ─── AGI v4 OTIMIZADOR 12:00 + 17:10 (seg-sex) — W873: v3 descontinuado ────────
 #     W873 (2026-07-07): agi_tuning_17h.py (v3) foi descontinuado e substituído
-#     por um shim inerte. O otimizador canônico é o AGI v4. Execuções almoço
-#     (12h00, fora do pico) + fechamento (17h10).
-00 12 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 optimization/agi_v4/runner.py >> /tmp/vt_agi_v4.log 2>&1
-10 17 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 optimization/agi_v4/runner.py >> /tmp/vt_agi_v4.log 2>&1
+#     por um shim inerte. O otimizador canônico é o AGI v4.
+#
+#     Wave 13.5+ (2026-07-13): usa wrapper scripts/run_agi_v4_cron.sh que:
+#       - Snapshota config antes de cada run (rollback de segurança)
+#       - Roda AGI v4 async (nohup) — não bloqueia cron subsequente (17:30, 19:00)
+#       - Args: --days 7 --max-iterations 2 (replica workflow manual Wave 13.5/14.1)
+#       - Log diário em /tmp/vt_agi_v4_YYYYMMDD_HHMMSS.log (substitui append eterno)
+#       - Stage 5 auto-aplica candidatos que passam regra1 (cand > baseline)
+#         → exatamente o comportamento que o cron já tinha, agora com args certos
+#     Reinstalar com: crontab crontab.txt
+00 12 * * 1-5 /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/run_agi_v4_cron.sh >> /tmp/vt_agi_v4_cron.log 2>&1
+10 17 * * 1-5 /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/run_agi_v4_cron.sh >> /tmp/vt_agi_v4_cron.log 2>&1
 
 # ─── SELF-HEAL MONITOR 5min (seg-sex 9-17h) — 6 health checks + auto-cura ──────
 #     Fase 2.2: autotrader/MT5/DB/state/lock/cron. Auto-cura conservadora (restart

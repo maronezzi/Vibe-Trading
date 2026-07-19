@@ -3,6 +3,15 @@
 Sistema autônomo de auto-trading para mini-contratos BM&F (WDO/Win) operando via MetaTrader 5.
 Desenvolvido por [Bruno Maronezzi](https://github.com/maronezzi).
 
+> ⚠️ **Documentação de referência (Wave 880, 2026-07-19):** Este README foi
+> parcialmente escrito antes do refactor de 2026-06-22 e contém paths
+> obsoletos (ex: `vt_autotrader.py` na raiz em vez de `core/vt_autotrader.py`).
+> Para paths/comandos/convensões atualizados, consulte **`AGENTS.md`** e
+> **`CLAUDE.md`** — eles são a fonte da verdade. O backtest canônico é
+> `backtest/backtest_v944.py` (não `backtest_agi_v11.py`). O otimizador é
+> `optimization/agi_v4/runner.py` (não `agi_tuning_17h.py`, que está
+> desabilitado por um guard `VT_ALLOW_V3`).
+
 Arquitetura de **plugins de estratégia dinâmica** com hot-reload, gestão anti-drawdown,
 e otimização via AGI (Inteligência Artificial Generalista).
 
@@ -134,7 +143,7 @@ Parâmetros por seção:
 
 ## Scripts Principais
 
-### Autotrader — `vt_autotrader.py` (1.344 linhas)
+### Autotrader — `core/vt_autotrader.py`
 
 Daemon principal que opera durante o horário de mercado.
 
@@ -149,16 +158,17 @@ Daemon principal que opera durante o horário de mercado.
      - Se sinal → executa ordem via orchestrator
    - Para cada posição aberta:
      - Atualiza SL via trailing stop
-     - Aplica proteções anti-drawdown
+     - Aplica TP1/TP2 ladder (Wave 880.B4) e profit_lock_r (Wave 880.A1)
+     - Aplica proteções anti-drawdown (hard_exit só fecha perdedoras — Wave 880.B2)
    - Detecta posições órfãs (MT5 vs estado local)
 4. Às 16:45 fecha todas posições e encerra
 
 **Comandos:**
 ```bash
-python vt_autotrader.py              # Modo daemon (loop contínuo)
-python vt_autotrader.py --once      # Uma única verificação
-python vt_autotrader.py --close     # Fecha tudo e encerra
-python vt_autotrader.py --status    # Status atual
+python3 core/vt_autotrader.py              # Modo daemon (loop contínuo)
+python3 core/vt_autotrader.py --once      # Uma única verificação
+python3 core/vt_autotrader.py --close     # Fecha tudo e encerra
+python3 core/vt_autotrader.py --status    # Status atual
 ```
 
 **Proteções anti-drawdown implementadas:**
@@ -326,16 +336,20 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
 
 ## Backtesting
 
-### Backtest Principal — `backtest/backtest_agi_v11.py`
+### Backtest Principal — `backtest/backtest_v944.py`
 
 Backtest que replica **exatamente** a lógica do autotrader, incluindo:
-- Mesmas estratégias (lê do `vt_config.json`)
+- Mesmas estratégias (lê do `vt_config.json` e carrega `strategies/*.py` via `core/vt_strategy_loader.load_strategies()`)
 - Mesmas proteções anti-drawdown (breakeven, time-trail, max position)
+- TP1 + TP2 ladder (Wave 880.B4 — parcial-close em R×ATR de lucro)
+- `profit_lock_r` (Wave 880.A1 — lock zero-loss em R×sl_pts)
+- `hard_exit_minutes` condicional a PnL (Wave 880.B2 — só fecha perdedoras)
 - Mesmas regras de horário, cooldown, limite diário
-- Comparação com config antiga (baseline)
+- É o backtest **canônico** — é o que o AGI v4 importa (`optimization/agi_v4/backtest_evaluator.py`)
+  para avaliar candidatos. `backtest_agi_v11.py` está obsoleto, não use.
 
 ```bash
-PYTHONPATH=./agent ./agent/venv/bin/python backtest/backtest_agi_v11.py
+PYTHONPATH=. python backtest/backtest_v944.py
 ```
 
 **Output:**
@@ -353,14 +367,20 @@ PYTHONPATH=./agent ./agent/venv/bin/python backtest/backtest_agi_v11.py
 
 ## Crontab — Fluxo Diário
 
+> Schedule canônico está em `crontab.txt` (reinstalar: `crontab crontab.txt`).
+> Tabela abaixo é resumo; consulte o arquivo para entries completas
+> (self-heal 5min, scope-audit segundas, dry-run semanal, etc.).
+
 | Horário | Job | Descrição |
 |---|---|---|
-| **08:55** | Symbol Resolver | Resolve WDO→WDON26/WDOQ26, WIN→WINM26/WINQ26 |
-| **09:00** | Autotrader | Inicia daemon (pkill anterior + startup MT5) |
-| **11:00, 13:00** | Inteligência Trader | Análise LLM do mercado, ajusta parâmetros |
-| **12:00** | Otimização Meio-Dia | Ajusta parâmetros sem mudar estratégia |
-| **16:50** | Relatório Diário | Fecha posições, gera relatório, envia Telegram |
-| **17:10** | AGI Otimizador | Otimização completa (pode trocar estratégias) |
+| **08:55** | vt_pre_flight | Valida dia útil, MT5 up, config OK, state limpo (fail-closed) |
+| **09:00** | start_autotrader.sh | Inicia daemon (pkill anterior + startup MT5) |
+| **10/12/15h** | vt_copilot | Análise LLM do mercado, health check intradiário |
+| **12:00** | run_agi_v4_cron.sh | AGI v4 modo **exploration** (--mode auto, busca candidatos) |
+| **16:50** | vt_daily_report | Fecha posições, gera relatório, envia Telegram |
+| **17:10** | run_agi_v4_cron.sh | AGI v4 modo **conservative** (--mode auto, só revalida — Wave 880.C4) |
+| **a cada 5min** | vt_self_heal | Auto-cura 09-17h (restart processo/MT5 + alerta) |
+| **seg 09:00** | check_symbols_active | Scope audit (Lei 2: 16 pares WIN/BIT/WSP/WDO × TFs ativos) |
 
 ### Regras Imperativas do AGI
 
@@ -417,10 +437,11 @@ cp vt_config.json.example vt_config.json
 # Editar vt_config.json com seus parâmetros
 
 # 5. Testar conexão MT5
-wine ~/.wine/drive_c/Python311/python.exe mt5_executor.py status
+wine ~/.wine/drive_c/Python311/python.exe mt5/mt5_executor.py status
 
 # 6. Rodar autotrader
-PYTHONPATH=./agent ./agent/venv/bin/python vt_autotrader.py
+python3 core/vt_autotrader.py --once    # verificação única (segura)
+# Em produção: cron 09:00 chama scripts/start_autotrader.sh
 ```
 
 ### Shell helpers
@@ -434,52 +455,55 @@ PYTHONPATH=./agent ./agent/venv/bin/python vt_autotrader.py
 
 ## Estrutura de Diretórios
 
+> Refactor 2026-06-22: todos os módulos ativos foram movidos para `core/`,
+> `mt5/`, `monitoring/`, `optimization/`, `strategies/`, `backtest/`,
+> `scripts/`, `tests/`. Árvores HKUDS mortas (`agent/`, `frontend/`,
+> `prediction/`, `wiki/`) foram arquivadas em `archive/`.
+
 ```
 Vibe-Trading/
-├── vt_autotrader.py          # Daemon principal
-├── vt_config.json            # Configuração central (hot-reload)
-├── vt_config_loader.py       # Loader com hot-reload por mtime
-├── vt_strategy_loader.py      # Carrega plugins de estratégia
-├── vt_trade_log.py           # SQLite trade log + relatório IR
-├── vt_analyst.py             # Detecção de eventos em tempo real
-├── vt_daily_report.py       # Relatório diário automático
-├── vt_copilot.py             # Health check + reconciliação
-├── vt_tax_report.py          # Relatório fiscal (IR)
-├── vt_resolve_symbols.py     # Resolve símbolos MT5
-├── mt5_orchestrator.py       # Interface Linux → MT5 (Wine bridge)
-├── mt5_executor.py           # Executor Windows (roda dentro Wine)
-├── mt5_fetch.py              # Coleta dados do MT5
-├── mt5_resolve.py            # Resolve símbolos (Wine side)
-├── strategies/               # Plugins de estratégia
-│   ├── vwap.py              #   VWAP trend-continuation
-│   ├── ema_pullback.py      #   EMA pullback trend-following
-│   ├── strong_trend.py       #   Trend-following agressivo
-│   ├── bollinger.py         #   Reversão à média
-│   ├── ema_crossover.py     #   EMA crossover
-│   ├── adx_trend.py         #   ADX trend-following
-│   ├── macd_momentum.py     #   MACD momentum
-│   └── win_reversion.py     #   Reversão específica WIN
-├── backtest/                 # Backtests ativos
-│   ├── backtest_agi_v11.py  #   Backtest principal (lê config)
-│   ├── backtest_autotrader_v6.py # Versão anterior
-│   └── backtest_multi_strategy.py # Compara estratégias
-├── scripts/                  # Shell helpers
-│   ├── install_mt5.sh       #   Instalação MT5
-│   ├── vt_start.sh          #   Startup completo
-│   ├── start_autotrader.sh   #   Launcher autotrader
-│   ├── start_mt5linux.sh    #   Inicia MT5
-│   ├── vt.sh                #   Wrapper CLI
-│   └── vt-resolve.sh        #   Resolve símbolos
-├── archive/                  # Scripts obsoletos (histórico)
-│   ├── backtests/           #   Backtests antigos (v1-v7)
-│   └── utils/               #   Scripts temporários/teste
-├── data/                     # Dados CSV (OHLCV M5/M15)
-├── agent/                    # Hermes Agent (orquestação)
-├── prediction/               # Modelos preditivos (ML)
-├── wiki/                     # Documentação wiki
-├── docs/                     # Documentação técnica
-├── tools/                    # CI e utilitários
-└── vt_trades.db              # SQLite trade database
+├── core/                     # Lógica central do autotrader
+│   ├── vt_autotrader.py     #   Daemon principal (gerencia posições, SL, TP1/TP2)
+│   ├── vt_config_loader.py  #   Loader com hot-reload por mtime + write-lock
+│   ├── vt_strategy_loader.py #   Carrega plugins de estratégia (hot-reload)
+│   ├── vt_config.py / vt_calendar.py / vt_emergency.py  # Config + calendário + SL emergêncial
+│   ├── vt_trade_log.py      #   SQLite trade log
+│   ├── vt_order_validator_v2.py  # Validador LLM pós-sinal (5-min cache)
+│   └── vt_hermes_helper.py / vt_notify.py  # Telegram delivery
+├── mt5/                      # Bridge Linux ↔ MT5 (Wine)
+│   ├── mt5_orchestrator.py  #   Interface Linux → subprocess Wine
+│   ├── mt5_executor.py      #   Executor Windows (roda dentro Wine)
+│   ├── mt5_fetch.py         #   Coleta dados do MT5
+│   └── mt5_error_recovery.py #   Retry + anti-loop em cada order/modify
+├── monitoring/               # Saúde, relatórios, reconciliação
+│   ├── vt_pre_flight.py     #   Validação 08:55 antes do autotrader iniciar
+│   ├── vt_copilot.py        #   Health check intradiário (10/12/15h)
+│   ├── vt_daily_report.py   #   Relatório diário + close 16:50
+│   ├── vt_trade_watchdog.py #   Reconcilia MT5 ↔ SQLite
+│   ├── vt_self_heal.py      #   Auto-cura (restart processo/MT5)
+│   └── vt_analyst.py / vt_tax_report.py  # Análise + relatório IR
+├── optimization/             # Otimizador AGI
+│   ├── agi_v4/              #   ⭐ Otimizador canônico (cron 12:00 + 17:10)
+│   │   ├── runner.py        #     Entry point (--mode auto desde Wave 880.C4)
+│   │   ├── pipeline.py      #     Orquestra 6 stages + convergence loop
+│   │   ├── stage1_collect.py … stage6_report.py
+│   │   ├── gates.py         #     Thresholds (PF≥1.15, WR≥35%, WF≥65%, sharpe≥0.5)
+│   │   ├── guardrails.py    #     Whitelist de writes + ranges
+│   │   ├── backtest_evaluator.py  # Gate live (avalia candidatos)
+│   │   └── strategy_catalog.py  # Enumeração AST p/ prompt LLM
+│   └── agi_tuning_17h.py    #   ⚠️ DESABILITADO (Wave 880.A5: guard VT_ALLOW_V3)
+├── strategies/               # Plugins de estratégia (~45 estratégias)
+├── backtest/
+│   ├── backtest_v944.py     #   ⭐ Backtest canônico (AGI v4 usa este)
+│   └── backtest_agi_v11.py  #   Obsoleto — não use
+├── scripts/                  # Shell helpers (start_autotrader, vt.sh, run_agi_v4_cron.sh, ...)
+├── tests/                    # pytest suite (conftest isola config + DB)
+├── archive/                  # 1183+ arquivos históricos (morto — não editar)
+├── vt_config.json           # Single source of truth (mutado só por AGI/scripts autorizados)
+├── vt_trades.db             # SQLite runtime (gitignored)
+├── AGENTS.md                # ⭐ Fonte da verdade: layout, comandos, convenções
+├── CLAUDE.md                # Arquitetura detalhada + safety surfaces (gitignored)
+└── crontab.txt              # Schedule canônico (reinstalar: `crontab crontab.txt`)
 ```
 
 ## Changelog
