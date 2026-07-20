@@ -2942,28 +2942,14 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
                     )
 
         log(f"[FECHADO] {symbol} {tf} — PnL estimado R\\${pnl:+.2f}, notificando Telegram...")
-        # Notificação de fechamento — informações completas do servidor
+        # Wave 880.I (Bruno 2026-07-20): notificação de fechamento MINIMALISTA.
+        # Removidos valores (PnL, entrada/saída, volume, ticket, duração, daily_pnl)
+        # porque vinham imprecisos e tornavam o alerta ruidoso. Agora é só a
+        # indicação de que fechou — direção + timestamp.
         _ts = datetime.now().strftime("%H:%M:%S")
-        _volume = pos.get("volume", "?")
-        _ticket = pos.get("entry_ticket", "?")
-        _entry_time = pos.get("entry_time")
-        _duracao = ""
-        if _entry_time:
-            try:
-                if isinstance(_entry_time, str):
-                    _entry_time = datetime.fromisoformat(_entry_time)
-                _duracao_min = (datetime.now() - _entry_time).total_seconds() / 60
-                _duracao = f" | Duração: {_duracao_min:.0f}min"
-            except Exception:
-                pass
-        _pnl_emoji = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
         notify_telegram(
             f"⚡ *Fechou {symbol} {tf}*\n"
-            f"• {direction} | {_pnl_emoji} R$ {pnl:+.2f}\n"
-            f"• Entrada: {entry_price:.2f} → Saída: {current_price:.2f}\n"
-            f"• Volume: {_volume} contrato(s) | Ticket: {_ticket}\n"
-            f"• Motivo: SL atingido no servidor{_duracao}\n"
-            f"• PnL Dia: R$ {state.daily_pnl:+.2f} | {_ts}"
+            f"• {direction} • {_ts}"
         )
 
         del state.positions[key]
