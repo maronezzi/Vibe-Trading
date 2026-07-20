@@ -19,7 +19,26 @@
 0 9 * * 1-5 /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/start_autotrader.sh >> /tmp/vt_start.log 2>&1
 
 # ─── INTELIGÊNCIA TRADER 11:00 / 13:00 (seg-sex) — análise + ajuste de params ─────
-0 10,12,15 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_copilot.py >> /tmp/vt_copilot.log 2>&1
+5 10,12,15 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_copilot.py >> /tmp/vt_copilot.log 2>&1
+
+# ─── RELATÓRIO INTRADAY 20min (seg-sex 9-17h) — PnL broker-truth (MT5) ─────────
+#     Modo --report: texto + gráfico PNG da evolução do PnL total (curva
+#     contínua amostrada a cada rodada em pnl_intraday_samples). Sem self-heal.
+#     Fonte autoritativa MT5: mt5.history_deals_get() → deals de hoje (WS2
+#     filtro). Fallback DB só se MT5 off, com base do snapshot de abertura
+#     (WS1, sem hardcode). ~25 msgs texto + 25 PNGs/dia.
+#
+# ÚNICO SCHEDULER (W861, 2026-07-03): antes havia 2 fontes disparando o
+# relatório nos mesmos minutos (:00,:20,:40) — este cron do sistema E o job
+# hermes 6703b26712e1 ("Vibe-Trading Intraday Report 20min", deliver=telegram).
+# Resultado: relatório chegava DUPLICADO no Telegram. O job hermes foi PAUSADO
+# (hermes cron pause 6703b26712e1) — além de duplicar, ele usava a função de
+# gráfico ANTIGA (render_pnl_chart, 1 ponto/trade) em vez da curva contínua
+# nova (render_pnl_chart_from_samples). Este cron é agora a fonte única.
+#
+# Wave N+2.5 (2026-07-08, 8ee7fd87): entry removida sem menção no commit
+# message. Restaurada manualmente — bloco idêntico ao commit 7b371db8.
+*/20 9-17 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_copilot.py --report >> /tmp/vt_copilot_report.log 2>&1
 
 # ─── RELATÓRIO DIÁRIO 16:50 (seg-sex) — fecha posições + P&L do dia ──────────────
 50 16 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_daily_report.py >> /tmp/vt_daily_report.log 2>&1
