@@ -1,8 +1,8 @@
 {
-  "_version": 1095,
-  "_updated_at": "2026-07-17T13:02:16.998271",
-  "_updated_by": "copilot_11h_w878_overtrading_fix",
-  "_notes": "Wave 12 SUPER-AGI v5 (Sunday, 27 strategies × 60 combos × 16 pares, WF 4w 75%): WIN_M5→EMA_CROSSOVER PF=2.57 PnL=R$ 2085 n=17 WF=100%; WIN_M15→BOLLINGER PF=2.46 PnL=R$ 3338 n=13 WF=100%; WIN_M30→EMA_PULLBACK PF=4.18 PnL=R$ 8120 n=22 WF=100%; BIT_M5→DIVERGENCE_RSI PF=3.14 PnL=R$ 206 n=24 WF=75%; BIT_M15→PIVOT_POINTS PF=20.48 PnL=R$ 238 n=18 WF=100%; BIT_M30→RSI_REVERSION PF=2.94 PnL=R$ 225 n=17 WF=67% | Wave14: Bruno pediu para NAO operar IND | 2026-07-17 11:08 BRUNO: max_daily_loss -500 -> -2000 TEMPORARIO (kill switch soltou por falso positivo BITN mult errado - investigar). REVERTER AMANHA no pre-flight 09:00.",
+  "_version": 1113,
+  "_updated_at": "2026-07-23T17:41:00.375600",
+  "_updated_by": "agi_v4_stage5",
+  "_notes": "auto-resolve vencimento: WDO: WDOU26 → WDOQ26",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
   "start_minute": 5,
@@ -115,7 +115,7 @@
     "WIN_M15": "HTF_BIAS_LTF_ENTRY",
     "WIN_M30": "HTF_BIAS_LTF_ENTRY",
     "WIN_H1": "RSI_REVERSION",
-    "BIT_M5": "MACD_MOMENTUM",
+    "BIT_M5": "SUPERTREND",
     "BIT_M15": "EMA_PULLBACK",
     "BIT_M30": "RSI_REVERSION",
     "BIT_H1": "ADX_TREND",
@@ -130,13 +130,13 @@
   },
   "contract_specs": {
     "WIN$": {
-      "mult": 1.0,
+      "mult": 0.2,
       "margin": 155,
       "slip_r": 5.0,
       "tick": 5
     },
     "WDO$": {
-      "mult": 0.0015,
+      "mult": 10.0,
       "margin": 140,
       "slip_r": 0.0015,
       "tick": 0.5
@@ -154,7 +154,7 @@
       "tick": 0.01
     },
     "DOL$": {
-      "mult": 0.0018,
+      "mult": 1.0,
       "margin": 140,
       "slip_r": 0.0018,
       "tick": 0.5
@@ -247,18 +247,19 @@
     "WIN_M5": {
       "cooldown_seconds": 1200,
       "ema_fast": 10,
-      "ema_slow": 26,
+      "ema_slow": 30,
       "halt_duration_minutes": 60,
       "max_consecutive_losses": 4,
       "profit_lock_r": 1.5,
       "sl_atr_mult": 1.8
     },
     "WIN_M15": {
-      "cooldown_seconds": 600,
+      "cooldown_seconds": 1200,
       "halt_duration_minutes": 45,
       "max_consecutive_losses": 3,
       "profit_lock_r": 0.7,
-      "sl_atr_mult": 2.5
+      "sl_atr_mult": 2.0,
+      "adx_min": 22
     },
     "WIN_M30": {
       "cooldown_seconds": 600,
@@ -272,20 +273,28 @@
       "halt_duration_minutes": 15,
       "max_consecutive_losses": 5,
       "profit_lock_r": 1.0,
-      "rsi_overbought": 80,
+      "rsi_overbought": 85,
       "rsi_oversold": 30,
-      "rsi_period": 5,
+      "rsi_period": 7,
       "sl_atr_mult": 2.5
     },
     "BIT_M5": {
       "cooldown_seconds": 180,
-      "halt_duration_minutes": 180,
+      "halt_duration_minutes": 30,
       "macd_fast": 14,
       "macd_signal": 7,
       "macd_slow": 30,
-      "max_consecutive_losses": 2,
-      "profit_lock_r": 1.5,
-      "sl_atr_mult": 1.2
+      "max_consecutive_losses": 3,
+      "profit_lock_r": 0.5,
+      "sl_atr_mult": 2.0,
+      "rsi_overbought": 75,
+      "rsi_oversold": 25,
+      "rsi_period": 10,
+      "range_atr_pct": 0.01,
+      "touch_pct": 0.005,
+      "lookback": 20,
+      "atr_period": 14,
+      "multiplier": 3.5
     },
     "BIT_M15": {
       "cooldown_seconds": 600,
@@ -298,14 +307,16 @@
       "sl_atr_mult": 3.0
     },
     "BIT_M30": {
-      "cooldown_seconds": 60,
+      "cooldown_seconds": 300,
       "halt_duration_minutes": 120,
       "max_consecutive_losses": 5,
       "profit_lock_r": 0.0,
-      "rsi_overbought": 75,
-      "rsi_oversold": 30,
-      "rsi_period": 5,
-      "sl_atr_mult": 2.5
+      "rsi_overbought": 80,
+      "rsi_oversold": 15,
+      "rsi_period": 7,
+      "sl_atr_mult": 2.5,
+      "ema_period": 21,
+      "max_ema_distance_pct": 2.5
     },
     "BIT_H1": {
       "sl_atr_mult": 1.0,
@@ -612,5 +623,13 @@
     "degrade_ms": 1000,
     "degrade_size_factor": 0.7,
     "degrade_disable_breakouts": true
-  }
+  },
+  "profit_lock_enabled": true,
+  "profit_lock_min_target": 250.0,
+  "profit_lock_target_mult": 1.0,
+  "profit_lock_lookback_days": 7,
+  "trailing_profit_lock_enabled": true,
+  "trailing_activation_pct": 0.5,
+  "trailing_floor_pct": 0.5,
+  "_note_trailing_profit_lock": "Wave 1110 (23/07): Trailing Profit Lock — ratchet progressivo. Ativa em trailing_activation_pct do target, floor sobe linearmente de trailing_floor_pct×pico até 1.0×pico no target. Breach → fecha tudo + arma profit lock. Config: trailing_profit_lock_enabled, trailing_activation_pct, trailing_floor_pct."
 }

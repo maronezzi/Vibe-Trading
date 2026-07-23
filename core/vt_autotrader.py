@@ -44,6 +44,15 @@ from core.vt_config_loader import load_config, load_effective_config
 from core.vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
 from core.vt_order_validator_v2 import validate_order
 from core.vt_calendar import is_trading_day, resolve_all_symbols, get_contract_expiry, _parse_contract_code, is_rollover_contract
+from core.vt_block_notify import (  # noqa: E402,F401  (Wave N+block_notify 2026-07-20)
+    notify_block_activated,
+    CAT_HALT_TRADING,
+    CAT_HALT_NEW_TRADES,
+    CAT_DISABLED_SYMBOLS,
+    CAT_DISABLED_TF,
+    CAT_AGGREGATE_BLACKOUT,
+    CAT_MAX_DAILY_LOSS,
+)
 # Wave 1C.3 (Bruno 08/07): snapshot do saldo MT5 no startup para o helper
 # do copilot (FALLBACK-BALANCE em monitoring/vt_copilot.py) ter baseline
 # confiavel do dia. Helper eh idempotente e sanity-checked.
@@ -66,6 +75,27 @@ try:
 except Exception as _e_imp:
     print(f"[INIT] ⚠️  vt_history_reconcile indisponível: {_e_imp}", flush=True)
     _HISTORY_RECONCILE_AVAILABLE = False
+
+# ===== PAUSE FILE (Bruno 2026-07-20) =====
+# API manual para travar novas entradas sem derrubar o daemon:
+#   touch data/autotrader.paused  → bloqueia novas entradas
+#   rm    data/autotrader.paused  → retoma operação normal
+# Semântica: posições já abertas continuam sendo gerenciadas (trailing/SL/
+# breakeven). Idêntico ao que halt_new_trades deveria fazer, mas via arquivo
+# (auditoria fácil, reage em ≤ check_interval s, sem reiniciar o daemon).
+PAUSE_FILE = Path(__file__).parent.parent / "data" / "autotrader.paused"
+# Cache do último estado observado para detectar transição e notificar uma
+# única vez via Telegram (evita spam a cada tick). None = ainda não avaliado.
+_last_pause_state: Optional[bool] = None
+
+
+def _is_paused() -> bool:
+    """True se data/autotrader.paused existe. Idempotente, não levanta."""
+    try:
+        return PAUSE_FILE.exists()
+    except OSError:
+        return False
+
 
 # ===== CONFIGURAÇÃO =====
 # Config carregada do vt_config.json com hot reload
@@ -1327,6 +1357,15 @@ def _check_max_trades(params: dict, symbol: str = "") -> bool:
     pnl_broker_truth = float(_truth.get_daily_pnl())
     if pnl_broker_truth <= max_daily_loss:
         log(f"🛑 KILL SWITCH: PnL diário R$ {pnl_broker_truth:.2f} ≤ limite R$ {max_daily_loss:.2f} — TRAVADO (broker-truth)")
+        # Wave N+block_notify: notifica 1x/dia (cooldown 1440min). Re-fires
+        # automaticamente no próximo pregão. Bot NÃO abre novas posições
+        # enquanto PnL ≤ max_daily_loss.
+        notify_block_activated(
+            CAT_MAX_DAILY_LOSS,
+            reason=(f"PnL broker-truth R$ {pnl_broker_truth:.2f} ≤ limite R$ {max_daily_loss:.2f} — "
+                    f"KILL SWITCH travado, sem novas entradas até o próximo dia"),
+            severity="critical", cooldown_min=1440,
+        )
         return False
 
     # ── KILL SWITCH: disabled_ativos (AGI pode desativar ativos que perdem) ──
@@ -1535,12 +1574,43 @@ def check_and_trade():
     # ── KILL SWITCH centralizado (vt_config.json) ──
     if CONFIG.get("halt_trading", False):
         log("🛑 halt_trading=true no config — PARADO")
+        # Wave N+block_notify: notifica 1x/dia (cooldown 1440min) — re-fires
+        # automaticamente no próximo pregão se ainda travado.
+        notify_block_activated(
+            CAT_HALT_TRADING, reason="halt_trading=true no vt_config.json — bot TOTALMENTE parado",
+            severity="critical", cooldown_min=1440,
+        )
         return
     if CONFIG.get("halt_new_trades", False):
         # Permite gerenciar posições abertas mas não abre novas
         if not state.positions:
             log("ℹ️ halt_new_trades=true e sem posições — aguardando")
+            # Wave N+block_notify: notifica 1x/dia — sem novas entradas.
+            notify_block_activated(
+                CAT_HALT_NEW_TRADES,
+                reason="halt_new_trades=true e sem posições abertas — sem novas entradas",
+                severity="warning", cooldown_min=1440,
+            )
             return
+
+    # Profit Lock (Wave 880.H — Bruno 2026-07-20): se travou hoje, não abre
+    # novas até o dia seguinte. Posições abertas podem ainda ser gerenciadas
+    # pelo manage_position() abaixo — o lock só bloqueia novas entradas.
+    # Quando o lock arma, ele JÁ FECHA tudo (close_all_and_report), então
+    # normalmente aqui não há posições a gerenciar. Mas em race conditions
+    # (posição aberta entre o tick de arm e o tick seguinte), ainda deixa
+    # gerenciar.
+    try:
+        from core.vt_profit_lock import is_locked as _pl_is_locked
+        _pl_locked, _pl_state = _pl_is_locked()
+        if _pl_locked:
+            log(f"🔒 PROFIT LOCK ativo desde {(_pl_state.get('armed_at','?')[:16])} "
+                f"(target R$ {_pl_state.get('target',0):.2f}, "
+                f"PnL no arm R$ {_pl_state.get('armed_pnl',0):.2f}, "
+                f"closed_n={_pl_state.get('closed_n',0)}) — novas entradas bloqueadas")
+            return
+    except Exception as _e_pl:
+        log(f"[PROFIT-LOCK] gate falhou (não-crash): {_e_pl}")
 
     # Safety: avoid first/last 15 min of session
     if not _is_safe_time_window():
@@ -1551,6 +1621,14 @@ def check_and_trade():
     active_symbols = [s for s in CONFIG["symbols"] if s not in disabled_symbols]
     if disabled_symbols:
         log(f"🚫 Símbolos desabilitados: {disabled_symbols} (ativos: {active_symbols})")
+        # Wave N+block_notify: notifica 1x/hora. dedup key inclui os
+        # símbolos afetados na reason para que mudar a lista dispare nova msg
+        # após o cooldown (mudança visível pro operador).
+        notify_block_activated(
+            CAT_DISABLED_SYMBOLS,
+            reason=f"disabled_symbols={disabled_symbols} (ativos: {active_symbols})",
+            severity="warning", cooldown_min=3600,
+        )
 
     for symbol_root in active_symbols:
         # Wave Per-TF (Bruno 2026-07-07): cooldown cross-TF. Se symbol_root já
@@ -1609,6 +1687,13 @@ def check_and_trade():
                 # Verificar se há posição aberta (precisa gerenciar mesmo com TF off)
                 existing_pos = state.positions.get(f"{symbol}_{tf}")
                 if not existing_pos:
+                    # Wave N+block_notify: 1x/hora por (symbol_root, tf).
+                    notify_block_activated(
+                        CAT_DISABLED_TF,
+                        symbol=symbol_root, tf=tf,
+                        reason=f"TF {symbol_root}_{tf} em disabled_timeframes — sem nova entrada",
+                        severity="warning", cooldown_min=3600,
+                    )
                     continue  # sem posição → pula
                 log(f"[ORPHAN_RECOVERY] {symbol} {tf}: TF desativado mas posição aberta, gerenciando")
                 # Continua pra gerenciar — fall through
@@ -1630,6 +1715,13 @@ def check_and_trade():
             if pos:
                 manage_position(symbol, tf, pos, atr, strategy, params)
             else:
+                # Pause file (Bruno 2026-07-20): não abre novas entradas,
+                # mas posições abertas em outros (symbol, tf) seguem sendo
+                # gerenciadas acima. API: touch/rm data/autotrader.paused.
+                # Corrige bug latente do halt_new_trades (que só bloqueava
+                # quando not state.positions — ver forense 20/07).
+                if _is_paused():
+                    continue
                 # ===== SAFETY CHECKS (cooldown, max, consecutive losses) =====
                 # Cooldown precisa de tf e direction — mas ainda não sabemos a direction
                 # do sinal. Pré-checa por symbol-level apenas aqui; por direction
@@ -1685,6 +1777,16 @@ def check_and_trade():
                                 _bc["day_dir"] += 1
                             elif _reason.startswith("time_block"):
                                 _bc["time"] += 1
+                            # Wave N+block_notify: dedup 60min por (symbol, tf).
+                            # O counter horario continua existindo no copilot
+                            # report — este notify é apenas o "primeiro hit"
+                            # visivel em tempo real.
+                            notify_block_activated(
+                                CAT_AGGREGATE_BLACKOUT,
+                                symbol=symbol, tf=tf,
+                                reason=f"{result['direction']} bloqueado: {_reason}",
+                                severity="warning", cooldown_min=60,
+                            )
                             continue
                         # Wave N+4B (2026-07-08): cooldown por loss consecutiva
                         # per-(symbol, direction). Corta cauda de "revenge-trade".
@@ -2723,12 +2825,35 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         and profit_lock_r > 0
         and atr > 0
         and abs(sl_pts) > 0
+        # Wave 880.J (2026-07-20): não re-tentar PROFIT_LOCK no mesmo ciclo se
+        # já foi tentado (sucesso OU falha). Antes, falha deixava pos["sl_pts"]
+        # inalterado e o gate re-disparava a cada 30s, gerando storm de
+        # INVALID_STOPS (6 modifies em 6 min hoje). Ver diagnóstico (D).
+        and not pos.get("profit_lock_attempted")
     ):
         _one_r_pts = abs(sl_pts)  # captura antes de possivelmente mutar
         if profit_pts >= profit_lock_r * _one_r_pts:
-            # SL = entry + 1 tick (acima entry p/ BUY, abaixo p/ SELL).
-            # sl_pts NEGATIVO sinaliza profit-lock (cmd_modify é sign-aware).
-            lock_pts = -max(1, int(1 / point_val))
+            # Wave 880.J (2026-07-20): lock_pts deve respeitar trade_stops_level
+            # do broker. Antes era -max(1, int(1/point_val)) = -1 p/ WIN,
+            # resultando em SL a 1pt do entry — sempre rejeitado pelo MT5
+            # ("Invalid stops"). Agora usa distância segura (stops_level + 10%).
+            try:
+                from mt5.mt5_orchestrator import info as _mt5_info
+                _info_data = _mt5_info(symbol)
+                _stops_level = (_info_data.get("trade_stops_level", 0)
+                                if _info_data and "error" not in _info_data else 0)
+                # stops_level em unidades nativas; converter pra pts (executor units).
+                _min_lock_pts = max(int(_stops_level / point_val) if point_val > 0 else 1, 1)
+                # +10% de margem (arredondado p/ cima) p/ evitar rejeição por tick.
+                _min_lock_pts = int(_min_lock_pts * 1.1) + 1
+            except Exception:
+                # Fallback conservador: 50pts (valor histórico do broker p/ WIN).
+                _min_lock_pts = 50
+            # sl_pts NEGATIVO sinaliza profit-lock (cmd_modify é sign-aware):
+            # BUY SL = entry - lock_pts*point_val → lock_pts negativo = SL acima.
+            lock_pts = -_min_lock_pts
+            # Marca ANTES do modify para não re-disparar em caso de falha.
+            pos["profit_lock_attempted"] = True
             result = safe_modify_sl_with_emergency_close(
                 symbol, pos["entry_ticket"], lock_pts, entry_price, direction
             )
@@ -2738,7 +2863,13 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
                 be_applied = True
                 log(
                     f"[PROFIT_LOCK] {symbol} {direction} | profit {profit_pts:.0f}pts "
-                    f">= {profit_lock_r}×{_one_r_pts}pts (1R) | SL → entry+1tick (lock)"
+                    f">= {profit_lock_r}×{_one_r_pts}pts (1R) | SL → entry+{_min_lock_pts}pts (lock)"
+                )
+            else:
+                log(
+                    f"[PROFIT_LOCK] {symbol} {direction} | profit {profit_pts:.0f}pts "
+                    f"| falhou modify (lock_pts={lock_pts}): {result.get('error', '?')} — "
+                    f"não retenta até próxima posição"
                 )
 
     # ===== PROTEÇÃO 1: BREAKEVEN =====
@@ -2868,11 +2999,18 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
 
         # Bruno 2026-06-30: pegar PnL REAL do MT5 (broker-truth) ao invés de calcular
         # localmente. Se histórico disponível, usar profit do deal out. Fallback para
-        # cálculo local só se histórico indisponível. Defesa contra DB lock que perde PnL.
+        # cálculo local só se histórico indisponível. Defesa contra DB lock que perce PnL.
         # Fase 2.5: via truth layer (cache 2s) ao inves de chamar orchestrator direto.
         profit = None
+        _profit_source = "fallback local"  # Wave 880.G: rastreia origem p/ note honesta
         try:
-            _deals = _truth.get_position_history(symbol=symbol, days=1)
+            # Wave 880.I (2026-07-20): usar position= (caminho confiável no Wine
+            # MT5). Antes usava symbol=+days= que retorna [] (bug do Wine).
+            _entry_ticket = str(pos.get("entry_ticket") or "").strip()
+            _deals = _truth.get_position_history(
+                symbol=symbol, days=1,
+                position=_entry_ticket if _entry_ticket else None,
+            )
             for d in _deals:
                 # position_id == entry_ticket (MT5 concept)
                 if str(d.position_id) == str(pos["entry_ticket"]) and d.direction in ("BUY", "SELL"):
@@ -2881,18 +3019,27 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
                     # usa exit_price do deal também
                     if d.price:
                         current_price = float(d.price)
+                    _profit_source = "broker-truth via MT5 history"
                     log(f"[FECHADO PELO SERVIDOR] MT5 history: profit=R$ {profit:.2f} price={d.price}")
                     break
-        except Exception as _he:
+        except (OSError, ValueError, KeyError) as _he:
+            # Wave 880.I: except estreito — TypeError/AttributeError propagam.
             log(f"[HISTORY FAIL] usando PnL local: {_he}")
 
         # Fallback: cálculo local se history falhou
+        # Wave 880.G (Bruno 2026-07-20): usar get_multiplier() (R$/ponto) ao
+        # invés de point_val (preço/ponto). Antes inflava notes 5x para WIN
+        # (point_val=1.0 era tratado como R$/pt, mas o real é 0.20 — mini).
+        # point_val segue correto nos demais usos (conversão preço↔ponto p/
+        # SL/breakeven/trailing); só aqui ele era o multiplicador errado.
         if profit is None:
+            from core.vt_trade_log import get_multiplier
+            _brl_per_pt = get_multiplier(symbol)
             if direction == "BUY":
-                profit = (current_price - entry_price) * point_val
+                profit = (current_price - entry_price) * _brl_per_pt
             else:
-                profit = (entry_price - current_price) * point_val
-            log(f"[FECHADO PELO SERVIDOR] PnL local fallback: R$ {profit:.2f}")
+                profit = (entry_price - current_price) * _brl_per_pt
+            log(f"[FECHADO PELO SERVIDOR] PnL local fallback: R$ {profit:.2f} (mult={_brl_per_pt})")
 
         # Calcular preço teórico do SL que foi enviado pro broker — habilita
         # diagnóstico de slippage real (exit_price - exit_sl_price). Sem isso,
@@ -2910,7 +3057,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             exit_ticket="server",
             exit_sl_price=exit_sl_price,
             swap=0,
-            notes=f"FECHADO PELO SERVIDOR | PnL real: R${profit:.2f} (broker-truth via MT5 history)",
+            notes=f"FECHADO PELO SERVIDOR | PnL real: R${profit:.2f} ({_profit_source})",
             close_source="MT5_SERVER_SL",
         )
         pnl = 0  # default para quando exit_result falha
@@ -2942,14 +3089,28 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
                     )
 
         log(f"[FECHADO] {symbol} {tf} — PnL estimado R\\${pnl:+.2f}, notificando Telegram...")
-        # Wave 880.I (Bruno 2026-07-20): notificação de fechamento MINIMALISTA.
-        # Removidos valores (PnL, entrada/saída, volume, ticket, duração, daily_pnl)
-        # porque vinham imprecisos e tornavam o alerta ruidoso. Agora é só a
-        # indicação de que fechou — direção + timestamp.
+        # Notificação de fechamento — informações completas do servidor
         _ts = datetime.now().strftime("%H:%M:%S")
+        _volume = pos.get("volume", "?")
+        _ticket = pos.get("entry_ticket", "?")
+        _entry_time = pos.get("entry_time")
+        _duracao = ""
+        if _entry_time:
+            try:
+                if isinstance(_entry_time, str):
+                    _entry_time = datetime.fromisoformat(_entry_time)
+                _duracao_min = (datetime.now() - _entry_time).total_seconds() / 60
+                _duracao = f" | Duração: {_duracao_min:.0f}min"
+            except Exception:
+                pass
+        _pnl_emoji = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
         notify_telegram(
             f"⚡ *Fechou {symbol} {tf}*\n"
-            f"• {direction} • {_ts}"
+            f"• {direction} | {_pnl_emoji} R$ {pnl:+.2f}\n"
+            f"• Entrada: {entry_price:.2f} → Saída: {current_price:.2f}\n"
+            f"• Volume: {_volume} contrato(s) | Ticket: {_ticket}\n"
+            f"• Motivo: SL atingido no servidor{_duracao}\n"
+            f"• PnL Dia: R$ {state.daily_pnl:+.2f} | {_ts}"
         )
 
         del state.positions[key]
@@ -2957,10 +3118,17 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         return
 
 
-def close_all_and_report():
-    """Fecha todas posições e gera relatório diário."""
-    log("=== FECHANDO TUDO 16:45 ===")
+def close_all_and_report(close_source: str = "EOD_CLOSE", exit_reason: str = "EOD_16:45",
+                         notes: str = "Fechamento obrigatório de intraday"):
+    """Fecha todas posições e gera relatório diário.
 
+    Wave 880.H (Bruno 2026-07-20): adicionados parâmetros close_source/exit_reason/notes
+    para reaproveitar no Profit Lock (close_source='PROFIT_LOCK'). Defaults preservam
+    o comportamento original do EOD 16:45.
+    """
+    log(f"=== FECHANDO TUDO ({close_source}) ===")
+
+    _closed_count = 0  # Wave 880.H: contador para Profit Lock reportar.
     for key, pos in list(state.positions.items()):
         parts = key.rsplit("_", 1)
         symbol = parts[0]
@@ -2975,15 +3143,16 @@ def close_all_and_report():
         exit_result = log_exit(
             pos["trade_log_id"],
             exit_price=exit_price,
-            exit_reason="EOD_16:45",
-            exit_ticket="eod",
-            notes="Fechamento obrigatório de intraday",
-            close_source="EOD_CLOSE",
+            exit_reason=exit_reason,
+            exit_ticket=close_source.lower(),
+            notes=notes,
+            close_source=close_source,
         )
         if exit_result:
             pnl = exit_result.get("net_pnl", 0)
             state.daily_pnl += pnl
             state.trade_count += 1
+            _closed_count += 1  # Wave 880.H
             if pnl > 0:
                 state.wins += 1
                 state.consecutive_losses[symbol] = 0
@@ -2992,17 +3161,32 @@ def close_all_and_report():
                 state.consecutive_losses[symbol] = state.consecutive_losses.get(symbol, 0) + 1
 
     time.sleep(2)
-    # Importar deals reais do MT5 e sincronizar taxas
+    # Importar deals reais do MT5 e sincronizar taxas.
+    # Wave 880.I (2026-07-20): iterar por ticket via history(position=) — o
+    # caminho bulk history() (sem args) retorna [] no Wine MT5 (bug documentado).
+    # state.positions ainda contém os entry_ticket neste ponto (clear é depois).
     try:
-        hist_result = _run_wine(EXECUTOR_WIN, "history")
-        if isinstance(hist_result, dict) and "history" in hist_result:
-            n_imported = import_mt5_history(hist_result["history"])
-            log(f"MT5 history: {n_imported} deals importados")
+        _all_deals = []
+        _tickets_seen = set()
+        for _pos in state.positions.values():
+            _tk = str(_pos.get("entry_ticket") or "").strip()
+            if not _tk or _tk in _tickets_seen:
+                continue
+            _tickets_seen.add(_tk)
+            try:
+                _hist = history(position=_tk)
+                if isinstance(_hist, dict):
+                    _all_deals.extend(_hist.get("history") or [])
+            except Exception as _e_h:
+                log(f"[WARN] history(position={_tk}) falhou: {_e_h}")
+        if _all_deals:
+            n_imported = import_mt5_history(_all_deals)
+            log(f"MT5 history: {n_imported} deals importados ({len(_tickets_seen)} tickets)")
             # Sync fees/swap reais do MT5 para os trades do dia
             n_synced = sync_fees_from_mt5()
             log(f"Fees sync: {n_synced} trades atualizados com taxas reais")
         else:
-            log(f"MT5 history: resposta inválida: {hist_result}")
+            log("MT5 history: 0 deals (nenhum ticket retornou deals — pode ser Wine MT5 bug)")
     except Exception as e:
         log(f"[WARN] import_mt5_history falhou: {e}")
 
@@ -3093,6 +3277,7 @@ def close_all_and_report():
 
     notify_telegram(msg)
     log(f"Relatório: {n_trades_db} trades, PnL R$ {net_pnl_db:+.2f}")
+    return _closed_count  # Wave 880.H: número de posições efetivamente fechadas.
 
 
 def run_once():
@@ -3866,6 +4051,9 @@ def reconcile_positions_with_mt5():
                                 # Wine MT5 tem bug: history_deals_get(symbol=...) e
                                 # history_deals_get(date_from=...) retornam [] mesmo
                                 # com deals reais. Filtrar por position_id funciona.
+                                # Wave 880.I (2026-07-20): except agora captura só
+                                # erros esperados do MT5/Wine (não TypeError/Attribute
+                                # Error de programmer bug, que devem propagar).
                                 _mt5_hist = history(position=ticket_str)
                                 for _d in _mt5_hist.get("history", []) or []:
                                     if str(_d.get("position_id", "")) == str(ticket_str):
@@ -3874,7 +4062,11 @@ def reconcile_positions_with_mt5():
                                         if _d.get("type") == _want_type:
                                             _mt5_exit = _d
                                             break
-                            except Exception as _e_hist:
+                            except (OSError, ValueError, KeyError) as _e_hist:
+                                # Erros esperados: Wine indisponível, JSON malformado,
+                                # chave ausente em _mt5_hist. TypeError/AttributeError
+                                # (signature drift, programmer bug) NÃO são capturados
+                                # — propagam e aparecem no log como traceback visível.
                                 log(f"[RECONCILE] history lookup falhou (ticket={ticket_str}): {_e_hist}")
 
                             if _mt5_exit:
@@ -4040,6 +4232,7 @@ def reconcile_positions_with_mt5():
 
 def run_daemon():
     global CONFIG
+    global _last_pause_state  # cache de borda do pause file (notify one-shot)
     init_db()
     _init_strategy_utils()
     load_strategies()
@@ -4130,6 +4323,17 @@ def run_daemon():
 
     recover_open_positions()
 
+    # Pause file (Bruno 2026-07-20): se já subiu pausado, avisa uma única vez.
+    # Inicializa _last_pause_state para suprimir renotificação no primeiro tick
+    # do while True abaixo (que sempre detectaria a "borda" None→True).
+    _last_pause_state = _is_paused()
+    if _last_pause_state:
+        log("⏸️  Daemon subindo em modo PAUSADO (data/autotrader.paused presente)")
+        notify_telegram(
+            "⏸️ *Daemon iniciou PAUSADO* — novas entradas bloqueadas; "
+            "posições existentes serão gerenciadas"
+        )
+
     # Bruno 30/06: defesa #2 — reconciliação no STARTUP (corrige drift após restart).
     # Para cada trade com exit_time IS NULL no DB, busca deal correspondente
     # no MT5 history e atualiza com PnL real do broker. Cobre o caso de
@@ -4162,6 +4366,118 @@ def run_daemon():
             # em runtime (sem persistir em vt_config.json — Bruno 2026-07-01).
             CONFIG = load_effective_config()
             reload_strategies()
+
+            # Pause file (Bruno 2026-07-20): detecta borda de transição para
+            # notificar uma única vez via Telegram (não spam a cada 30s).
+            # O bloqueio efetivo de novas entradas acontece dentro de
+            # check_and_trade() via _is_paused() — aqui só cuidamos do aviso.
+            _now_paused = _is_paused()
+            if _now_paused != _last_pause_state:
+                if _now_paused:
+                    try:
+                        _mtime_str = datetime.fromtimestamp(
+                            PAUSE_FILE.stat().st_mtime
+                        ).strftime("%H:%M:%S")
+                    except OSError:
+                        _mtime_str = "?"
+                    log(
+                        f"⏸️  PAUSE ativado ({PAUSE_FILE.name} desde {_mtime_str}) "
+                        f"— novas entradas bloqueadas, posições abertas seguem gerenciadas"
+                    )
+                    notify_telegram(
+                        f"⏸️ *Autotrader PAUSADO*\n"
+                        f"🚫 Novas entradas bloqueadas\n"
+                        f"📌 Posições abertas seguem sendo gerenciadas\n"
+                        f"⏰ {_mtime_str}"
+                    )
+                else:
+                    log("▶️  PAUSE removido — operação normal retomada")
+                    notify_telegram("▶️ *Autotrader RETOMADO* — operação normal")
+                _last_pause_state = _now_paused
+
+            # Trailing Profit Lock (Wave 1110 — Bruno 2026-07-23): ratchet
+            # progressivo no PnL diário. Ativa em 50% do target, garante
+            # piso que sobe linearmente até 100% no target. Se PnL cai
+            # abaixo do floor → fecha tudo. Se atinge target → delega ao
+            # profit lock full (abaixo).
+            if CONFIG.get("profit_lock_enabled", False) and CONFIG.get("trailing_profit_lock_enabled", True):
+                try:
+                    from core import vt_trailing_profit_lock as _tpl
+                    from core import vt_profit_lock as _pl_for_trail
+                    _tpl_locked, _ = _pl_for_trail.is_locked()
+                    if not _tpl_locked:
+                        _tpl_target = _pl_for_trail.get_target(CONFIG)
+                        _tpl_pnl = _pl_for_trail.get_intraday_pnl_total()
+                        _tpl_decision = _tpl.update_trailing(_tpl_pnl, _tpl_target, CONFIG)
+
+                        if _tpl_decision.action == _tpl.TrailingAction.BREACH:
+                            log(f"🛑 TRAILING BREACH: PnL R$ {_tpl_pnl:.2f} < floor R$ {_tpl_decision.floor:.2f} "
+                                f"(pico R$ {_tpl_decision.peak:.2f}, factor {_tpl_decision.trail_factor:.2f}) "
+                                f"— fechando tudo para garantir lucro")
+                            _tpl_closed = close_all_and_report(
+                                close_source="TRAILING_STOP_LOSS",
+                                exit_reason="TRAILING_STOP_LOSS",
+                                notes=f"Trailing Profit Lock breach — PnL R$ {_tpl_pnl:.2f} "
+                                      f"caiu abaixo do floor R$ {_tpl_decision.floor:.2f} "
+                                      f"(pico R$ {_tpl_decision.peak:.2f}). "
+                                      f"Fechamento para garantir lucro realizado.",
+                            )
+                            _tpl.reset_trailing()
+                            _pl_for_trail.arm_lock(
+                                _tpl_target, armed_pnl=_tpl_pnl, closed_n=_tpl_closed
+                            )
+                            notify_telegram(
+                                f"🛑 *TRAILING PROFIT LOCK — BREACH*\n"
+                                f"📉 PnL R$ {_tpl_pnl:.2f} < floor R$ {_tpl_decision.floor:.2f}\n"
+                                f"📊 Pico foi R$ {_tpl_decision.peak:.2f} (factor {_tpl_decision.trail_factor:.2f})\n"
+                                f"🔒 {_tpl_closed} posição(ões) fechada(s)\n"
+                                f"⛔ Novas entradas bloqueadas até amanhã"
+                            )
+
+                        elif _tpl_decision.action == _tpl.TrailingAction.TIGHTEN:
+                            log(f"📈 TRAILING TIGHTEN: pico R$ {_tpl_decision.peak:.2f} → "
+                                f"floor R$ {_tpl_decision.floor:.2f} "
+                                f"(progress {_tpl_decision.progress:.0%}, factor {_tpl_decision.trail_factor:.2f})")
+
+                except Exception as _e_tpl_tick:
+                    log(f"[TRAILING-PL] tick falhou (não-crash): {_e_tpl_tick}")
+
+            # Profit Lock (Wave 880.H — Bruno 2026-07-20): se o PnL diário
+            # (realizado + flutuante) atingir o target adaptativo, fecha tudo
+            # a mercado, realiza o lucro e bloqueia novas até o dia seguinte.
+            # Defesa contra "o mercado comer o lucro do dia".
+            # Gate em check_and_trade() (is_locked) impede novas entradas
+            # depois do arm. Liberação automática: state.date != today.
+            if CONFIG.get("profit_lock_enabled", False):
+                try:
+                    from core import vt_profit_lock
+                    _pl_locked, _ = vt_profit_lock.is_locked()
+                    if not _pl_locked:
+                        _pl_target = vt_profit_lock.get_target(CONFIG)
+                        _pl_pnl = vt_profit_lock.get_intraday_pnl_total()
+                        if _pl_pnl >= _pl_target and _pl_pnl > 0:
+                            # ATINGIU — fecha tudo e arma o lock.
+                            log(f"🎯 PROFIT TARGET R$ {_pl_target:.2f} atingido "
+                                f"(PnL R$ {_pl_pnl:.2f}) — fechando tudo e travando")
+                            _pl_closed = close_all_and_report(
+                                close_source="PROFIT_LOCK",
+                                exit_reason="PROFIT_LOCK",
+                                notes=f"Profit Lock armado — target R$ {_pl_target:.2f} "
+                                      f"atingido com PnL R$ {_pl_pnl:.2f}. "
+                                      f"Fechamento forçado para realizar lucro.",
+                            )
+                            vt_profit_lock.arm_lock(
+                                _pl_target, armed_pnl=_pl_pnl, closed_n=_pl_closed
+                            )
+                            notify_telegram(
+                                f"🎯 *PROFIT LOCK ARMADO*\n"
+                                f"💰 Target R$ {_pl_target:.2f} atingido\n"
+                                f"📊 PnL realizado+flut R$ {_pl_pnl:.2f}\n"
+                                f"🔒 {_pl_closed} posição(ões) fechada(s)\n"
+                                f"⛔ Novas entradas bloqueadas até amanhã"
+                            )
+                except Exception as _e_pl_tick:
+                    log(f"[PROFIT-LOCK] tick falhou (não-crash): {_e_pl_tick}")
 
             if is_close_time() and not state.closed:
                 close_all_and_report()
