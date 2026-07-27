@@ -42,7 +42,7 @@ from mt5.mt5_error_recovery import safe_buy, safe_sell, safe_close
 from core.vt_emergency import safe_modify_sl_with_emergency_close
 from core.vt_config_loader import load_config, load_effective_config
 from core.vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
-from core.vt_order_validator_v2 import validate_order
+from core.vt_order_validator_v2 import validate_order, validate_pre_send
 from core.vt_calendar import is_trading_day, resolve_all_symbols, get_contract_expiry, _parse_contract_code, is_rollover_contract
 from core.vt_block_notify import (  # noqa: E402,F401  (Wave N+block_notify 2026-07-20)
     notify_block_activated,
@@ -2248,6 +2248,23 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
     if not validate_order_pre_send(symbol, tf=tf, direction=direction):
         return {"status": "BLOCKED", "reason": "BLOCKED-DUPLICATE", "symbol": symbol}
 
+    # ===== GATE PRÉ-ENVIO (validator v2) =====
+    # Apenas corrige SL quando necessário (sem bloqueio de ordens).
+    _pre_order = {
+        "symbol": symbol, "direction": direction, "tf": tf,
+        "timeframe": tf, "entry_price": price, "sl_pts": sl_pts,
+        "atr": atr, "strategy": strategy,
+    }
+    _pre_result = validate_pre_send(_pre_order)
+    if _pre_result.get("adjusted_sl"):
+        _old_sl = sl_pts
+        sl_pts = _pre_result["adjusted_sl"]
+        log(f"[VALIDATOR] SL ajustado pré-envio: {symbol} {direction} {tf} | {_old_sl}pts → {sl_pts}pts")
+        notify_telegram(
+            f"🤖 [VALIDATOR] SL ajustado (pré-envio)\n"
+            f"{symbol} {direction} {tf} | SL: {_old_sl}pts → {sl_pts}pts"
+        )
+
     # Log
     detail_parts = [f"{strategy}"]
     if strategy == "VWAP":
@@ -2564,6 +2581,84 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
     else:
         reason = result.get("comment", result.get("error", "desconhecido"))
         log(f"[REJEITADO] {symbol} {tf} {direction}: {reason}")
+
+
+def _lookup_exit_event_from_db(symbol, direction, entry_ticket,
+                               db_path="vt_trades.db", retries=2,
+                               retry_sleep=0.4):
+    """Busca o deal de SAÍDA real (broker-truth) em mt5_trade_events.
+
+    Fonte: EA TradeLogger → CSV → watcher → SQLite. Mais confiável que o
+    history Wine (_truth.get_position_history), que falha em fechamentos
+    server-side e deixa current_price stale (== entry → alerta Entrada==Saída).
+
+    Matching determinístico: entry_ticket (order ticket da abertura) →
+    position_ticket (via deal IN) → deal OUT da direção OPOSTA nessa posição.
+    O EA imprime tickets com %d (int32 signed), então valores >= 2^31 viram
+    negativos — converte o entry_ticket antes de casar. Dedup por deal_ticket
+    (um deal pode existir 2x: capturado ao vivo + backfill).
+
+    Retorna dict {price, profit, commission, swap, ticket, time} ou None
+    (sem deal / DB indisponível). Nunca levanta. Retry curto dá tempo ao
+    watcher (~1s) de ingerir o deal recém-escrito pelo EA.
+
+    Auto-contida (só sqlite3/time) para permitir teste via extração AST sem
+    importar o autotrader (que constrói estado global e contacta o MT5).
+    """
+    import sqlite3
+    import time as _time
+    try:
+        et = int(entry_ticket)
+    except (TypeError, ValueError):
+        return None
+    et_i32 = et - (1 << 32) if et >= (1 << 31) else et
+    want_type = "SELL" if direction == "BUY" else "BUY"
+
+    def _query():
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        conn.execute("PRAGMA busy_timeout=5000")
+        try:
+            # 1) position_ticket a partir do deal de entrada (IN) desta ordem
+            row = conn.execute(
+                "SELECT position_ticket FROM mt5_trade_events "
+                "WHERE trans_type='DEAL_ADD' AND deal_entry='IN' AND order_ticket=? "
+                "ORDER BY id DESC LIMIT 1", (et_i32,)).fetchone()
+            if not row or row[0] in (None, 0):
+                return None
+            pos_tk = row[0]
+            # 2) deal de saída (OUT, direção oposta) dessa posição, dedup por ticket
+            r = conn.execute(
+                "SELECT deal_price, deal_profit, deal_commission, deal_swap, "
+                "       deal_ticket, event_time "
+                "FROM mt5_trade_events WHERE id IN ("
+                "  SELECT MAX(id) FROM mt5_trade_events "
+                "  WHERE trans_type='DEAL_ADD' AND deal_entry='OUT' "
+                "    AND position_ticket=? AND deal_type=? "
+                "  GROUP BY deal_ticket) "
+                "ORDER BY event_time DESC LIMIT 1", (pos_tk, want_type)).fetchone()
+            if not r:
+                return None
+            return {
+                "price": float(r[0] or 0),
+                "profit": float(r[1] or 0),
+                "commission": float(r[2] or 0),
+                "swap": float(r[3] or 0),
+                "ticket": r[4],
+                "time": r[5],
+            }
+        finally:
+            conn.close()
+
+    for attempt in range(retries + 1):
+        try:
+            res = _query()
+        except Exception:
+            res = None
+        if res is not None:
+            return res
+        if attempt < retries:
+            _time.sleep(retry_sleep)
+    return None
 
 
 def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strategy: str = "VWAP", params: dict = None):
@@ -3003,28 +3098,52 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         # Fase 2.5: via truth layer (cache 2s) ao inves de chamar orchestrator direto.
         profit = None
         _profit_source = "fallback local"  # Wave 880.G: rastreia origem p/ note honesta
+        # FIX 2026-07-26 (P0 bug dados — Qwen Code + Hermes): o loop original
+        # dava break no PRIMEIRO deal com position_id match — que é o deal de
+        # ENTRADA (mesma direção, profit=0, price=entry_price). O deal de SAÍDA
+        # (direção oposta, profit real) vinha depois e era ignorado. Resultado:
+        # current_price = entry_price → exit_price = entry_price → PnL = -fees.
+        # Fix: selecionar o deal de direção OPOSTA (= fechamento), como o
+        # reconcile já fazia corretamente em L4091 (_want_type).
         try:
-            # Wave 880.I (2026-07-20): usar position= (caminho confiável no Wine
-            # MT5). Antes usava symbol=+days= que retorna [] (bug do Wine).
             _entry_ticket = str(pos.get("entry_ticket") or "").strip()
             _deals = _truth.get_position_history(
                 symbol=symbol, days=1,
                 position=_entry_ticket if _entry_ticket else None,
             )
+            _exit_deal = None
             for d in _deals:
-                # position_id == entry_ticket (MT5 concept)
-                if str(d.position_id) == str(pos["entry_ticket"]) and d.direction in ("BUY", "SELL"):
-                    # O último deal "out" para esse position
-                    profit = float(d.profit) + float(d.commission) + float(d.swap)
-                    # usa exit_price do deal também
-                    if d.price:
-                        current_price = float(d.price)
-                    _profit_source = "broker-truth via MT5 history"
-                    log(f"[FECHADO PELO SERVIDOR] MT5 history: profit=R$ {profit:.2f} price={d.price}")
-                    break
+                if str(d.position_id) != str(pos["entry_ticket"]):
+                    continue
+                # Deal de saída tem direção OPOSTA à posição
+                _want_dir = "SELL" if direction == "BUY" else "BUY"
+                if d.direction == _want_dir:
+                    _exit_deal = d  # mantém o último (sem break)
+            if _exit_deal is not None:
+                profit = float(_exit_deal.profit) + float(_exit_deal.commission) + float(_exit_deal.swap)
+                if _exit_deal.price:
+                    current_price = float(_exit_deal.price)
+                _profit_source = "broker-truth via MT5 history (exit deal)"
+                log(f"[FECHADO PELO SERVIDOR] MT5 history: profit=R$ {profit:.2f} price={_exit_deal.price}")
         except (OSError, ValueError, KeyError) as _he:
             # Wave 880.I: except estreito — TypeError/AttributeError propagam.
             log(f"[HISTORY FAIL] usando PnL local: {_he}")
+
+        # Wave 880.J: broker-truth via EA events (mt5_trade_events) — mais
+        # confiável que o history Wine, que falha em fechamentos server-side e
+        # deixa current_price stale (== entry → alerta com Entrada==Saída). Se
+        # achar o deal de saída real, usa preço e PnL do broker (corrige alerta,
+        # exit_price no DB e daily_pnl de forma consistente). Só roda se o
+        # history não resolveu (profit ainda None) — fallback seguro.
+        if profit is None:
+            _evt = _lookup_exit_event_from_db(symbol, direction, pos.get("entry_ticket"))
+            if _evt is not None:
+                profit = _evt["profit"] + _evt["commission"] + _evt["swap"]
+                if _evt["price"]:
+                    current_price = _evt["price"]
+                _profit_source = "broker-truth via EA events (mt5_trade_events)"
+                log(f"[FECHADO PELO SERVIDOR] EA events: profit=R$ {profit:.2f} "
+                    f"price={_evt['price']} deal={_evt['ticket']}")
 
         # Fallback: cálculo local se history falhou
         # Wave 880.G (Bruno 2026-07-20): usar get_multiplier() (R$/ponto) ao
@@ -3050,9 +3169,22 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         else:
             exit_sl_price = entry_price + abs(pos.get("sl_pts", 0)) * point_val
 
+        # FIX 2026-07-26 (P0 bug dados): se o history do MT5 falhou e o
+        # current_price do tick é igual ao entry_price (tick stale / mercado
+        # parado / Wine bug), o exit_price gravado fica == entry (dist=0) e o
+        # PnL calculado pelo log_exit vira só a comissão (-R$1,20). O fill
+        # real do SL é desconhecido, mas o melhor proxy é o exit_sl_price
+        # (preço teórico do SL enviado ao broker). Usa ele como fallback
+        # quando current_price não é confiável.
+        _exit_price_for_db = current_price
+        if _profit_source == "fallback local" and abs(current_price - entry_price) < point_val:
+            # Tick retornou preço ≈ entry — não é o fill real do SL.
+            _exit_price_for_db = exit_sl_price
+            log(f"[SL_SERVIDOR] tick stale (price≈entry), usando exit_sl_price={exit_sl_price:.0f} como exit_price")
+
         exit_result = log_exit(
             trade_log_id,
-            exit_price=current_price,
+            exit_price=_exit_price_for_db,
             exit_reason="SL_SERVIDOR",
             exit_ticket="server",
             exit_sl_price=exit_sl_price,
@@ -3107,7 +3239,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         notify_telegram(
             f"⚡ *Fechou {symbol} {tf}*\n"
             f"• {direction} | {_pnl_emoji} R$ {pnl:+.2f}\n"
-            f"• Entrada: {entry_price:.2f} → Saída: {current_price:.2f}\n"
+            f"• Entrada: {entry_price:.2f} → Saída: {_exit_price_for_db:.2f}\n"
             f"• Volume: {_volume} contrato(s) | Ticket: {_ticket}\n"
             f"• Motivo: SL atingido no servidor{_duracao}\n"
             f"• PnL Dia: R$ {state.daily_pnl:+.2f} | {_ts}"
@@ -4010,6 +4142,20 @@ def reconcile_positions_with_mt5():
                 for ticket_str, (state_key, pos) in list(state_by_ticket.items()):
                     if ticket_str in mt5_by_ticket:
                         continue  # ainda aberta no MT5
+                    # FIX 2026-07-26 (P0 GHOST race — Qwen Code + Hermes):
+                    # Grace period de 60s — se a posição entrou há menos de 60s,
+                    # o manage_position pode não ter tido tempo de processar o
+                    # SL_SERVIDOR/BROKER_CLOSE antes do reconcile rodar. Sem isso,
+                    # o reconcile marca GHOST um trade que o manage ia fechar certo.
+                    _entry_dt = pos.get("entry_time")
+                    if _entry_dt and isinstance(_entry_dt, datetime):
+                        _age_s = (datetime.now() - _entry_dt).total_seconds()
+                        if _age_s < 60:
+                            log(
+                                f"[RECONCILE] Grace period: {state_key} ticket={ticket_str} "
+                                f"tem {_age_s:.0f}s (< 60s) — pulando ghost check"
+                            )
+                            continue
                     # FIX: NÃO confiar em pos.get("direction") como symbol.
                     # Sem um symbol real do state/MT5, não inventamos.
                     direction = pos.get("direction", "?")
@@ -4077,13 +4223,22 @@ def reconcile_positions_with_mt5():
                                 _fee = float(_mt5_exit.get("fee", 0) or 0)
                                 _net_pnl = _profit + _commission + _swap + _fee
                                 _exit_time_real = _mt5_exit.get("time", _now_str)
-                                # converter timestamp mt5 (epoch s) se vier como int
+                                # FIX 2026-07-26 (P0 timezone — Qwen Code + Hermes):
+                                # d.time do MT5 é epoch UTC. datetime.fromtimestamp()
+                                # interpreta no fuso do HOST (que pode ser UTC, não BRT).
+                                # Fix: converter explicitamente UTC → BRT (UTC-3).
                                 try:
                                     if isinstance(_exit_time_real, int) or (
                                         isinstance(_exit_time_real, str) and _exit_time_real.isdigit()
                                     ):
                                         _ts_int = int(_exit_time_real)
-                                        _exit_time_real = datetime.fromtimestamp(_ts_int).strftime("%Y-%m-%d %H:%M:%S")
+                                        from datetime import timezone as _tz
+                                        _BRT = _tz(timedelta(hours=-3))
+                                        _exit_time_real = (
+                                            datetime.fromtimestamp(_ts_int, tz=_tz.utc)
+                                            .astimezone(_BRT)
+                                            .strftime("%Y-%m-%d %H:%M:%S")
+                                        )
                                 except Exception:
                                     _exit_time_real = _now_str
 
@@ -4116,21 +4271,86 @@ def reconcile_positions_with_mt5():
                                     f"(profit={_profit} swap={_swap} comm={_commission})"
                                 )
                             else:
-                                # Fallback FAIL-SAFE: sem history, mantém GHOST pnl=0
-                                conn.execute(
-                                    """
-                                    UPDATE trades SET
-                                        exit_time = ?,
-                                        exit_price = COALESCE(NULLIF(exit_price, 0), entry_price),
-                                        exit_reason = 'GHOST',
-                                        exit_ticket = COALESCE(exit_ticket, 'ghost_reconcile'),
-                                        notes = COALESCE(notes, '') || ?,
-                                        updated_at = datetime('now', 'localtime'),
-                                        close_source = 'RECONCILE'
-                                    WHERE id = ? AND exit_time IS NULL
-                                    """,
-                                    (_now_str, _notes, trade_log_id),
-                                )
+                                # FIX 2026-07-26 (P0 GHOST): antes de marcar GHOST,
+                                # checar mt5_trade_events (pipeline EA → CSV → SQLite).
+                                # Se o EA registrou o DEAL_ADD OUT desse ticket, temos
+                                # o PnL real e NÃO é ghost — é um trade legítimo que o
+                                # history do Wine não retornou.
+                                _ev_exit = None
+                                try:
+                                    _ev_conn = sqlite3.connect("vt_trades.db", timeout=5.0)
+                                    _ev_conn.execute("PRAGMA busy_timeout=5000")
+                                    _ev_conn.row_factory = sqlite3.Row
+                                    _ev_row = _ev_conn.execute("""
+                                        SELECT deal_price, deal_profit, deal_commission,
+                                               deal_swap, event_time
+                                        FROM mt5_trade_events
+                                        WHERE trans_type = 'DEAL_ADD'
+                                          AND deal_entry = 'OUT'
+                                          AND position_ticket = ?
+                                        ORDER BY event_time DESC LIMIT 1
+                                    """, (ticket_str,)).fetchone()
+                                    _ev_conn.close()
+                                    if _ev_row:
+                                        _ev_exit = _ev_row
+                                except Exception:
+                                    pass
+
+                                if _ev_exit:
+                                    # Trade REAL encontrado nos events — não é ghost
+                                    _ev_price = float(_ev_exit["deal_price"] or 0)
+                                    _ev_profit = float(_ev_exit["deal_profit"] or 0)
+                                    _ev_comm = float(_ev_exit["deal_commission"] or 0)
+                                    _ev_swap = float(_ev_exit["deal_swap"] or 0)
+                                    _ev_net = _ev_profit + _ev_comm + _ev_swap
+                                    _ev_time = _ev_exit["event_time"] or _now_str
+                                    conn.execute(
+                                        """
+                                        UPDATE trades SET
+                                            exit_time = ?,
+                                            exit_price = ?,
+                                            exit_reason = 'SL_SERVIDOR',
+                                            exit_ticket = ?,
+                                            gross_pnl = ?,
+                                            fees = ?,
+                                            swap = ?,
+                                            net_pnl = ?,
+                                            notes = COALESCE(notes, '') || ?,
+                                            updated_at = datetime('now', 'localtime'),
+                                            close_source = 'MT5_EVENTS_RECONCILE'
+                                        WHERE id = ? AND exit_time IS NULL
+                                        """,
+                                        (
+                                            _ev_time, _ev_price,
+                                            f"events_{ticket_str}",
+                                            _ev_profit, abs(_ev_comm), _ev_swap, _ev_net,
+                                            f" | RESOLVED_VIA_MT5_EVENTS (não era ghost) | {_notes}",
+                                            trade_log_id,
+                                        ),
+                                    )
+                                    log(
+                                        f"[RECONCILE-EVENTS-FIX] ticket={ticket_str} "
+                                        f"symbol={symbol} PnL events=R${_ev_net:+.2f} "
+                                        f"(profit={_ev_profit} swap={_ev_swap} comm={_ev_comm}) "
+                                        f"— NÃO era ghost"
+                                    )
+                                else:
+                                    # Fallback FAIL-SAFE: sem history E sem events,
+                                    # mantém GHOST pnl=0
+                                    conn.execute(
+                                        """
+                                        UPDATE trades SET
+                                            exit_time = ?,
+                                            exit_price = COALESCE(NULLIF(exit_price, 0), entry_price),
+                                            exit_reason = 'GHOST',
+                                            exit_ticket = COALESCE(exit_ticket, 'ghost_reconcile'),
+                                            notes = COALESCE(notes, '') || ?,
+                                            updated_at = datetime('now', 'localtime'),
+                                            close_source = 'RECONCILE'
+                                        WHERE id = ? AND exit_time IS NULL
+                                        """,
+                                        (_now_str, _notes, trade_log_id),
+                                    )
                             conn.commit()
                         except Exception as _e_ghost_db:
                             log(f"[RECONCILE] DB UPDATE ghost falhou (trade_id={trade_log_id}): {_e_ghost_db}")
