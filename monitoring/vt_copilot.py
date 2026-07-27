@@ -87,6 +87,122 @@ def _invalidate_pnl_truth_cache():
     _pnl_truth_cache["key"] = None
 
 
+def get_daily_pnl_from_events(days: int = 1) -> dict:
+    """PnL diario via mt5_trade_events (EA TradeLogger → CSV → watcher → SQLite).
+
+    Fonte broker-truth LOCAL (~1ms) — substitui a chamada Wine (~200ms) quando
+    o pipeline EA/watcher está saudável. Retorna mesmo formato de
+    get_daily_pnl_truth() para drop-in replacement.
+
+    Retorna dict com:
+        source: 'MT5_EVENTS' (broker-truth local)
+        deals_total, pnl_profit, pnl_commission, pnl_swap, pnl_net
+        deals: lista de dicts (ticket, time, symbol, type, profit, commission, swap)
+        ok: bool — True se encontrou dados E heartbeat fresco (<10min)
+        error: str | None
+        stale: bool — False (sempre fresco, sem cache)
+        ts: ISO timestamp
+    """
+    result = {
+        "source": "MT5_EVENTS",
+        "deals_total": 0,
+        "pnl_profit": 0.0,
+        "pnl_commission": 0.0,
+        "pnl_swap": 0.0,
+        "pnl_net": 0.0,
+        "deals": [],
+        "ok": False,
+        "error": None,
+        "stale": False,
+        "ts": datetime.now().isoformat(),
+    }
+
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5.0)
+        conn.execute("PRAGMA busy_timeout=5000")
+
+        # Staleness check: último HEARTBEAT ou LOGGER_START deve ter < 10 min
+        # (EA manda heartbeat a cada 5 min; se > 10 min, pipeline provavelmente morto)
+        cutoff_stale = (datetime.now() - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S")
+        last_hb = conn.execute(
+            "SELECT MAX(event_time) FROM mt5_trade_events "
+            "WHERE trans_type IN ('HEARTBEAT', 'LOGGER_START', 'DEAL_ADD', 'ORDER_ADD')"
+        ).fetchone()[0]
+
+        if last_hb is None:
+            result["error"] = "mt5_trade_events vazia (EA nunca rodou)"
+            conn.close()
+            return result
+
+        if last_hb < cutoff_stale:
+            result["error"] = f"eventos stale (ultimo: {last_hb}, cutoff: {cutoff_stale})"
+            conn.close()
+            return result
+
+        # PnL do dia: DEAL_ADD com deal_entry='OUT' (fechamento de posição)
+        # Dedup por deal_ticket: um mesmo deal pode aparecer 2x — capturado ao
+        # vivo (seq=g_event_seq) E no backfill do EA (seq=deal_ticket) após um
+        # restart. GROUP BY deal_ticket pega 1 linha por deal (MAX(id)); profit/
+        # commission/swap são idênticos por ticket (broker-truth), então não
+        # double-counta.
+        date_filter = (datetime.now() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+        rows = conn.execute("""
+            SELECT deal_ticket, event_time, symbol, deal_type,
+                   deal_profit, deal_commission, deal_swap, deal_price, deal_volume,
+                   position_ticket
+            FROM mt5_trade_events
+            WHERE id IN (
+                SELECT MAX(id) FROM mt5_trade_events
+                WHERE trans_type = 'DEAL_ADD'
+                  AND deal_entry = 'OUT'
+                  AND date(event_time) >= ?
+                GROUP BY deal_ticket
+            )
+            ORDER BY event_time
+        """, (date_filter,)).fetchall()
+        conn.close()
+
+        if not rows:
+            result["error"] = "sem deals OUT no periodo (mercado fechado ou sem trades)"
+            # Ainda ok=True se heartbeat fresco (mercado pode estar calmo)
+            result["ok"] = True
+            return result
+
+        pnl_p = 0.0
+        pnl_c = 0.0
+        pnl_s = 0.0
+        light_deals = []
+        for r in rows:
+            p = float(r[4] or 0)
+            c = float(r[5] or 0)
+            s = float(r[6] or 0)
+            pnl_p += p
+            pnl_c += c
+            pnl_s += s
+            light_deals.append({
+                "ticket": r[0],
+                "time": r[1],
+                "symbol": r[2],
+                "type": r[3],
+                "profit": round(p, 2),
+                "commission": round(c, 2),
+                "swap": round(s, 2),
+            })
+
+        result["deals_total"] = len(rows)
+        result["pnl_profit"] = round(pnl_p, 2)
+        result["pnl_commission"] = round(pnl_c, 2)
+        result["pnl_swap"] = round(pnl_s, 2)
+        result["pnl_net"] = round(pnl_p + pnl_c + pnl_s, 2)
+        result["deals"] = light_deals
+        result["ok"] = True
+
+    except Exception as e:
+        result["error"] = f"excecao ao ler mt5_trade_events: {e}"
+
+    return result
+
+
 def get_daily_pnl_truth(days: int = 1, force_refresh: bool = False) -> dict:
     """PnL diario do broker (fonte autoritativa — MT5 history).
 
@@ -125,7 +241,20 @@ def get_daily_pnl_truth(days: int = 1, force_refresh: bool = False) -> dict:
                 cached["stale"] = True
                 return cached
 
-    # Cache miss — buscar MT5
+    # Cache miss — tentar mt5_trade_events PRIMEIRO (local, ~1ms)
+    # Se pipeline EA/watcher saudável (heartbeat <10min), usa events.
+    # Senão, cai no Wine/MT5 history (~200ms) como fallback.
+    events_result = get_daily_pnl_from_events(days=days)
+    if events_result["ok"]:
+        # Pipeline saudável — usar events como broker-truth local
+        _pnl_truth_cache["ts"] = now
+        _pnl_truth_cache["data"] = dict(events_result)
+        _pnl_truth_cache["key"] = cache_key
+        return events_result
+
+    # Events indisponível/stale — logar e cair no Wine
+    log(f"[TRUTH] mt5_trade_events indisponivel ({events_result.get('error')}), usando Wine/MT5 history")
+
     result = {
         "source": "MT5_HISTORY",
         "deals_total": 0,
@@ -241,22 +370,22 @@ def notify_telegram(msg):
 
 
 def notify_telegram_media(media_path, caption=""):
-    """Envia mídia (PNG) pro Telegram via hermes CLI. Caption limitado a 1024 chars.
+    """Envia mídia (PNG) pro Telegram via hermes. Caption limitado a 1024 chars.
 
-    O Hermes envia mídia inline com prefixo MEDIA: no texto (Telegram, Discord, etc).
-    Caption é o texto que aparece junto.
+    Convenção hermes: corpo 'MEDIA:<path>' (caption opcional antes) envia mídia
+    inline. Usa hermes_send() do vt_hermes_helper — find_hermes() resolve o
+    binário mesmo no PATH restrito do cron (/usr/bin:/bin), que era a causa do
+    'No such file or directory: hermes' (o chart era gerado mas nunca chegava).
     """
     try:
-        # Caption curta (Telegram aceita 1024)
+        from vt_hermes_helper import hermes_send
         body = f"MEDIA:{media_path}"
         if caption:
             body = f"{caption}\n\n{body}"
-        cmd = ["hermes", "send", "--to", TELEGRAM_TARGET, body]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
+        if hermes_send(TELEGRAM_TARGET, body):
             log(f"Mídia enviada: {media_path}")
         else:
-            log(f"[WARN] hermes retornou {result.returncode}: {result.stderr[:200]}")
+            log("[WARN] Falha ao enviar mídia (hermes indisponível ou rc!=0)")
     except Exception as e:
         log(f"[ERRO] Falha ao enviar mídia: {e}")
 
@@ -662,7 +791,7 @@ def check_intraday_stats() -> dict:
     _invalidate_pnl_truth_cache()
     pnl_truth = get_daily_pnl_truth(days=1, force_refresh=True)
 
-    source = "MT5_HISTORY"
+    source = pnl_truth.get("source", "MT5_HISTORY")
     truth_error = None
     pnl_realized = 0.0
     ops = 0
@@ -685,6 +814,11 @@ def check_intraday_stats() -> dict:
             t_iso = _normalize_deal_time(t_raw)
             pnl_series.append((t_iso, round(d["profit"] + d["commission"] + d["swap"], 2)))
         pnl_series.sort(key=lambda x: x[0])
+    elif pnl_truth["ok"] and pnl_truth["deals_total"] == 0:
+        # Pipeline saudável mas 0 deals (mercado calmo / sem trades hoje).
+        # PnL=0 é a resposta correta — NÃO cair no DB fallback.
+        # source já vem como MT5_EVENTS ou MT5_HISTORY do pnl_truth.
+        pass
     else:
         # 2) FALLBACK: DB SQLite (cache). Fonte nao-confiavel mas melhor que nada.
         source = "DB_FALLBACK"
@@ -965,8 +1099,18 @@ def generate_report():
 
     report.append("")
     report.append(f"📈 *Intrade* ({datetime.now().strftime('%H:%M')})")
-    # Mostra a fonte do PnL realizado (FASE 1: MT5_HISTORY vs DB_FALLBACK)
-    source_label = "broker-truth (MT5)" if s.get("source") == "MT5_HISTORY" else "DB fallback (MT5 off)"
+    # Mostra a fonte do PnL realizado (FASE 1: MT5_EVENTS vs MT5_HISTORY vs DB_FALLBACK)
+    _src = s.get("source", "")
+    if _src == "MT5_EVENTS":
+        source_label = "broker-truth (EA events, local)"
+    elif _src == "MT5_HISTORY":
+        source_label = "broker-truth (MT5 Wine)"
+    else:
+        # DB_FALLBACK: MT5 pode estar ON, mas o pipeline EA events ficou stale
+        # (ou MT5 history vazio). Mostra o motivo real em vez do antigo
+        # "MT5 off" (enganoso — o saldo/posições vinham do MT5 normalmente).
+        _err = s.get("truth_error")
+        source_label = f"DB fallback ({_err})" if _err else "DB fallback"
     report.append(f"  _PnL realizado: {source_label}_")
     if s["ops"] > 0:
         report.append(
@@ -1090,6 +1234,18 @@ def main():
     elif mode == "--report":
         report = generate_report()
         notify_telegram(f"🤖 *Copilot {datetime.now().strftime('%Hh%M')}*\n\n{report}")
+
+        # Gráfico intraday (broker-truth via EA events) — mesmo padrão do --full.
+        stats = check_intraday_stats()
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        chart_path = render_pnl_chart(
+            stats["pnl_cum"], today_str, balance_history_path=str(_BH_DEFAULT_PATH)
+        )
+        chart_caption = (
+            f"📊 PnL realizado · {datetime.now().strftime('%d/%m %H:%M')} · "
+            f"Total: R$ {stats['pnl_total']:+.2f}"
+        )
+        notify_telegram_media(chart_path, chart_caption)
         return
 
     elif mode == "--self-heal":
