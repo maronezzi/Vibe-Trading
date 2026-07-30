@@ -61,16 +61,22 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="logging DEBUG")
     p.add_argument("--shadow", action="store_true", default=False,
                    help="modo shadow: otimiza em cópia do config, não aplica")
-    # Wave 880.C4 (2026-07-19): modo de operação por horário de cron.
-    # exploration (cron 12:00): max-iterations 3, busca candidatos novos.
-    # conservative (cron 17:10): max-iterations 1, só revalida existentes,
-    #   threshold +10% (mais rígido perto do EOD do pregão atual).
+    # Wave 880.C4 / Wave 17h-completa (2026-07-30): modo de operação por horário
+    # de cron. AMBOS rodam o loop de convergência completo (até convergir,
+    # estagnar ou bater o deadline de 90min). A distinção é só rótulo/log:
+    #   exploration  (cron 12:00): meio do pregão, usa metade das barras do dia.
+    #   conservative (cron 17:10): pós-close (mercado fecha 16:45), usa o pregão
+    #     INTEIRO de barras reais (09h-17h) e tem a noite toda pra testar.
+    #     Historicamente o conservative era capado em max-iterations 1 com a
+    #     premissa falsa de "perto do EOD do pregão atual" — mas às 17:10 o
+    #     close já aconteceu (16:45) e posições estão flat. Bruno 30/07: as
+    #     17:10 deve ser a otimização MAIS completa do dia.
     # Default 'auto' detecta pela hora do sistema (12h=exploration, 17h=conservative).
     p.add_argument("--mode", choices=["exploration", "conservative", "auto"],
                    default="auto",
-                   help="modo de operação: exploration (cron 12h, busca), "
-                        "conservative (cron 17h, só revalida), auto (detecta "
-                        "pela hora do sistema)")
+                   help="modo de operação (rótulo): exploration (cron 12h), "
+                        "conservative (cron 17h, pós-close), auto (detecta "
+                        "pela hora). Ambos rodam o loop completo.")
     return p.parse_args(argv)
 
 
@@ -80,8 +86,9 @@ def main(argv: list[str] | None = None) -> int:
     _setup_logging(args.verbose)
     log = logging.getLogger("agi_v4.runner")
 
-    # Wave 880.C4: resolve --mode auto pela hora do sistema.
+    # Resolve --mode auto pela hora do sistema (rótulo p/ log/Telegram).
     # 12h (cron almoço) → exploration; 17h (cron fechamento) → conservative.
+    # Ambos rodam o loop de convergência completo (ver abaixo).
     mode = args.mode
     if mode == "auto":
         from datetime import datetime as _dt
@@ -90,16 +97,16 @@ def main(argv: list[str] | None = None) -> int:
         log.info(f"--mode auto → '{mode}' (hora atual: {_hour}h)")
 
     # max_iterations é teto de segurança (não limite lógico). O loop para
-    # por convergência (todo par PnL>0) ou estagnação (2 iterações sem
-    # melhorar nenhum par). Default 1000 garante que bug nunca prenda o cron.
+    # por convergência (todo par PnL>0), estagnação (2 iterações sem
+    # melhorar nenhum par) ou deadline de 90min (_DEADLINE_SECS no pipeline).
+    # Default 1000 garante que bug nunca prenda o cron.
+    #
+    # Wave 17h-completa (Bruno 30/07): REMOVIDO o cap de max_iterations=1 que
+    # o conservative tinha. Às 17:10 o mercado já fechou (16:45), posições
+    # estão flat, e há a noite toda pra testar — o conservative usa o pregão
+    # INTEIRO de barras reais e deve ser a otimização mais completa do dia.
+    # Antes o cap se baseava na premissa falsa "perto do EOD do pregão atual".
     max_it = max(1, args.max_iterations)
-
-    # Wave 880.C4: modo conservative força max-iterations 1 (sem loop de
-    # busca agressiva perto do EOD do pregão). 17:10 está a 1:35 do close.
-    if mode == "conservative" and not args.dry_run and not args.shadow:
-        max_it = min(max_it, 1)
-        log.info(f"--mode conservative: max_iterations limitado a {max_it} "
-                 f"(perto do EOD — só revalida candidatos, não busca novos)")
 
     # dry_run OU shadow → não aplica. Em produção (cron), ambos são False.
     effective_dry_run = args.dry_run or args.shadow

@@ -2,14 +2,16 @@
 test_wave880_runner_mode.py — Testes para --mode do AGI v4 runner.
 
 Wave 880.C4: cron 12:00 (exploration) vs 17:10 (conservative).
-Valida que o parser aceita o arg e que a lógica de resolução 'auto'
-funciona por hora do sistema.
+Wave 17h-completa (30/07): ambos rodam o loop de convergência completo; o
+rótulo (exploration/conservative) é só p/ log/Telegram — sem diferença de
+comportamento. Antes o conservative era capado em max-iterations 1, mas às
+17:10 o mercado já fechou (16:45) e há a noite toda pra testar.
 
 Cobre:
   1. Parser aceita --mode exploration/conservative/auto.
   2. Default é 'auto'.
   3. Resolução auto: 11-13h → exploration, resto → conservative.
-  4. conservative força max_it = min(max_it, 1) quando não-dry-run.
+  4. NENHUM modo limita max_iterations (o cap de 1 foi removido).
 """
 
 from __future__ import annotations
@@ -63,19 +65,28 @@ def test_auto_resolves_by_hour():
         )
 
 
-def test_conservative_caps_max_iterations():
-    """Quando mode=conservative e não-dry-run, max_iterations deve ser ≤ 1.
+def test_no_mode_caps_max_iterations():
+    """NENHUM modo limita max_iterations (Wave 17h-completa removeu o cap).
 
-    A lógica está em runner.main(), não no parser. Validamos indiretamente:
-    o parser aceita --max-iterations 5 junto com --mode conservative,
-    e a lógica em main() aplica o cap.
+    Antes o conservative forçava max_it=1. Agora ambos rodam o loop completo
+    (até convergir/estagnar/deadline 90min). Verificamos que o parser devolve
+    o max_iterations cru em ambos os modos, e que a fórmula final em main()
+    (max(1, args.max_iterations)) não tem mais o cap condicional do conservative.
     """
-    args = _parse_args(["--mode", "conservative", "--max-iterations", "5"])
-    assert args.mode == "conservative"
-    assert args.max_iterations == 5  # parser não altera; main() aplica o cap
-    # A validação real do cap está em main() — não invocamos main() aqui
-    # porque ela faz fetch MT5 (pesado). O teste test_runner_conservative_cap_integration
-    # cobre isso se necessário.
+    for mode in ("exploration", "conservative"):
+        args = _parse_args(["--mode", mode, "--max-iterations", "5"])
+        assert args.mode == mode
+        assert args.max_iterations == 5  # parser não altera
+        # Fórmula final em main() (pós-remoção do cap):
+        max_it = max(1, args.max_iterations)
+        assert max_it == 5, f"{mode}: max_it deve ser 5, got {max_it}"
+
+
+def test_conservative_default_not_capped_to_one():
+    """Sem --max-iterations explícito, conservative usa o default 1000 (não 1)."""
+    args = _parse_args(["--mode", "conservative"])
+    max_it = max(1, args.max_iterations)
+    assert max_it == 1000, f"conservative sem cap deve ter max_it=1000, got {max_it}"
 
 
 if __name__ == "__main__":
