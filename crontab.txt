@@ -18,6 +18,17 @@
 # ─── AUTOTRADER START 09:00 (seg-sex) — pkill+start idempotente ────────────────────
 0 9 * * 1-5 /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/start_autotrader.sh >> /tmp/vt_start.log 2>&1
 
+# ─── FORWARD WALKER (shadow validator live) 09:01 (seg-sex) ──────────────────────
+#     Wave sem-trades/shadow: forward_walker replica entrada/SL/TP/trailing do
+#     autotrader contra barras LIVE do MT5, em memória, SEM ordens (tabela
+#     isolada forward_sim_trades). O AGI do meio-dia (12:00) lê essa tabela
+#     como sinal SHADOW do pregão atual. Não substitui a otimização (que é por
+#     replay backtest) — é um validador complementar.
+#     09:01 (1 min após o autotrader) para ele reivindicar o snapshot de
+#     starting-balance primeiro. --duration-min 480 cobre 09:01→17:01.
+#     Idempotente (pgrep guard) e self-gate de dia útil/pregão no próprio script.
+1 9 * * 1-5 /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/start_forward_walker.sh >> /tmp/vt_forward_walker.log 2>&1
+
 # ─── INTELIGÊNCIA TRADER 11:00 / 13:00 (seg-sex) — análise + ajuste de params ─────
 5 10,12,15 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_copilot.py >> /tmp/vt_copilot.log 2>&1
 

@@ -104,6 +104,48 @@ def _summarize_performance(ctx: dict) -> dict:
     }
 
 
+def _shadow_today_summary() -> str | None:
+    """Lê forward_sim_trades (walker shadow) do pregão atual e retorna resumo.
+
+    O forward_walker simula o config atual contra barras LIVE sem enviar ordens.
+    Este é um sinal SHADOW soft: mostra como o config vigente está indo hoje
+    (até agora). NÃO bloqueia nem decide — só contexto no relatório.
+
+    Returns:
+        String compacta (ex. "👁 shadow hoje: WIN -R$80 (5t) | WDO +R$40 (3t)")
+        ou None se não houver dados shadow hoje (walker não rodou / sem trades).
+    """
+    import sqlite3
+    try:
+        db = Path(__file__).resolve().parent.parent.parent / "vt_trades.db"
+        if not db.exists():
+            return None
+        con = sqlite3.connect(str(db))
+        try:
+            cutoff = datetime.now().strftime("%Y-%m-%d")
+            rows = con.execute(
+                "SELECT substr(symbol,1,3) AS root, COUNT(*), "
+                "ROUND(SUM(net_pnl_brl),2) "
+                "FROM forward_sim_trades "
+                "WHERE exit_time IS NOT NULL AND entry_time >= ? "
+                "GROUP BY root ORDER BY root",
+                (cutoff,),
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception as e:
+        log.debug(f"shadow summary indisponível: {e}")
+        return None
+
+    if not rows:
+        return None
+    parts = []
+    for root, n, pnl in rows:
+        icon = "🟢" if (pnl or 0) >= 0 else "🔴"
+        parts.append(f"{root} {icon}R$ {pnl or 0:.0f} ({n}t)")
+    return "👁 shadow hoje: " + " | ".join(parts)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Telegram — resumo humano-legível
 # ═══════════════════════════════════════════════════════════════════
@@ -156,6 +198,11 @@ def _build_telegram_message(ctx: dict) -> str:
                 perf_strs.append(f"{sym} {emoji}R$ {pnl:.0f} ({s.get('n_trades',0)}t)")
         if perf_strs:
             lines.append(f"• PnL 7d: {' | '.join(perf_strs[:4])}")
+
+    # Sinal SHADOW do pregão atual (forward_walker, soft — não decide).
+    shadow = _shadow_today_summary()
+    if shadow:
+        lines.append(f"• {shadow}")
 
     # Mudanças
     if applied:

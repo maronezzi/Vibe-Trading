@@ -1001,6 +1001,17 @@ def main() -> None:
     print(f"[forward_walker] PID: {os.getpid()} | Início: {datetime.now():%Y-%m-%d %H:%M:%S}")
     print()
 
+    # Handler SIGTERM: o repo para processos via `kill <pid>` (start_autotrader.sh,
+    # self-heal, cron de EOD). Sem isto, SIGTERM mata o walker sem fechar as
+    # posições SIM em memória (perde o estado do dia). Reaproveitamos o caminho
+    # de cleanup do KeyboardInterrupt (walker_loop:920-929) levantando-o aqui —
+    # o signal é entregue na main thread, onde o loop roda.
+    def _on_sigterm(signum, _frame):
+        print(f"\n[!] SIGTERM({signum}) recebido — encerrando graciosamente…")
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
     ensure_schema()
     state = WalkerState()
 
