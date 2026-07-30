@@ -193,6 +193,14 @@ def _compute_metrics(trades: list) -> dict:
     avg_win = (sum(wins) / len(wins)) if wins else 0.0
     avg_loss = (sum(losses) / len(losses)) if losses else 0.0
 
+    # ── PnL do pregão de hoje (Wave hoje-conta-mais) ──
+    # As barras são buscadas copy_rates_from_pos(0, N) → a última barra é a
+    # mais recente (inclui o pregão atual até agora). "Hoje" = data da última
+    # trade; assim evitamos qualquer manipulação de fuso (backtest_v944 usa
+    # timestamps do broker, sem tzinfo). today_pnl é um sinal SEPARADO: só é
+    # aplicado como bônus no comparativo do stage5, nunca substitui total_pnl.
+    today_pnl, today_n_trades = _today_pnl(trades)
+
     return {
         "n_trades": n,
         "total_pnl": round(total_pnl, 2),
@@ -202,7 +210,41 @@ def _compute_metrics(trades: list) -> dict:
         "max_dd": round(max_dd, 2),
         "avg_win": round(avg_win, 2),
         "avg_loss": round(avg_loss, 2),
+        "today_pnl": round(today_pnl, 2),
+        "today_n_trades": today_n_trades,
     }
+
+
+def _today_pnl(trades: list) -> tuple[float, int]:
+    """Soma o PnL das trades do 'dia de hoje' (data da última trade).
+
+    Usado pelo stage5 como tiebreaker/bônus, não como driver (poucas trades
+    numa meia-sessão → risco de overfit se substituísse total_pnl).
+
+    entry_dt pode ser datetime, pandas.Timestamp, date ou None; tratamos todos.
+    """
+    if not trades:
+        return 0.0, 0
+
+    def _d(t):
+        dt = t.get("entry_dt")
+        if dt is None:
+            return None
+        # datetime/Timestamp têm .date(); date já é date.
+        return dt.date() if hasattr(dt, "date") else dt
+
+    dates = [d for d in (_d(t) for t in trades) if d is not None]
+    if not dates:
+        return 0.0, 0
+
+    today = max(dates)
+    pnl = 0.0
+    n = 0
+    for t in trades:
+        if _d(t) == today:
+            pnl += float(t.get("pnl", 0))
+            n += 1
+    return pnl, n
 
 
 def _max_drawdown(pnls: list) -> float:
@@ -224,6 +266,7 @@ def _empty_metrics() -> dict:
     return {
         "n_trades": 0, "total_pnl": 0.0, "pf": 0.0, "wr": 0.0,
         "sharpe": 0.0, "max_dd": 0.0, "avg_win": 0.0, "avg_loss": 0.0,
+        "today_pnl": 0.0, "today_n_trades": 0,
     }
 
 

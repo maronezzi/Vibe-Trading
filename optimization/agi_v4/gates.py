@@ -41,6 +41,12 @@ _DEFAULT_THRESHOLDS = {
     "max_backtest_db_gap_x": 1.5,  # bug B3/B4 do exhaustive antigo
     "min_walk_forward_consistency": 0.65,  # Wave 880.C3: 60%→65% das janelas positivas
     "min_30d_projection_improvement": 0.0,  # Regra 1: candidato > baseline
+    # Wave hoje-conta-mais: bônus no comparativo do stage5 para o PnL do pregão
+    # atual. today_weight=0.3 = hoje conta 30% extra no score de desempate.
+    # today_min_trades = nº mínimo de trades hoje p/ o bônus ser aplicado
+    # (evita overfit numa meia-sessão com poucos trades). today_weight=0 desliga.
+    "today_weight": 0.3,
+    "today_min_trades": 3,
 }
 
 

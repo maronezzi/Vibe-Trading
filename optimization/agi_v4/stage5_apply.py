@@ -77,12 +77,36 @@ def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: d
     except Exception as e:
         log.warning(f"baseline {pair} falhou ({e}) — fail-safe: aplica")
         baseline_pnl = 0
+        baseline = {}
+
+    # ── Score blended: hoje conta extra (Wave hoje-conta-mais) ──
+    # Invariante "deve ser lucrativo em 30d real" já passou acima (cand_pnl>0).
+    # Aqui comparamos cand vs baseline com um BÔNUS pelo PnL do pregão atual,
+    # pra aproveitar a informação real intradia. só aplicamos o bônus se o par
+    # tiver today_min_trades hoje (evita overfit numa meia-sessão vazia).
+    # today_weight=0 reduz ao comportamento original (comparar total_pnl puro).
+    today_weight = float(thresholds.get("today_weight", 0.3))
+    today_min = int(thresholds.get("today_min_trades", 3))
+
+    def _blended(total_pnl, metrics):
+        if today_weight <= 0:
+            return total_pnl
+        tp = metrics.get("today_pnl", 0)
+        tn = metrics.get("today_n_trades", 0)
+        if tn < today_min:
+            return total_pnl  # poucas trades hoje → bônus não conta
+        return total_pnl + today_weight * tp
+
+    cand_score = _blended(cand_pnl, cand.get("full", {}))
+    base_score = _blended(baseline_pnl, baseline)
 
     # Candidato positivo mas PIOR que baseline positivo: mantém o atual.
-    # (ambos positivos → prefere o maior PnL; nunca troca positivo por menos positivo)
-    if baseline_pnl > 0 and cand_pnl < baseline_pnl:
+    # (ambos positivos → prefere o maior score; nunca troca positivo por menos)
+    if baseline_pnl > 0 and cand_score < base_score:
         return _reject(cand, "better_baseline_exists",
-                       f"candidato R${cand_pnl:.2f} < baseline R${baseline_pnl:.2f} (ambos positivos, mantém atual)")
+                       f"score cand R${cand_score:.2f} < baseline R${base_score:.2f} "
+                       f"(cand 30d R${cand_pnl:.2f}/hoje R${cand.get('full', {}).get('today_pnl', 0):.2f}, "
+                       f"base 30d R${baseline_pnl:.2f}/hoje R${baseline.get('today_pnl', 0):.2f}) — mantém atual")
 
     change = _build_change(pair, strategy, params, cand.get("full", {}))
     change["baseline_simulated_pnl"] = baseline_pnl
