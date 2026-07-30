@@ -21,7 +21,9 @@ vt_config.json (via save_full_config / save_params chamados pelo stage5).
 from __future__ import annotations
 
 import argparse
+import fcntl
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -80,9 +82,56 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+# ─── Lock anti-paralelismo (Wave anti-colisao, Bruno 30/07) ──────────────────
+# LOCK ATÔMICO no kernel via fcntl.flock. O wrapper shell (run_agi_v4_cron.sh)
+# tem um PID check, mas quem chama runner.py DIRETO (job externo, midday.sh,
+# manual) bypassa esse check e colide no Wine/MT5 (single-session) — foi a
+# causa raiz do "16/16 failing" das 17h de 30/07 (duas runs disputaram Wine).
+# Este lock vive no runner (entrypoint sancionado), então vale pra QUALQUER
+# invocação. Arquivo dedicado .lock evita conflito de formato com o .pid.
+RUN_LOCK_PATH = Path("/tmp/vt_agi_v4.lock")
+
+
+def _acquire_run_lock():
+    """Tenta pegar lock exclusivo (não-bloqueante). Retorna fd ou None.
+
+    Retorna um file handle aberto (segura o lock enquanto vivo) se conseguiu,
+    ou None se já há uma run em andamento. flock é liberado automaticamente
+    quando o fd fecha ou o processo morre (mesmo em crash/kill -9).
+    """
+    try:
+        fd = os.open(str(RUN_LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError:
+        # Sem acesso a /tmp: deixa rodar (fail-open — não trava o cron).
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        # Lock ocupado: outra run está em andamento.
+        os.close(fd)
+        return None
+    # Registra o PID no arquivo (informativo p/ diagnóstico, não p/ lock).
+    try:
+        os.write(fd, f"{os.getpid()}\n".encode())
+    except OSError:
+        pass
+    return fd
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point principal. Retorna exit code (0 = sucesso)."""
     args = _parse_args(argv)
+    _setup_logging(args.verbose)
+    log = logging.getLogger("agi_v4.runner")
+
+    # Lock anti-paralelismo: só uma run por vez (Wine/MT5 é single-session).
+    # Se já há uma run ativa, sai graciosamente (exit 0, não-fatal — igual o
+    # wrapper faz). Isto independe de quem chamou (cron, job externo, manual).
+    lock_fd = _acquire_run_lock()
+    if lock_fd is None:
+        log.warning("AGI v4 já em execução (lock /tmp/vt_agi_v4.lock ocupado) — "
+                    "abortando esta run para evitar colisão no Wine/MT5")
+        return 0
     _setup_logging(args.verbose)
     log = logging.getLogger("agi_v4.runner")
 
@@ -118,34 +167,43 @@ def main(argv: list[str] | None = None) -> int:
              f"max_iterations={max_it} dry_run={effective_dry_run}")
 
     try:
-        # Import robusto: funciona tanto como módulo (python -m) quanto como
-        # script direto (python optimization/agi_v4/runner.py). Quando rodado
-        # como script, __package__ é None e o import relativo falha.
         try:
-            from . import pipeline
-        except ImportError:
-            from optimization.agi_v4 import pipeline
-        ctx = pipeline.run(
-            days=args.days,
-            dry_run=effective_dry_run,
-            max_iterations=max_it,
-        )
-    except Exception as e:
-        log.error(f"═══ AGI v4 FATAL ═══ pipeline.run falhou: {e}", exc_info=True)
-        return 1
+            # Import robusto: funciona tanto como módulo (python -m) quanto como
+            # script direto (python optimization/agi_v4/runner.py). Quando rodado
+            # como script, __package__ é None e o import relativo falha.
+            try:
+                from . import pipeline
+            except ImportError:
+                from optimization.agi_v4 import pipeline
+            ctx = pipeline.run(
+                days=args.days,
+                dry_run=effective_dry_run,
+                max_iterations=max_it,
+            )
+        except Exception as e:
+            log.error(f"═══ AGI v4 FATAL ═══ pipeline.run falhou: {e}", exc_info=True)
+            return 1
 
-    # Resumo final no log (cron captura para /tmp/vt_agi_v4.log)
-    converged = ctx.get("converged", False)
-    n_applied = len(ctx.get("applied_changes", []))
-    n_failing = len(ctx.get("failing_pairs", []))
-    duration = ctx.get("duration_s", 0)
+        # Resumo final no log (cron captura para /tmp/vt_agi_v4.log)
+        converged = ctx.get("converged", False)
+        n_applied = len(ctx.get("applied_changes", []))
+        n_failing = len(ctx.get("failing_pairs", []))
+        duration = ctx.get("duration_s", 0)
 
-    log.info(f"═══ AGI v4 DONE ═══ converged={converged} "
-             f"applied={n_applied} failing_pairs={n_failing} "
-             f"duration={duration:.1f}s")
+        log.info(f"═══ AGI v4 DONE ═══ converged={converged} "
+                 f"applied={n_applied} failing_pairs={n_failing} "
+                 f"duration={duration:.1f}s")
 
-    # Exit code: 0 se ok (mesmo sem convergir — Lei 5 diz iterar, não abortar)
-    return 0
+        # Exit code: 0 se ok (mesmo sem convergir — Lei 5 diz iterar, não abortar)
+        return 0
+    finally:
+        # Libera o lock explicitamente (flock também libera no exit do processo,
+        # mas o finally garante liberação mesmo em return/exception intermediário).
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
