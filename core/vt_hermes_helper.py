@@ -222,11 +222,16 @@ def _get_ask_llm_logger() -> logging.Logger:
 
 
 # Provedores LLM — mesma cadeia de fallback de core/vt_order_validator_v2.py
-# (minimax-oauth primário fail-fast, xiaomi fallback com mais budget).
-# Refator para DRY total fica pra wave posterior (não toca validator_v2 vivo).
+# Wave qwen-primário (Bruno 30/07): o PRIMÁRIO agora é o default do hermes
+# (qwen3.8-max-preview / alibaba-token-plan) — NÃO passamos -m/--provider,
+# deixando o hermes usar o modelo configurado. Antes a cadeia forçava MiniMax-M3
+# com timeout 10s, mas o MiniMax leva ~15s de cold-start → toda chamada do Stage
+# 4 do AGI timeout antes de completar (168 chamadas, 0 sucessos em 30/07).
+# model=None sinaliza "usar default do hermes" no loop abaixo.
 _ASK_LLM_PROVIDERS = [
-    {"provider": "minimax-oauth", "model": "MiniMax-M3",    "timeout": 10},
-    {"provider": "xiaomi",        "model": "mimo-v2.5-pro", "timeout": 25},
+    {"provider": None,           "model": None,             "timeout": 60},   # default hermes (qwen3.8) — cold-start + geração de código
+    {"provider": "minimax-oauth", "model": "MiniMax-M3",    "timeout": 25},   # fallback 1 (sync validator_v2: 10s→25s)
+    {"provider": "xiaomi",        "model": "mimo-v2.5-pro", "timeout": 25},   # fallback 2
 ]
 
 
@@ -238,8 +243,9 @@ def ask_llm(
 ) -> str | None:
     """Provider LLM único para o AGI e futuros callers cross-module.
 
-    Tenta provedores em ordem (MiniMax-M3 OAuth → MiMo v2.5 Pro). Retorna a
-    primeira resposta não-vazia ou ``None`` em qualquer falha — nunca levanta.
+    Tenta provedores em ordem: default do hermes (qwen3.8) → MiniMax-M3 →
+    MiMo v2.5 Pro. Retorna a primeira resposta não-vazia ou ``None`` em
+    qualquer falha — nunca levanta.
 
     Args:
         prompt: texto a enviar.
@@ -275,11 +281,15 @@ def ask_llm(
             break
         per_timeout = min(prov["timeout"], int(remaining))
 
-        args = [
-            hermes_bin, "-z", prompt,
-            "-m", prov["model"],
-            "--provider", prov["provider"],
-        ]
+        # model=None → default do hermes; usa um label legível no log.
+        label = prov["model"] or "hermes-default(qwen)"
+
+        args = [hermes_bin, "-z", prompt]
+        # model=None → usa o default do hermes (qwen3.8-max-preview). Não
+        # passamos -m/--provider, deixando o hermes usar o que está configurado
+        # (robusto: se o Bruno trocar o modelo no hermes, o AGI segue automático).
+        if prov["model"] is not None and prov["provider"] is not None:
+            args += ["-m", prov["model"], "--provider", prov["provider"]]
         if system:
             args += ["-s", system]
 
@@ -293,23 +303,23 @@ def ask_llm(
             )
         except subprocess.TimeoutExpired:
             ask_log.warning(
-                f"ask_llm: {prov['model']} timeout após {per_timeout}s"
+                f"ask_llm: {label} timeout após {per_timeout}s"
             )
             continue
         except Exception as exc:
-            ask_log.warning(f"ask_llm: {prov['model']} erro: {exc}")
+            ask_log.warning(f"ask_llm: {label} erro: {exc}")
             continue
 
         elapsed = time.time() - t0
         if result.returncode == 0 and result.stdout and result.stdout.strip():
             resp = result.stdout.strip()
             ask_log.debug(
-                f"ask_llm: {prov['model']} OK ({elapsed:.1f}s, {len(resp)} chars)"
+                f"ask_llm: {label} OK ({elapsed:.1f}s, {len(resp)} chars)"
             )
             return resp
         stderr_snip = (result.stderr or "")[:200]
         ask_log.debug(
-            f"ask_llm: {prov['model']} falhou rc={result.returncode} "
+            f"ask_llm: {label} falhou rc={result.returncode} "
             f"stderr={stderr_snip}"
         )
 
