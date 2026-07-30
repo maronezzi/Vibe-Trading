@@ -1,22 +1,24 @@
 """
-stage1_collect.py — Coleta de performance real do DB + classificação de regime.
+stage1_collect.py — Seleção de pares por SIMULAÇÃO + contexto de regime.
 
-Lei 4 (MT5/broker-truth): toda fonte de PnL aqui é o vt_trades.db, que é
-reconciled com o broker via vt_truth.reconcile_db_position. Não inventamos
-nada — só lemos o que o MT5 efetivamente executou.
+REGRA DE OURO (Bruno 16/07): a otimização NUNCA é decidida em cima de trades
+passados. O DB (vt_trades.db) é lido APENAS para o relatório Telegram
+(ctx["performance"] = PnL realizado real de 7d, contexto display-only). A
+decisão de quais pares otimizar vem de _identify_failing_simulated, que
+simula cada par bar-a-bar via evaluate_baseline sobre as últimas ~30d de
+barras reais do MT5.
+
+Lei 4 (MT5/broker-truth) ainda vale para o PnL de display do relatório.
 
 Saída no ctx:
-  ctx["performance"] = {
+  ctx["performance"] = {              # display-only (DB 7d)
       "by_symbol":     {root: {n_trades, win_rate, total_pnl, ...}},
       "by_symbol_tf":  {"WIN_M5": {n_trades, win_rate, total_pnl, strategy}},
       "exit_reasons":  {"SL": {count, pnl}, "TRAILING": {...}},
-      "today":         {root: {...}},
       "streaks":       {root: [{losses, pnl}]},
-      "signal_analysis": {root: {avg_rsi_win, avg_rsi_loss, ...}},
-      "sl_analysis":   {root: {sl_hit_rate, avg_sl_pts, ...}},
   }
   ctx["regime"] = {root: {label, atr, adx}}   # se classifier disponível
-  ctx["failing_pairs"] = ["WIN_M5", ...]      # alvos para stages 2-5
+  ctx["failing_pairs"] = ["WIN_M5", ...]      # POR SIMULAÇÃO (não DB)
 
 Reusa a lógica comprovada do agi_tuning_17h.collect_performance (linhas
 187-355), refatorada como módulo isolado com tratamento de erro defensivo.
@@ -67,15 +69,20 @@ def run(ctx: dict) -> dict:
         return {"performance": {}, "regime": {}, "failing_pairs": [],
                 "summary": "DB ausente"}
 
+    # performance: lida do DB APENAS para o relatório Telegram (contexto de
+    # PnL realizado real de 7d). NÃO dirige a decisão de otimização — ver
+    # _identify_failing_simulated abaixo. (Wave "sem-trades")
     performance = _collect_performance(db_path, days)
     regime = _classify_regimes(config, performance)
 
-    # Identificar pares perdedores (alvo dos stages 2-5)
-    failing_pairs = _identify_failing(performance)
+    # Selecionar pares perdedores por SIMULAÇÃO bar-a-bar (evaluate_baseline),
+    # nunca por trades passados. Mesmo critério de _check_convergence_simulated
+    # (pipeline.py:396): par é failing se PnL simulado <= 0.
+    failing_pairs = _identify_failing_simulated(config)
 
     summary = (f"{len(performance.get('by_symbol', {}))} símbolos analisados, "
-               f"{len(failing_pairs)} par(es) perdedor(es), "
-               f"{performance.get('by_symbol', {}).get('WIN', {}).get('n_trades', 0)} trades WIN")
+               f"{len(failing_pairs)} par(es) não-lucrativos em sim 30d, "
+               f"{performance.get('by_symbol', {}).get('WIN', {}).get('n_trades', 0)} trades WIN (display)")
 
     return {
         "performance": performance,
@@ -235,25 +242,51 @@ def _classify_regimes(config: dict, performance: dict) -> dict:
 # Identificação de pares perdedores — alvo dos stages 2-5
 # ═══════════════════════════════════════════════════════════════════
 
-def _identify_failing(performance: dict) -> list[str]:
-    """Identifica pares SYM_TF perdedores (PnL < 0 com trades suficientes).
+def _identify_failing_simulated(config: dict) -> list[str]:
+    """Identifica pares SYM_TF não-lucrativos por SIMULAÇÃO bar-a-bar.
+
+    REGRA DE OURO (Bruno 16/07): nunca julgar otimização em cima de trades
+    passados. Cada par é simulado (evaluate_baseline) sobre as últimas ~30d de
+    barras reais do MT5 (fetch copy_rates_from_pos(0, N) = até agora). Um par
+    é 'failing' se o PnL simulado <= 0 — mesmo critério de
+    _check_convergence_simulated (pipeline.py:396).
 
     Lei 2 (Escopo): NUNCA desabilitamos o par — só o marcamos como alvo de
     otimização. Se não achar edge, o stage 4 gera estratégia nova.
 
-    Critério: n_trades >= MIN_TRADES_TO_JUDGE (default 5) E total_pnl < 0.
-    Pares com poucos trades não são julgados (pode ser falta de sinal).
+    Returns:
+        list[str] de "SYM_TF" (contrato preservado: downstream aceita
+        list[str] ou list[dict]).
     """
-    MIN_TRADES = 5
-    by_tf = performance.get("by_symbol_tf", {})
-    failing = []
-    for pair, stats in by_tf.items():
-        if not isinstance(stats, dict):
-            continue
-        n = stats.get("n_trades", 0)
-        pnl = stats.get("total_pnl", 0)
-        if n >= MIN_TRADES and pnl < 0:
-            failing.append(pair)
-    failing.sort(key=lambda p: by_tf[p].get("total_pnl", 0))
-    log.info(f"Pares perdedores identificados: {failing}")
-    return failing
+    try:
+        from optimization.agi_v4.backtest_evaluator import evaluate_baseline
+    except ImportError:
+        log.error("backtest_evaluator indisponível — stage 1 sem seleção por simulação")
+        return []
+
+    symbols = config.get("symbols", [])
+    tfs_by_sym = config.get("timeframes_by_symbol", {})
+    global_tfs = config.get("timeframes", [])
+
+    failing: list[tuple[str, float]] = []  # (pair, pnl) para ordenar
+    for sym in symbols:
+        for tf in tfs_by_sym.get(sym, global_tfs):
+            pair = f"{sym}_{tf}"
+            try:
+                m = evaluate_baseline(sym, tf, config)
+                pnl = m.get("total_pnl", 0)
+                n_trades = m.get("n_trades", 0)
+            except Exception as e:
+                log.warning(f"stage1 simulação {pair} falhou ({e}) — marcado failing")
+                failing.append((pair, 0.0))
+                continue
+            # Mesmo critério de _check_convergence_simulated: PnL <= 0 = failing.
+            if pnl <= 0:
+                failing.append((pair, pnl))
+                log.info(f"stage1 {pair}: PnL sim R$ {pnl:.2f} ({n_trades}t) → failing")
+
+    # Ordena pelo PnL simulado (mais negativo primeiro = prioridade maior).
+    failing.sort(key=lambda x: x[1])
+    result = [p for p, _ in failing]
+    log.info(f"Pares não-lucrativos (sim 30d): {result}")
+    return result
