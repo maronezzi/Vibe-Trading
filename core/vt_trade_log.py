@@ -164,23 +164,48 @@ def init_db():
 
 
 def get_multiplier(symbol: str) -> float:
-    """Retorna o multiplicador R$ por ponto — lê de vt_config.json contract_specs."""
+    """Retorna o multiplicador R$ por ponto para o símbolo.
+
+    Wave 880.G/H/K (Bruno 2026-07-20): o fallback hardcoded é a VERDADE
+    (validado empiricamente via PnLs broker-truth do MT5). O config
+    contract_specs é lido APENAS para logar warning se divergir — nunca
+    substitui o fallback. Razão: histórico de bugs no config (WIN 1.0
+    em vez de 0.20; BIT 1.0 em vez de 0.01) inflacionou PnL 5x e 100x.
+
+    Evidência empírica (trade BITN26 #50, 20/07): entry 329620 → exit 332120
+    = +2500 pts, PnL broker-truth R$ 25,00 → R$ 0,01/pt.
+    """
+    # Fallback hardcoded CORRETO (validado via PnLs reais do MT5).
+    # Wave 880.K: BIT/WSP corrigidos de 1.0 → 0.01 (antes inflava PnL 100x).
+    _mults = {"WIN": 0.20, "WDO": 10.00, "DOL": 1.00, "IND": 1.0, "BIT": 0.01, "WSP": 0.01}
+    fallback_mult = 1.0
+    fallback_root = None
+    for root, mult in _mults.items():
+        if root in symbol:
+            fallback_mult = mult
+            fallback_root = root
+            break
+
+    # Tentar config APENAS para validação (log warning se divergir).
     try:
         from vt_config_loader import load_config
         _cfg = load_config()
         specs = _cfg.get("contract_specs", {})
-        # Tenta match por root$ (ex: "WIN$", "WDO$", "BIT$")
         for root, spec in specs.items():
             if root.rstrip("$") in symbol:
-                return spec.get("mult", 1.0)
+                config_mult = spec.get("mult", 1.0)
+                if abs(config_mult - fallback_mult) > 0.0001 and fallback_root:
+                    import logging
+                    logging.warning(
+                        f"contract_specs.{root}.mult={config_mult} diverge do "
+                        f"fallback hardcoded {fallback_mult} para {symbol}. "
+                        f"Usando fallback (correto — validado broker-truth)."
+                    )
+                break
     except Exception:
         pass
-    # Fallback hardcoded (caso config indisponível) — valores REAIS confirmados via PnLs
-    _mults = {"WIN": 0.20, "WDO": 10.00, "DOL": 1.00, "IND": 1.0, "BIT": 1.0, "WSP": 1.0}
-    for root, mult in _mults.items():
-        if root in symbol:
-            return mult
-    return 1.0
+
+    return fallback_mult
 
 
 def calc_fees(volume: float, entry_price: float, exit_price: float, symbol: str = "") -> float:
@@ -518,6 +543,103 @@ def sync_fees_from_mt5(date_str: str = None):
     conn.close()
     log.info(f"sync_fees: {updated} trades atualizados com taxas reais do MT5")
     return updated
+
+
+def get_events_daily_summary(date_str: str = None) -> dict | None:
+    """Resumo do dia via mt5_trade_events (EA TradeLogger → broker-truth).
+
+    Fonte primária para relatórios: dedup por deal_ticket, agrupa por
+    position_ticket para PnL por trade. Retorna None se pipeline
+    indisponível/stale (caller faz fallback pro DB trades).
+
+    Bruno 27/07: substituir tabela trades (fantasmas/duplicatas) por EA.
+    """
+    if date_str is None:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+    db_path = Path(__file__).parent.parent / "vt_trades.db"
+    if not db_path.exists():
+        return None
+
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=5.0)
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.row_factory = sqlite3.Row
+
+        # Staleness: último evento relevante < 10 min
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S")
+        last_ev = conn.execute(
+            "SELECT MAX(event_time) FROM mt5_trade_events "
+            "WHERE trans_type IN ('HEARTBEAT', 'LOGGER_START', 'DEAL_ADD', 'ORDER_ADD')"
+        ).fetchone()[0]
+
+        if last_ev is None or last_ev < cutoff:
+            conn.close()
+            return None
+
+        # Deals de saída dedup por deal_ticket, agrupados por position_ticket
+        rows = conn.execute("""
+            SELECT position_ticket, symbol,
+                   SUM(deal_profit + deal_commission + deal_swap) AS pnl,
+                   SUM(deal_volume) AS volume,
+                   MIN(event_time) AS first_close,
+                   MAX(event_time) AS last_close
+            FROM (
+                SELECT deal_ticket, position_ticket, symbol,
+                       deal_profit, deal_commission, deal_swap,
+                       deal_volume, event_time
+                FROM mt5_trade_events
+                WHERE trans_type = 'DEAL_ADD'
+                  AND deal_entry = 'OUT'
+                  AND date(event_time) = ?
+                GROUP BY deal_ticket
+            )
+            GROUP BY position_ticket
+            ORDER BY first_close
+        """, (date_str,)).fetchall()
+
+        conn.close()
+
+        if not rows:
+            return {
+                "date": date_str, "source": "MT5_EVENTS",
+                "total_trades": 0, "wins": 0, "losses": 0,
+                "win_rate": 0.0, "net_pnl": 0.0,
+                "best_trade": 0.0, "worst_trade": 0.0,
+                "by_symbol": {},
+            }
+
+        pnls = [r["pnl"] for r in rows]
+        wins = sum(1 for p in pnls if p > 0)
+        losses = sum(1 for p in pnls if p <= 0)
+        total = len(pnls)
+
+        by_symbol = {}
+        for r in rows:
+            sym = r["symbol"]
+            if sym not in by_symbol:
+                by_symbol[sym] = {"trades": 0, "wins": 0, "pnl": 0.0}
+            by_symbol[sym]["trades"] += 1
+            if r["pnl"] > 0:
+                by_symbol[sym]["wins"] += 1
+            by_symbol[sym]["pnl"] += r["pnl"]
+
+        return {
+            "date": date_str,
+            "source": "MT5_EVENTS",
+            "total_trades": total,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(wins / max(total, 1) * 100, 1),
+            "net_pnl": round(sum(pnls), 2),
+            "best_trade": round(max(pnls), 2),
+            "worst_trade": round(min(pnls), 2),
+            "by_symbol": by_symbol,
+        }
+    except Exception as e:
+        log.info(f"get_events_daily_summary falhou: {e}")
+        return None
 
 
 def get_daily_summary(date_str: str = None) -> dict:

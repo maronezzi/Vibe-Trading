@@ -25,11 +25,50 @@ from pathlib import Path
 DB_PATH = Path(__file__).parent.parent / "vt_trades.db"
 CSV_DIR = Path(__file__).parent.parent / "reports"
 
+# Drift alert threshold (R$)
+_DRIFT_ALERT_THRESHOLD = 5.0
+
 
 def get_db():
     conn = sqlite3.connect(str(DB_PATH), timeout=5.0)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def get_events_monthly_audit(month_str: str):
+    """Auditoria broker-truth via mt5_trade_events para o mês.
+
+    Retorna dict {events_net, events_deals, source} ou None se vazio/erro.
+    """
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5.0)
+        conn.execute("PRAGMA busy_timeout=5000")
+
+        # Dedup por deal_ticket (EA emite duplicatas em restart/reconect — Bruno 27/07)
+        row = conn.execute("""
+            SELECT COALESCE(SUM(pnl), 0.0), COUNT(*)
+            FROM (
+                SELECT deal_profit + deal_commission + deal_swap AS pnl
+                FROM mt5_trade_events
+                WHERE trans_type = 'DEAL_ADD'
+                  AND deal_entry = 'OUT'
+                  AND strftime('%Y-%m', event_time) = ?
+                GROUP BY deal_ticket
+            )
+        """, (month_str,)).fetchone()
+
+        conn.close()
+
+        if row[1] == 0:
+            return None  # sem eventos no mês
+
+        return {
+            "events_net": round(row[0], 2),
+            "events_deals": row[1],
+            "source": "MT5_EVENTS",
+        }
+    except Exception:
+        return None
 
 
 def get_tax_report(month=None, year=None):
@@ -176,7 +215,7 @@ def _month_name(month):
     return names.get(month, str(month))
 
 
-def format_tax_report(report):
+def format_tax_report(report, audit=None):
     """Formata relatório de IR para texto."""
     s = report["summary"]
     ir = report["ir"]
@@ -215,6 +254,19 @@ def format_tax_report(report):
 
     if ir["remaining_loss"] > 0:
         lines.append(f"• Prejuízo restante p/ compensar: R$ {ir['remaining_loss']:,.2f}")
+
+    # Auditoria broker-truth (EA events)
+    if audit is not None:
+        db_net = s["net_pnl"]
+        drift = round(audit["events_net"] - db_net, 2)
+        alert = " ⚠️" if abs(drift) > _DRIFT_ALERT_THRESHOLD else ""
+        lines.extend([
+            "",
+            "🔎 *Auditoria Broker (EA events)*",
+            f"• PnL broker: R$ {audit['events_net']:+,.2f} | PnL DB: R$ {db_net:+,.2f} | "
+            f"Drift: R$ {drift:+,.2f}{alert}",
+            f"• Deals broker: {audit['events_deals']} | Trades DB: {s['total_trades']}",
+        ])
 
     lines.extend([
         "",
@@ -316,7 +368,8 @@ def main():
         for m_str in months:
             y, m = int(m_str[:4]), int(m_str[5:7])
             report = get_tax_report(m, y)
-            print(format_tax_report(report))
+            audit = get_events_monthly_audit(report["month"])
+            print(format_tax_report(report, audit=audit))
             print()
             if args.export_csv:
                 csv_path, summary_path = export_csv(report)
@@ -332,10 +385,13 @@ def main():
 
     report = get_tax_report(args.month, args.year)
 
+    # Auditoria broker-truth (EA events)
+    audit = get_events_monthly_audit(report["month"])
+
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
     else:
-        print(format_tax_report(report))
+        print(format_tax_report(report, audit=audit))
 
     if args.export_csv:
         csv_path, summary_path = export_csv(report)

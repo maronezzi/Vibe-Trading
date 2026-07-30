@@ -110,6 +110,11 @@ def _search_pair_worker(args) -> dict:
     Busca 30d de barras UMA VEZ, depois simula cada (estratégia × params)
     sobre essas mesmas barras — comparação justa (mesmo mercado).
 
+    FIX 2026-07-26 (loop infinito — Bruno): max_attempts por par + dedup.
+    Antes: 43 estratégias × ~80 combos × 6 pares = ~20k backtests sem teto.
+    Agora: MAX_ATTEMPTS_PER_PAIR=300 com early-stop + cache de combos já
+    testados (evita repetir a mesma combinação dezenas de vezes).
+
     Args: (pair, sym, tf, config, thresholds)
     Returns: {"pair", "best_candidate"|"None", "n_tested"}
     """
@@ -118,23 +123,52 @@ def _search_pair_worker(args) -> dict:
     # Import tardio: o evaluator importa backtest_v944 que importa pandas etc.
     from optimization.agi_v4.backtest_evaluator import evaluate_candidate
 
+    MAX_ATTEMPTS_PER_PAIR = int(os.environ.get("VT_AGI_MAX_ATTEMPTS", "300"))
+    MAX_CONSECUTIVE_REJECTS = 50  # Qwen Code: 50 rejeições seguidas = espaço esgotado
+
     n_tested = 0
+    consecutive_rejects = 0
     best = None
     best_pnl = -float("inf")
+    _seen_combos: set[str] = set()  # dedup: evita testar a mesma combo 2x
 
     for strat in ALL_STRATEGIES:
+        if n_tested >= MAX_ATTEMPTS_PER_PAIR:
+            log.info(f"  {pair}: MAX_ATTEMPTS={MAX_ATTEMPTS_PER_PAIR} atingido "
+                     f"({n_tested} testados, melhor PnL={best_pnl:.2f})")
+            break
         for params in _generate_param_combos(strat):
+            if n_tested >= MAX_ATTEMPTS_PER_PAIR:
+                break
+
+            # Dedup: hash da combo (strategy + params ordenados)
+            combo_key = f"{strat}|{sorted(params.items())}"
+            if combo_key in _seen_combos:
+                continue
+            _seen_combos.add(combo_key)
+
             n_tested += 1
             try:
                 result = evaluate_candidate(sym, tf, strat, params, config,
                                             thresholds=thresholds)
             except Exception as e:
                 log.debug(f"  {pair} {strat} params={params}: erro {e}")
+                consecutive_rejects += 1
+                if consecutive_rejects >= MAX_CONSECUTIVE_REJECTS:
+                    log.info(f"  {pair}: {MAX_CONSECUTIVE_REJECTS} rejeições "
+                             f"seguidas — espaço esgotado, parando.")
+                    break
                 continue
 
             if not result["passed"]:
+                consecutive_rejects += 1
+                if consecutive_rejects >= MAX_CONSECUTIVE_REJECTS:
+                    log.info(f"  {pair}: {MAX_CONSECUTIVE_REJECTS} rejeições "
+                             f"seguidas — espaço esgotado, parando.")
+                    break
                 continue
 
+            consecutive_rejects = 0  # reset: achou um aprovado
             pnl = result["full"]["total_pnl"]
             if pnl > best_pnl:
                 best_pnl = pnl
@@ -180,6 +214,13 @@ def _all_pairs_from_config(config: dict) -> list[str]:
 
 
 def _safe_worker_count() -> int:
+    """Determine safe worker count, respecting VT_MAX_WORKERS env cap.
+
+    During market hours the autotrader + MT5 + watchdog need CPU headroom.
+    Set VT_MAX_WORKERS=2 (or any int) to hard-cap the pool regardless of
+    the auto-detection logic. Default cap: 2 workers (safe for i5-10210U
+    with live trading running).
+    """
     try:
         import os as _os
         from optimization.vt_forward_backtest import _get_safe_max_workers
@@ -188,6 +229,9 @@ def _safe_worker_count() -> int:
             load_avg = _os.getloadavg()[0]
         except (OSError, AttributeError):
             load_avg = 0.0
-        return _get_safe_max_workers(8, cpu, load_avg)
-    except (ImportError, TypeError):
-        return min(8, os.cpu_count() or 1)
+        # Hard cap via env — defaults to 2 to protect live trading
+        env_cap = int(_os.environ.get("VT_MAX_WORKERS", "2"))
+        configured = min(env_cap, cpu)
+        return _get_safe_max_workers(configured, cpu, load_avg)
+    except (ImportError, TypeError, ValueError):
+        return min(2, os.cpu_count() or 1)

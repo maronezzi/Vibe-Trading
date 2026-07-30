@@ -1,0 +1,82 @@
+{
+  "timestamp": "2026-07-20T12:23:32.538119",
+  "closed_ticket": "2482954148",
+  "open_ticket": "2482993968",
+  "symbol": "WINQ26",
+  "results": [
+    {
+      "name": "1. history() sem args (caminho do import_mt5_history)",
+      "ok": true,
+      "count": 0,
+      "info": "sem deals (position=7)",
+      "deals_sample": [],
+      "latency_s": 0.76,
+      "error": null
+    },
+    {
+      "name": "2. history(symbol=WINQ26, days=1) (caminho de _truth)",
+      "ok": true,
+      "count": 0,
+      "info": "sem deals (symbol=WINQ26 days=1)",
+      "deals_sample": [],
+      "latency_s": 0.79,
+      "error": null
+    },
+    {
+      "name": "3. history(symbol=WINQ26, days=7) (janela maior)",
+      "ok": true,
+      "count": 0,
+      "info": "sem deals (symbol=WINQ26 days=7)",
+      "deals_sample": [],
+      "latency_s": 0.84,
+      "error": null
+    },
+    {
+      "name": "4. history(position=2482954148) \u2014 ticket FECHADO",
+      "ok": true,
+      "count": 2,
+      "info": "position=2482954148",
+      "deals_sample": [
+        {
+          "ticket": 1807357300,
+          "symbol": "BITN26",
+          "type": "BUY",
+          "profit": 0.0,
+          "price": 329620.0,
+          "position_id": 2482954148,
+          "time": "1784548863"
+        },
+        {
+          "ticket": 1807376450,
+          "symbol": "BITN26",
+          "type": "SELL",
+          "profit": 25.8,
+          "price": 332200.0,
+          "position_id": 2482954148,
+          "time": "1784549872"
+        }
+      ],
+      "latency_s": 0.72,
+      "error": null
+    },
+    {
+      "name": "5. history(position=2482993968) \u2014 ticket ABERTO",
+      "ok": true,
+      "count": 1,
+      "info": "position=2482993968",
+      "deals_sample": [
+        {
+          "ticket": 1807376398,
+          "symbol": "WINQ26",
+          "type": "BUY",
+          "profit": 0.0,
+          "price": 175300.0,
+          "position_id": 2482993968,
+          "time": "1784549855"
+        }
+      ],
+      "latency_s": 0.8,
+      "error": null
+    }
+  ]
+}

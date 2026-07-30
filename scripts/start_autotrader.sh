@@ -44,7 +44,19 @@ AUTO_PID=$!
 disown
 log_line "✅ Autotrader PID: $AUTO_PID"
 
-# === 5. Notificação Telegram ===
+# === 5. Iniciar Trade Event Watcher (EA → CSV → SQLite) ===
+if ! pgrep -f "vt_trade_event_watcher.py" > /dev/null; then
+    log_line "📡 Iniciando trade event watcher..."
+    cd "$PROJECT"
+    PYTHONUNBUFFERED=1 nohup python3 monitoring/vt_trade_event_watcher.py >> /tmp/vt_trade_event_watcher.log 2>&1 &
+    WATCHER_PID=$!
+    disown
+    log_line "✅ Watcher PID: $WATCHER_PID"
+else
+    log_line "📡 Watcher já rodando (PID $(pgrep -f vt_trade_event_watcher.py))"
+fi
+
+# === 6. Notificação Telegram ===
 sleep 3
 if [ -x "$HERMES_BIN" ]; then
     "$HERMES_BIN" send -t telegram "🚀 Vibe-Trading iniciado (PID $AUTO_PID) | $(date '+%H:%M')" 2>/dev/null || true

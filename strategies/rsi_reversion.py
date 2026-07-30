@@ -30,6 +30,7 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     """
     calculate_rsi = utils["calculate_rsi"]
     calculate_ema = utils["calculate_ema"]
+    calculate_adx = utils["calculate_adx"]
     calc_sl = utils["calc_sl"]
 
     # Parameters
@@ -38,8 +39,10 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     rsi_os = params.get("rsi_oversold", 30)
     ema_period = params.get("ema_period", 0)  # 0 = sem filtro de trend
     max_ema_dist = params.get("max_ema_distance_pct", 5.0) / 100.0
+    adx_period = params.get("adx_period", 14)
+    adx_threshold = params.get("adx_threshold", 25)  # FIX 2026-07-26: gate obrigatório
 
-    if not bars or len(bars) < rsi_period + 5:
+    if not bars or len(bars) < max(rsi_period, adx_period) + 10:
         return None
 
     # ATR mínimo — não entrar se mercado está morto
@@ -64,6 +67,17 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
 
     if not direction:
         return None
+
+    # FIX 2026-07-26 (P2 — anti falling knife): filtro ADX obrigatório.
+    # Sexta 24/07: RSI_REVERSION fez 18 trades, 0 wins, -R$17,60 comprando
+    # em queda livre. ADX > threshold + DI contrário = tendência forte →
+    # NÃO operar reversão. Mesmo gate do enhanced_rsi_reversion.py.
+    adx_val, plus_di, minus_di = calculate_adx(bars, adx_period)
+    if adx_val > adx_threshold:
+        if direction == "BUY" and plus_di < minus_di:
+            return None  # Strong downtrend — don't buy
+        if direction == "SELL" and minus_di < plus_di:
+            return None  # Strong uptrend — don't sell
 
     # Filtro de tendência opcional: não lutar contra trend forte
     if ema_period > 0 and len(bars) >= ema_period + 5:

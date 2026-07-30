@@ -97,3 +97,8 @@
 # repo Vibe-Trading (arquivos modificados/untracked não commitados)
 # e entrega relatório via Telegram. Roda após AGI v4 17:10.
 00 19 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/w877_19h_rescan_uncommitted.sh >> /tmp/w877_rescan.log 2>&1
+
+# ─── TRADE EVENT WATCHER watchdog */5min (seg-sex 9-17h) ──────────────────────
+#     Se o watcher (EA → CSV → SQLite) morrer, reinicia em até 5 min.
+#     O copilot depende dele para fonte MT5_EVENTS (broker-truth local).
+*/5 9-17 * * 1-5 pgrep -f "vt_trade_event_watcher.py" > /dev/null || (cd /home/bruno/Projects/Vibe-Trading && PYTHONUNBUFFERED=1 nohup python3 monitoring/vt_trade_event_watcher.py >> /tmp/vt_trade_event_watcher.log 2>&1 &)

@@ -296,8 +296,17 @@ def _generate_param_combos(strat_name: str) -> list:
     strat_grid = STRATEGY_PARAM_GRIDS.get(strat_name, {})
 
     # Build combined grid: universal params + strategy-specific
+    # FIX 2026-07-26 (Qwen Code + Bruno): backtest_v944 NÃO simula
+    # max_consecutive_losses, halt_duration_minutes, profit_lock_r.
+    # Essas 3 dims geravam 6×7×7=294 combos funcionalmente idênticos por
+    # estratégia (mesmo PF/dd repetido dezenas de vezes). Só inclui as
+    # dims que o backtest realmente usa: sl_atr_mult e cooldown_seconds.
     combined = {}
-    combined.update(UNIVERSAL_PARAMS)
+    _BACKTEST_ACTIVE_UNIVERSAL = {
+        k: v for k, v in UNIVERSAL_PARAMS.items()
+        if k in ("sl_atr_mult", "cooldown_seconds")
+    }
+    combined.update(_BACKTEST_ACTIVE_UNIVERSAL)
     combined.update(strat_grid)
 
     if not combined:
@@ -442,7 +451,8 @@ def main():
             print(f"{'✅ ' + str(len(bars)) + ' bars' if bars else '❌ NO DATA'}")
 
     # Phase 2: Test all strategies with param optimization for each pair (PARALLEL)
-    num_workers = min(8, os.cpu_count() or 1)
+    # Cap workers to protect live trading (VT_MAX_WORKERS env, default 2)
+    num_workers = min(int(os.environ.get("VT_MAX_WORKERS", "2")), os.cpu_count() or 1)
     print(f"\n🔬 Phase 2: Testing all {len(ALL_STRATEGIES)} strategies with param optimization per pair...")
     print(f"  Using {num_workers} parallel workers across {num_workers} CPU cores")
 

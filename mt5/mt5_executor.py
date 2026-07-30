@@ -727,16 +727,41 @@ def cmd_bars(symbol, tf_str="M5", count=50):
     print(json.dumps({"symbol": symbol, "timeframe": tf_str, "bars": bars}))
 
 
-def cmd_history(symbol=None, days=7):
-    """Busca histórico de deals/posições do MT5 (últimos N dias)."""
-    from datetime import datetime, timedelta
-    since = datetime.now() - timedelta(days=days)
-    timestamp = int(since.timestamp())
+def cmd_history(symbol=None, days=7, position=None):
+    """Busca histórico de deals/posições do MT5 (últimos N dias OU por ticket).
 
-    if symbol:
-        deals = mt5.history_deals_get(symbol=symbol, date_from=timestamp)
+    Wave 14.3 (Bruno 2026-07-14): adicionado filtro por ticket (position_id).
+    Wave 880.I (Bruno 2026-07-20): restaurado — parâmetro tinha sido perdido
+    por reset/git. O Wine MT5 tem quirk onde history_deals_get(symbol=...)
+    e history_deals_get(date_from=...) retornam [] mesmo com deals reais;
+    filtrar por position_id é a única forma confiável de localizar o deal
+    de saída de uma posição específica.
+    """
+    from datetime import datetime, timedelta
+    deals = None
+    info_msg = ""
+
+    if position:
+        # Filtrar por ticket específico — funciona no Wine MT5.
+        try:
+            deals = mt5.history_deals_get(position=int(position))
+            info_msg = f"position={position}"
+        except Exception as _e:
+            deals = None
+            info_msg = f"erro position={position}: {_e}"
     else:
-        deals = mt5.history_deals_get(date_from=timestamp)
+        since = datetime.now() - timedelta(days=days)
+        timestamp = int(since.timestamp())
+        if symbol:
+            deals = mt5.history_deals_get(symbol=symbol, date_from=timestamp)
+            info_msg = f"symbol={symbol} days={days}"
+        else:
+            deals = mt5.history_deals_get(date_from=timestamp)
+            info_msg = f"days={days}"
+
+    if not deals:
+        print(json.dumps({"history": [], "info": f"sem deals ({info_msg})"}))
+        return
 
     if not deals:
         print(json.dumps({"history": [], "info": f"sem deals desde {since.strftime('%d/%m/%Y')}"}))
@@ -744,6 +769,20 @@ def cmd_history(symbol=None, days=7):
 
     history = []
     for d in deals:
+        # FIX 2026-07-26 (P0 timezone): d.time_msc é epoch ms (TZ-agnostic).
+        # Converter explicitamente UTC → BRT (UTC-3) pra não depender do TZ
+        # do host (que pode ser UTC — ver PLANO_MIGRACAO_VPS.md:115).
+        try:
+            from datetime import timezone as _tz
+            _BRT = _tz(timedelta(hours=-3))
+            _time_local = (
+                datetime.fromtimestamp(d.time_msc / 1000, tz=_tz.utc)
+                .astimezone(_BRT)
+                .strftime("%Y-%m-%d %H:%M:%S")
+            )
+        except Exception:
+            # Fallback: se time_msc inválido, usa d.time como antes
+            _time_local = str(d.time)
         history.append({
             "ticket": d.ticket,
             "symbol": d.symbol,
@@ -757,7 +796,7 @@ def cmd_history(symbol=None, days=7):
             "fee": getattr(d, 'fee', 0.0),
             "comment": d.comment,
             "magic": d.magic,
-            "time": str(d.time),
+            "time": _time_local,
             "time_msc": d.time_msc,
             "position_id": d.position_id,
             "entry_id": d.position_id,
@@ -820,7 +859,13 @@ def main():
         elif cmd == "history":
             sym = sys.argv[2] if len(sys.argv) > 2 else None
             days = int(sys.argv[3]) if len(sys.argv) > 3 else 7
-            cmd_history(sym, days)
+            # Wave 14.3/880.I: se argv[2] é puramente numérico, é um ticket
+            # (position_id) — roteia para o caminho position= que funciona no
+            # Wine MT5. Caso contrário, é símbolo + dias.
+            if sym and sym.isdigit():
+                cmd_history(position=sym)
+            else:
+                cmd_history(sym, days)
         elif cmd == "modify":
             symbol = sys.argv[2]
             ticket = sys.argv[3]

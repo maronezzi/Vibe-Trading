@@ -56,6 +56,52 @@ def get_db():
     return conn
 
 
+def get_events_weekly_validation(monday, friday):
+    """Validação broker-truth via mt5_trade_events para a semana.
+
+    Retorna dict {events_pnl, events_deals, source} se pipeline saudável
+    (heartbeat <10min), None se indisponível/stale.
+    """
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5.0)
+        conn.execute("PRAGMA busy_timeout=5000")
+
+        # Staleness check: último evento relevante < 10 min
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S")
+        last_ev = conn.execute(
+            "SELECT MAX(event_time) FROM mt5_trade_events "
+            "WHERE trans_type IN ('HEARTBEAT', 'LOGGER_START', 'DEAL_ADD', 'ORDER_ADD')"
+        ).fetchone()[0]
+
+        if last_ev is None or last_ev < cutoff:
+            conn.close()
+            return None  # pipeline stale → sem validação
+
+        # PnL da semana via events
+        # Dedup por deal_ticket (EA emite duplicatas em restart/reconect — Bruno 27/07)
+        row = conn.execute("""
+            SELECT COALESCE(SUM(pnl), 0.0), COUNT(*)
+            FROM (
+                SELECT deal_profit + deal_commission + deal_swap AS pnl
+                FROM mt5_trade_events
+                WHERE trans_type = 'DEAL_ADD'
+                  AND deal_entry = 'OUT'
+                  AND date(event_time) >= ? AND date(event_time) <= ?
+                GROUP BY deal_ticket
+            )
+        """, (monday.isoformat(), friday.isoformat())).fetchone()
+
+        conn.close()
+        return {
+            "events_pnl": round(row[0], 2),
+            "events_deals": row[1],
+            "source": "MT5_EVENTS",
+        }
+    except Exception:
+        return None
+
+
 def get_week_range(target_date=None, prev=False):
     """Retorna (monday, friday) da semana do target_date."""
     if target_date is None:
@@ -383,7 +429,7 @@ def generate_charts(analysis, monday, friday):
     return charts
 
 
-def format_report(analysis, monday, friday):
+def format_report(analysis, monday, friday, events_validation=None):
     """Formata relatório semanal para Telegram."""
     a = analysis
     lines = [
@@ -408,6 +454,26 @@ def format_report(analysis, monday, friday):
         f"• Max Drawdown: R$ {a['max_drawdown']:,.2f}",
         "",
     ])
+
+    # Validação broker-truth (EA events)
+    if events_validation is not None:
+        ev_pnl = events_validation["events_pnl"]
+        ev_deals = events_validation["events_deals"]
+        db_pnl = a["total_pnl"]
+        drift = round(abs(ev_pnl - db_pnl), 2)
+        drift_icon = "✅" if drift <= 5.0 else "⚠️"
+        lines.extend([
+            "🔍 *Validação Broker-Truth (EA events)*",
+            f"• PnL broker: R$ {ev_pnl:+,.2f} ({ev_deals} deals)",
+            f"• PnL DB: R$ {db_pnl:+,.2f} ({a['closed']} trades)",
+            f"{drift_icon} Drift: R$ {drift:,.2f}",
+            "",
+        ])
+    else:
+        lines.extend([
+            "🔍 *Validação Broker-Truth*: indisponível (EA/watcher offline)",
+            "",
+        ])
 
     # PnL por dia
     lines.append("📅 *PnL por Dia*")
@@ -548,8 +614,11 @@ def main():
     charts = generate_charts(analysis, monday, friday)
     print(f"  {len(charts)} gráficos gerados")
 
+    # Validação broker-truth (EA events)
+    events_validation = get_events_weekly_validation(monday, friday)
+
     # Formatar relatório
-    report = format_report(analysis, monday, friday)
+    report = format_report(analysis, monday, friday, events_validation=events_validation)
     print(report)
 
     # Export CSV

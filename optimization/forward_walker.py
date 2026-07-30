@@ -1,0 +1,1020 @@
+"""
+forward_walker.py — Vibe-Trading AGI forward-only (mercado real, sem ordem)
+
+REGRA DE OURO (Bruno 16/07): nunca treinar em trades passados. Otimizar no
+mercado real simulando valores, sem enviar ordem ao broker.
+
+O que faz:
+  1. Conecta no MT5 (read-only — NÃO chama order_send em hipótese alguma)
+  2. Loop contínuo: pra cada (symbol, tf) ativo, busca candles live via fetch_bars
+  3. Replica o dispatch da estratégia do autotrader (mesma função check_entry)
+  4. Quando check_entry retorna sinal → ABRE posição SIMULADA em memória,
+     com SL/TP/trailing idênticos ao que o autotrader teria aplicado
+  5. A cada candle novo, atualiza posições abertas (trailing, breakeven, TP1)
+  6. Quando SL/TP/time-stop dispara → FECHA sim e grava em forward_sim_trades
+  7. A cada N minutos imprime relatório forward (PnL, WR, PF, Sharpe, DD)
+  8. Ao parar (Ctrl+C ou --duration-min), imprime relatório final consolidado
+
+Diferenças do autotrader (intencionais):
+  - entry_ticket = "SIM-{epoch_ms}" (não é ticket MT5 real)
+  - magic_number = 555599 (reservado pra sim, não colide com 555501 do live)
+  - Tabela própria forward_sim_trades (não toca `trades`)
+  - Zero chamadas a mt5.order_send / mt5.positions_get / modify_sl
+
+Uso:
+  python3 optimization/forward_walker.py --duration-min 60
+  python3 optimization/forward_walker.py --symbols WINQ26 --tfs M5
+  python3 optimization/forward_walker.py --duration-min 30 --poll-secs 5
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import signal
+import sqlite3
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Optional
+
+# ─── path bootstrap (mesmo padrão do resto do repo) ────────────────────────────
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "core"))
+sys.path.insert(0, str(ROOT / "strategies"))
+
+from core.vt_config_loader import load_config  # noqa: E402
+from core import vt_autotrader as vat  # noqa: E402
+
+CONFIG = load_config()
+TRADES_DB = ROOT / "vt_trades.db"
+SIM_TABLE = "forward_sim_trades"
+SIM_MAGIC = 555599  # reservado pra forward sims
+
+# Telegram target — espelha scripts/check_symbols_active.py:155 e core/vt_autotrader.py:724
+TELEGRAM_TARGET = os.environ.get(
+    "VT_TELEGRAM_TARGET", "telegram:-1004284773048"
+)
+
+# ─── schema isolado (NÃO toca `trades`) ───────────────────────────────────────
+SCHEMA_SQL = f"""
+CREATE TABLE IF NOT EXISTS {SIM_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_ticket TEXT UNIQUE,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    volume REAL NOT NULL,
+    entry_time TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    entry_sl REAL NOT NULL,
+    exit_time TEXT,
+    exit_price REAL,
+    exit_reason TEXT,
+    exit_sl_price REAL,
+    highest_price REAL,
+    lowest_price REAL,
+    gross_pnl_pts REAL DEFAULT 0,
+    gross_pnl_brl REAL DEFAULT 0,
+    fees_brl REAL DEFAULT 0,
+    net_pnl_brl REAL DEFAULT 0,
+    bars_held INTEGER DEFAULT 0,
+    signal_detail TEXT,
+    notes TEXT,
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_fwd_sym_tf ON {SIM_TABLE}(symbol, timeframe);
+CREATE INDEX IF NOT EXISTS idx_fwd_entry ON {SIM_TABLE}(entry_time);
+"""
+
+
+def ensure_schema() -> None:
+    """Cria a tabela forward_sim_trades se não existir. Idempotente."""
+    con = sqlite3.connect(str(TRADES_DB))
+    try:
+        con.executescript(SCHEMA_SQL)
+        con.commit()
+    finally:
+        con.close()
+
+
+# ─── position model (em memória, igual ao que o live faria) ────────────────────
+@dataclass
+class SimPosition:
+    symbol: str
+    timeframe: str
+    strategy: str
+    direction: str  # "BUY" | "SELL"
+    volume: float
+    entry_time: datetime
+    entry_price: float
+    # SL guardado em EXECUTOR UNITS (= distance_in_price / point_val).
+    # Convenção do autotrader (manage_position linhas 2691-2692):
+    #   sl_pts é SEMPRE POSITIVO no início (distância do entry).
+    #   Após trailing/breakeven em lucro, vira NEGATIVO (profit-lock: SL acima do entry).
+    #   cmd_modify: BUY SL = entry - sl_pts*point  → sl_pts<0 → SL acima entry ✓
+    #               SELL SL = entry + sl_pts*point → sl_pts<0 → SL abaixo entry ✓
+    initial_sl_pts: float
+    current_sl_pts: float
+    trail_activate_atr: float
+    trail_distance_atr: float
+    atr_at_entry: float
+    be_after_minutes: float
+    time_trail_after_minutes: float
+    max_position_minutes: float
+    hard_exit_minutes: float
+    point_val: float = 1.0
+    # TP1 — Wave N+2A (espelha autotrader manage_position:2517-2572)
+    tp1_r: float = 1.0           # lucro em R*ATR pra disparar TP1
+    tp1_pct: float = 0.5         # fração da posição original a fechar no TP1
+    atr_trail_mult: float = 2.0  # trail apertado pós-TP1 (espelha vt_autotrader.py:2577)
+    # state
+    ticket: str = ""
+    highest: float = 0.0
+    lowest: float = 0.0
+    current_atr: float = 0.0
+    bars_held: int = 0
+    trail_on: bool = False
+    breakeven_applied: bool = False
+    tp1_done: bool = False
+    tp1_profit_brl: float = 0.0        # PnL acumulado do TP1 parcial (pra compor net_pnl_brl)
+    tp1_volume_closed: float = 0.0     # volume já fechado no TP1
+    remaining_volume: float = 0.0       # volume restante após TP1
+    original_volume: float = 0.0        # volume original (imutável, base do TP1)
+    last_bar_ts: int = 0  # epoch do último candle que processamos (pra detectar novo candle)
+    notes: str = ""
+
+    def __post_init__(self):
+        self.ticket = f"SIM-{int(time.time() * 1000)}-{self.symbol}-{self.timeframe}"
+        self.highest = self.entry_price
+        self.lowest = self.entry_price
+        self.last_bar_ts = int(self.entry_time.timestamp())
+        # TP1 state init (espelha autotrader manage_position:2523)
+        self.original_volume = self.volume
+        self.remaining_volume = self.volume
+        self.tp1_done = False
+        self.tp1_profit_brl = 0.0
+        self.tp1_volume_closed = 0.0
+
+    # ── preço absoluto do SL atual (pra check_exit + DB) ────────────────────
+    # ESPELHA EXATAMENTE manage_position:2691-2692 do autotrader:
+    #   BUY  SL = entry - sl_pts * point_val   (sl_pts pode ser NEGATIVO = profit lock)
+    #   SELL SL = entry + sl_pts * point_val   (sl_pts pode ser NEGATIVO = profit lock)
+    @property
+    def current_sl_price(self) -> float:
+        if self.direction == "BUY":
+            return self.entry_price - self.current_sl_pts * self.point_val
+        else:
+            return self.entry_price + self.current_sl_pts * self.point_val
+
+    @property
+    def initial_sl_price(self) -> float:
+        if self.direction == "BUY":
+            return self.entry_price - abs(self.initial_sl_pts) * self.point_val
+        else:
+            return self.entry_price + abs(self.initial_sl_pts) * self.point_val
+
+    @property
+    def profit_pts(self) -> float:
+        """Profit em pontos de preço (NÃO executor units)."""
+        if self.direction == "BUY":
+            return self.highest - self.entry_price
+        else:
+            return self.entry_price - self.lowest
+
+    def update_extremes(self, bar: dict) -> None:
+        h = bar["high"]
+        l = bar["low"]
+        if h > self.highest:
+            self.highest = h
+        if l < self.lowest:
+            self.lowest = l
+
+    def _set_sl_price(self, new_sl_price: float) -> bool:
+        """Move current_sl_pts pra fazer SL = new_sl_price (se melhorar o lock).
+
+        Convenção signed (espelhada de autotrader:2741-2745):
+          sl_pts signed: positivo=abaixo entry (loss), negativo=acima entry (profit lock).
+          BUY: novo SL acima do atual = melhor.
+          SELL: novo SL abaixo do atual = melhor.
+        """
+        if self.direction == "BUY":
+            if new_sl_price <= self.current_sl_price:
+                return False
+            new_sl_pts = (self.entry_price - new_sl_price) / self.point_val
+            self.current_sl_pts = new_sl_pts  # signed: pode ficar negativo (profit lock)
+            return True
+        else:
+            if new_sl_price >= self.current_sl_price:
+                return False
+            new_sl_pts = (new_sl_price - self.entry_price) / self.point_val
+            self.current_sl_pts = new_sl_pts  # signed
+            return True
+
+    # ─── TP1 — fechamento parcial (espelha autotrader manage_position:2517-2572) ─
+    def maybe_tp1(self, atr: float) -> bool:
+        """Aplica TP1 parcial UMA vez se atingiu tp1_r * ATR de profit.
+
+        Retorna True se TP1 foi aplicado neste bar.
+        """
+        if self.tp1_done or atr <= 0:
+            return False
+        if not (0 < self.tp1_pct < 1):
+            return False
+        profit_pts = self.profit_pts
+        if profit_pts < self.tp1_r * atr:
+            return False
+        if self.remaining_volume <= 0:
+            return False
+        # Fração do volume original a fechar (mesma fórmula do autotrader:2527-2530)
+        close_volume = self.original_volume * self.tp1_pct
+        actual_close = min(close_volume, self.remaining_volume)
+        if actual_close <= 0:
+            self.tp1_done = True  # idempotente
+            return False
+        # PnL proporcional à fração fechada (mesma fórmula do autotrader:2545-2547)
+        profit_pts_total = profit_pts
+        if profit_pts_total > 0:
+            tp1_pnl_pts = (actual_close / max(0.001, self.original_volume)) * profit_pts_total
+        else:
+            tp1_pnl_pts = 0.0
+        multiplier = CONFIG.get("multiplier", 0.20)
+        tp1_pnl_brl = tp1_pnl_pts * multiplier * actual_close
+        self.tp1_profit_brl += tp1_pnl_brl
+        self.tp1_volume_closed += actual_close
+        self.remaining_volume = max(0.0, self.volume - self.tp1_volume_closed)
+        self.tp1_done = True
+        return True
+
+    def apply_trailing(self, atr: float, held_minutes: float) -> None:
+        """Replica EXATAMENTE manage_position (vt_autotrader.py:2628-2750).
+
+        Ordem:
+          1. TRAILING POR LUCRO — ativa ao atingir trail_activate * ATR (linha 2629)
+          2. BREAKEVEN — após be_after_minutes sem trailing, move SL pra entry + custo (linha 2637-2661)
+          3. TIME-BASED TRAILING — após time_trail_after_minutes, ativa trailing (linha 2664-2668)
+          4. TRAILING STOP — aplica novo SL se trail_on (linha 2693-2714)
+             - Após max_position_minutes, trail agressivo (0.3x ATR)
+             - Pós-TP1, usa atr_trail_mult (mais apertado, linha 2577)
+        """
+        self.current_atr = atr
+        if atr <= 0:
+            return
+        profit_pts = self.profit_pts
+
+        # TP1 (Wave N+2A) — executa antes de trailing para que remaining_volume
+        # já esteja correto. Espelha autotrader:2519-2572.
+        self.maybe_tp1(atr)
+
+        # ===== TRAILING POR LUCRO (autotrader:2629) =====
+        if not self.trail_on and profit_pts >= self.trail_activate_atr * atr:
+            self.trail_on = True
+
+        # ===== BREAKEVEN (autotrader:2637-2661) =====
+        # sl_pts signed: BE aperta SL pra perto do entry (cost_pts é positivo pequeno).
+        if not self.trail_on and held_minutes >= self.be_after_minutes:
+            cost_pts = 5 / self.point_val if self.point_val > 0 else 5
+            # be_sl_pts é POSITIVO (SL abaixo do entry para BUY, acima do entry para SELL).
+            # Em executor units: cost_pts = distância do entry. Se for MENOR que o sl_pts
+            # atual (SL inicial largo), apertar pra cost_pts é MELHOR.
+            if cost_pts < abs(self.current_sl_pts):
+                if self.direction == "BUY":
+                    be_price = self.entry_price + cost_pts * self.point_val
+                else:
+                    be_price = self.entry_price - cost_pts * self.point_val
+                if self._set_sl_price(be_price):
+                    self.breakeven_applied = True
+
+        # ===== TIME-BASED TRAILING (autotrader:2664-2668) =====
+        if not self.trail_on and held_minutes >= self.time_trail_after_minutes and profit_pts > 0:
+            self.trail_on = True
+
+        # ===== TRAILING STOP (autotrader:2693-2714) =====
+        # trail_dist_cfg muda se TP1 já aconteceu (autotrader:2576-2577).
+        if self.trail_on:
+            if self.tp1_done:
+                trail_dist_cfg = self.atr_trail_mult
+            else:
+                trail_dist_cfg = self.trail_distance_atr
+            # Após max_position_minutes, trail agressivo 0.3x ATR (autotrader:2696-2697)
+            if held_minutes >= self.max_position_minutes:
+                trail_dist = 0.3 * atr
+            else:
+                trail_dist = trail_dist_cfg * atr
+            if self.direction == "BUY":
+                new_sl = self.highest - trail_dist
+            else:
+                new_sl = self.lowest + trail_dist
+            self._set_sl_price(new_sl)
+
+    def check_exit(self, bar: dict, held_minutes: float) -> tuple[bool, str, float]:
+        """Retorna (should_exit, reason, exit_price).
+
+        Ordem de prioridade (espelha autotrader manage_position):
+          HARD_EXIT > SL > TIME_MAX_NEG
+        """
+        # HARD EXIT — após hard_exit_minutes, força exit a mercado (autotrader:2593).
+        if held_minutes >= self.hard_exit_minutes:
+            return True, "HARD_EXIT", bar["close"]
+
+        # SL — usa low/high do candle; se tocou, sai no preço do SL.
+        sl_price = self.current_sl_price
+        if self.direction == "BUY":
+            if bar["low"] <= sl_price:
+                return True, "SL", sl_price
+        else:
+            if bar["high"] >= sl_price:
+                return True, "SL", sl_price
+
+        # TIME_MAX_NEG — após max_position_minutes e no prejuízo, fecha a mercado.
+        if held_minutes >= self.max_position_minutes:
+            last = bar["close"]
+            if self.direction == "BUY" and last < self.entry_price:
+                return True, "TIME_MAX_NEG", last
+            if self.direction == "SELL" and last > self.entry_price:
+                return True, "TIME_MAX_NEG", last
+
+        return False, "", 0.0
+
+
+# ─── broker-free helpers ──────────────────────────────────────────────────────
+def is_broker_open(symbol: str) -> bool:
+    """Símbolo aberto pra receber candles. Read-only via orchestrator (Wine).
+
+    NOTA: `import mt5` aqui resolve pro pacote local (mt5/__init__.py) que
+    NÃO expõe `symbol_info_tick` nem `symbol_info`. O path real é via
+    `mt5.mt5_orchestrator.symbol_info` — que cruza Wine sem mandar ordem.
+    """
+    try:
+        from mt5 import mt5_orchestrator as _orch  # type: ignore
+        info = _orch.symbol_info(symbol)
+        return info is not None and "error" not in info
+    except Exception:
+        return True  # fail-open: deixa o fetch_bars() decidir com base em bars vazias
+
+
+def fetch_bars(symbol: str, tf: str, count: int = 100) -> list:
+    """Wrapper read-only — mesma função que o autotrader usa."""
+    return vat.fetch_bars(symbol, tf, count)
+
+
+def get_strategy_func(strategy_name: str):
+    """Lookup dinâmico igual ao autotrader."""
+    return vat.get_strategy_func(strategy_name)
+
+
+def get_params_for_pair(symbol_root: str, tf: str) -> dict:
+    """Pega params do config — mesma fonte que o autotrader usa.
+
+    O autotrader expõe `_get_params_for_tf(symbol_root, tf)` (NÃO
+    `get_params_for_pair` — esse nome não existe em vt_autotrader).
+    Aqui só encapsulamos pra dar uma API mais limpa.
+    """
+    return vat._get_params_for_tf(symbol_root, tf)
+
+
+# Mapa de point value por símbolo raiz (espelha manage_position do autotrader).
+# sl_pts e distâncias de trailing vêm em EXECUTOR UNITS onde
+# distance_price = sl_pts * point_val. Sem essa conversão, WDO/BIT/DOL/IND/WSP
+# ficam com SL/TP 100-1000x errados (1 pt_executor = 0.001..0.01 preço).
+POINT_VAL_MAP = {
+    "WIN": 1.0, "IND": 1.0,
+    "WDO": 0.001, "DOL": 0.001,
+    "BIT": 0.01, "WSP": 0.01,
+}
+
+
+def symbol_root_of(symbol: str) -> str:
+    """Extrai a raiz (WIN/WDO/BIT/DOL/IND/WSP) a partir do contrato (WINQ26 etc)."""
+    for root in POINT_VAL_MAP:
+        if root in symbol:
+            return root
+    return "WIN"
+
+
+def resolve_contract(symbol_or_root: str) -> str:
+    """Resolve symbol_root -> contrato (ex: WIN -> WINQ26) via CONFIG.
+
+    Se já é um contrato (não está em resolved_symbols e contém letra/sufixo),
+    devolve como está. Caso contrário devolve symbol_or_root inalterado.
+    """
+    resolved = CONFIG.get("resolved_symbols", {}) or {}
+    if symbol_or_root in resolved:
+        return resolved[symbol_or_root]
+    return symbol_or_root
+
+
+def is_tf_disabled(symbol_root: str, tf: str) -> bool:
+    """Checa vt_config.json:disabled_timeframes (lista de 'SYM_TF').
+
+    Critico: 16/07 walker rodou WSP_M5/M15 e WDO_M5 mesmo desabilitados
+    (Wave G 15/07), contaminando amostra forward. Walker NÃO É writer de
+    config, então ele apenas pula silenciosamente.
+    """
+    disabled = CONFIG.get("disabled_timeframes", []) or []
+    key = f"{symbol_root}_{tf}"
+    return key in disabled
+
+
+def is_symbol_disabled(symbol_root: str) -> bool:
+    """Checa vt_config.json:disabled_symbols (lista de roots)."""
+    disabled = CONFIG.get("disabled_symbols", []) or []
+    return symbol_root in disabled or symbol_root.lower() in [s.lower() for s in disabled]
+
+
+# ─── core walker ──────────────────────────────────────────────────────────────
+@dataclass
+class WalkerState:
+    positions: dict[tuple[str, str], SimPosition] = field(default_factory=dict)
+    # estado de "última entry" pra anti-re-entry: (symbol,tf) -> epoch do último signal visto
+    last_signal_seen_at: dict[tuple[str, str], int] = field(default_factory=dict)
+    # epoch do último bar fechado (bars[1]) visto por par — entry só dispara em candle NOVO
+    last_closed_bar_ts: dict[tuple[str, str], int] = field(default_factory=dict)
+    started_at: datetime = field(default_factory=datetime.now)
+    total_bars_processed: int = 0
+    total_signals_seen: int = 0
+    total_signals_executed: int = 0
+    report_history: list[dict] = field(default_factory=list)
+    last_report_t: datetime = field(default_factory=datetime.now)
+
+
+def open_sim_position(state: WalkerState, symbol: str, tf: str, strategy: str,
+                      direction: str, price: float, sl_pts: float,
+                      entry_time: datetime, atr: float, params: dict,
+                      signal_detail: dict) -> SimPosition:
+    root = symbol_root_of(symbol)
+    pos = SimPosition(
+        symbol=symbol,
+        timeframe=tf,
+        strategy=strategy,
+        direction=direction,
+        # volume: live config guarda no root level (CONFIG["win"]["volume"]) —
+        # tenta params, depois root config, depois root global, depois 1.0.
+        volume=(
+            params.get("volume")
+            or CONFIG.get(symbol, {}).get("volume")
+            or CONFIG.get(root.lower(), {}).get("volume")
+            or CONFIG.get("volume", 1.0)
+        ),
+        entry_time=entry_time,
+        entry_price=price,
+        initial_sl_pts=sl_pts,
+        current_sl_pts=sl_pts,
+        point_val=POINT_VAL_MAP.get(root, 1.0),
+        trail_activate_atr=params.get("trail_activate", 1.0),
+        trail_distance_atr=params.get("trail_distance", 0.4),
+        atr_at_entry=atr,
+        be_after_minutes=params.get("breakeven_minutes", 10),
+        time_trail_after_minutes=params.get("time_trail_minutes", 20),
+        max_position_minutes=params.get("max_position_minutes", 60),
+        hard_exit_minutes=params.get("hard_exit_minutes", 45),
+        # TP1 (Wave N+2A) — defaults espelham autotrader manage_position:2517-2518
+        tp1_r=params.get("tp1_r", 1.0),
+        tp1_pct=params.get("tp1_pct", 0.5),
+        atr_trail_mult=params.get("atr_trail_mult", 2.0),
+        notes=json.dumps(signal_detail, ensure_ascii=False)[:500],
+    )
+    state.positions[(symbol, tf)] = pos
+    state.total_signals_executed += 1
+    return pos
+
+
+def close_sim_position(con: sqlite3.Connection, pos: SimPosition,
+                       exit_price: float, exit_reason: str, exit_time: datetime,
+                       bars_held: int) -> dict:
+    """Calcula PnL (composição TP1 + restante) e grava no DB. Retorna dict com métricas."""
+    if pos.direction == "BUY":
+        gross_pts_remaining = exit_price - pos.entry_price
+    else:
+        gross_pts_remaining = pos.entry_price - exit_price
+    multiplier = CONFIG.get("multiplier", 0.20)  # WIN mini
+    # Volume que sobra após TP1 parcial → paga esse trecho a exit_price.
+    gross_brl_remaining = gross_pts_remaining * pos.remaining_volume * multiplier
+    # TP1 parcial já foi contabilizado em pos.tp1_profit_brl (BRL).
+    # Fees: cada contrato pago 2x (entrada + saída). TP1 = 1 op extra.
+    fees_per_leg = 0.50
+    fees_brl = pos.volume * fees_per_leg * 2  # full cycle do volume original
+    if pos.tp1_volume_closed > 0:
+        # +1 leg adicional por causa do TP1 parcial
+        fees_brl += pos.tp1_volume_closed * fees_per_leg * 2
+    net_brl = pos.tp1_profit_brl + gross_brl_remaining - fees_brl
+
+    con.execute(
+        f"""INSERT INTO {SIM_TABLE}
+            (entry_ticket, symbol, timeframe, strategy, direction, volume,
+             entry_time, entry_price, entry_sl, exit_time, exit_price,
+             exit_reason, exit_sl_price, highest_price, lowest_price,
+             gross_pnl_pts, gross_pnl_brl, fees_brl, net_pnl_brl,
+             bars_held, signal_detail)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            pos.ticket, pos.symbol, pos.timeframe, pos.strategy, pos.direction,
+            pos.volume, pos.entry_time.isoformat(sep=" ", timespec="seconds"),
+            pos.entry_price, pos.initial_sl_price,
+            exit_time.isoformat(sep=" ", timespec="seconds"),
+            exit_price, exit_reason, pos.current_sl_price, pos.highest, pos.lowest,
+            # gross_pnl_pts = (exit - entry) considerando volume restante
+            # (tp1_pts está embutido em pos.tp1_profit_brl já em BRL).
+            gross_pts_remaining,
+            pos.tp1_profit_brl + gross_brl_remaining,
+            fees_brl, net_brl, bars_held, pos.notes,
+        ),
+    )
+    return {
+        "symbol": pos.symbol, "tf": pos.timeframe, "strategy": pos.strategy,
+        "direction": pos.direction, "gross_pts": gross_pts_remaining,
+        "net_brl": net_brl, "bars_held": bars_held, "reason": exit_reason,
+        "tp1_brl": pos.tp1_profit_brl, "tp1_volume_closed": pos.tp1_volume_closed,
+    }
+
+
+def compute_forward_metrics(con: sqlite3.Connection) -> dict:
+    """Métricas forward-only — só conta sims FECHADAS."""
+    rows = list(con.execute(
+        f"""SELECT symbol, timeframe, strategy, direction,
+                   gross_pnl_pts, net_pnl_brl, exit_reason
+            FROM {SIM_TABLE} WHERE exit_time IS NOT NULL"""
+    ))
+    if not rows:
+        return {"n": 0}
+    pnls = [r[4] for r in rows]
+    wins = sum(1 for p in pnls if p > 0)
+    losses = sum(1 for p in pnls if p < 0)
+    n = len(pnls)
+    wr = wins / n if n else 0
+    gross_wins = sum(p for p in pnls if p > 0)
+    gross_losses = abs(sum(p for p in pnls if p < 0))
+    pf = gross_wins / gross_losses if gross_losses > 0 else float("inf") if gross_wins > 0 else 0
+    total = sum(pnls)
+    # Sharpe simplificado (média / std)
+    if len(pnls) > 1:
+        mean = sum(pnls) / n
+        var = sum((p - mean) ** 2 for p in pnls) / (n - 1)
+        std = math.sqrt(var)
+        sharpe = (mean / std) * math.sqrt(252) if std > 0 else 0
+    else:
+        sharpe = 0
+    # Max DD (corrido, em pts)
+    cum = 0
+    peak = 0
+    max_dd = 0
+    for p in pnls:
+        cum += p
+        if cum > peak:
+            peak = cum
+        dd = peak - cum
+        if dd > max_dd:
+            max_dd = dd
+    return {
+        "n": n, "wins": wins, "losses": losses, "wr": wr, "pf": pf,
+        "total_pts": total, "sharpe": sharpe, "max_dd_pts": max_dd,
+    }
+
+
+def print_report(state: WalkerState, con: sqlite3.Connection, label: str,
+                 min_trades: int = 0) -> dict:
+    """Imprime relatório e retorna dict com métricas + by_pair."""
+    m = compute_forward_metrics(con)
+    elapsed = (datetime.now() - state.started_at).total_seconds() / 60
+    open_pos = len(state.positions)
+    print(f"\n{'=' * 60}")
+    print(f"[{label}] +{elapsed:.1f}min | signals exec={state.total_signals_executed} "
+          f"| bars={state.total_bars_processed} | open={open_pos}")
+    print(f"  n={m.get('n', 0)} wins={m.get('wins', 0)} losses={m.get('losses', 0)} "
+          f"WR={m.get('wr', 0) * 100:.1f}% PF={m.get('pf', 0):.2f} "
+          f"Sharpe={m.get('sharpe', 0):.2f}")
+    print(f"  total_pts={m.get('total_pts', 0):+.0f} max_dd_pts={m.get('max_dd_pts', 0):+.0f}")
+    # por par com WR + recomendação
+    by_pair: dict[str, dict] = {}
+    for r in con.execute(
+        f"""SELECT symbol, timeframe, strategy, COUNT(*),
+                   SUM(net_pnl_brl), AVG(gross_pnl_pts),
+                   SUM(CASE WHEN net_pnl_brl > 0 THEN 1 ELSE 0 END) AS wins
+            FROM {SIM_TABLE} WHERE exit_time IS NOT NULL
+            GROUP BY symbol, timeframe"""
+    ):
+        sym, tf, strat, n, pnl, avg_pts, wins = r
+        n = n or 0
+        wins = wins or 0
+        wr = wins / n if n else 0
+        rec = recommend(pnl or 0, n, wr)
+        by_pair[f"{sym}/{tf}"] = {
+            "symbol": sym, "tf": tf, "strategy": strat, "n": n,
+            "wins": wins, "wr": wr, "pnl": pnl or 0,
+            "avg_pts": avg_pts or 0, "recommendation": rec,
+        }
+    if by_pair:
+        print("  por par:")
+        for k, v in sorted(by_pair.items(), key=lambda x: -x[1]["pnl"]):
+            tag = "  " if v["n"] >= min_trades else " (?)"
+            print(f"    {k:<14}{tag} n={v['n']:>3} WR={v['wr']*100:>4.0f}% "
+                  f"PnL R$ {v['pnl']:>+8.2f} avg {v['avg_pts']:+.1f}pts "
+                  f"→ {v['recommendation']}")
+    print(f"{'=' * 60}")
+    return {"metrics": m, "by_pair": by_pair, "elapsed_min": elapsed}
+
+
+def recommend(pnl: float, n: int, wr: float) -> str:
+    """Heurística KEEP / ADJUST / DISABLE baseada em PnL forward, WR e n.
+
+    Mesma lógica do skill vibe-trading-agi-tuning-defensive (Pitfall 23):
+    n<5 → ruído amostral → INCONCLUSIVE.
+    """
+    if n < 5:
+        return "INCONCLUSIVE"
+    if pnl > 0 and wr >= 0.30:
+        return "KEEP"
+    if pnl > 0 and wr >= 0.20:
+        return "KEEP_TIGHT"   # edge fraco, monitorar
+    if pnl <= -500:
+        return "DISABLE"
+    if pnl < 0 and wr < 0.25:
+        return "DISABLE"
+    return "ADJUST"
+
+
+# ─── drift detection: walker vs live `trades` table ──────────────────────────
+def check_drift(con: sqlite3.Connection, pairs: list[tuple[str, str]]) -> None:
+    """Compara contagem de trades forward (última 1h) vs `trades` live (última 1h).
+
+    Emite linha stderr `drift: walker_n=X, live_n=Y, ratio=Z` quando divergem
+    significativamente (ratio < 0.3 ou > 3.0).
+    """
+    for sym, tf in pairs:
+        try:
+            walker_n = con.execute(
+                f"""SELECT COUNT(*) FROM {SIM_TABLE}
+                    WHERE symbol=? AND timeframe=?
+                      AND exit_time IS NOT NULL
+                      AND datetime(exit_time) >= datetime('now','-1 hours')""",
+                (sym, tf),
+            ).fetchone()[0]
+            walker_pnl = con.execute(
+                f"""SELECT COALESCE(SUM(net_pnl_brl),0) FROM {SIM_TABLE}
+                    WHERE symbol=? AND timeframe=?
+                      AND exit_time IS NOT NULL
+                      AND datetime(exit_time) >= datetime('now','-1 hours')""",
+                (sym, tf),
+            ).fetchone()[0]
+            live_n = con.execute(
+                """SELECT COUNT(*) FROM trades
+                   WHERE symbol=? AND timeframe=?
+                     AND exit_time IS NOT NULL
+                     AND datetime(exit_time) >= datetime('now','-1 hours')""",
+                (sym, tf),
+            ).fetchone()[0]
+            live_pnl = con.execute(
+                """SELECT COALESCE(SUM(net_pnl),0) FROM trades
+                   WHERE symbol=? AND timeframe=?
+                     AND exit_time IS NOT NULL
+                     AND datetime(exit_time) >= datetime('now','-1 hours')""",
+                (sym, tf),
+            ).fetchone()[0]
+        except sqlite3.OperationalError as e:
+            # tabela trades pode não existir em testes isolados
+            sys.stderr.write(f"[drift] {sym}/{tf} skip: {e}\n")
+            continue
+        # ratio de contagem; ambos zero = ratio 1.0 (sem drift)
+        if walker_n == 0 and live_n == 0:
+            continue
+        if live_n == 0:
+            ratio = float("inf") if walker_n > 0 else 1.0
+        else:
+            ratio = walker_n / live_n
+        line = (
+            f"drift: {sym}/{tf} walker_n={walker_n} live_n={live_n} "
+            f"ratio={ratio:.2f} walker_pnl=R${walker_pnl:+.2f} live_pnl=R${live_pnl:+.2f}"
+        )
+        if ratio < 0.3 or ratio > 3.0:
+            sys.stderr.write(f"[DRIFT] {line}\n")
+        else:
+            sys.stderr.write(f"drift: {line}\n")
+
+
+# ─── telegram summary delivery ───────────────────────────────────────────────
+def send_telegram_summary(con: sqlite3.Connection, state: WalkerState,
+                          args, by_pair: dict) -> bool:
+    """Envia summary consolidado via core.vt_hermes_helper.hermes_send.
+
+    Retorna True se enviado OK.
+    """
+    try:
+        from core.vt_hermes_helper import hermes_send
+    except Exception as e:
+        print(f"[TELEGRAM] helper indisponível: {e}")
+        return False
+    if not by_pair:
+        print("[TELEGRAM] sem trades — pulando summary")
+        return False
+    # Top winner / worst loser
+    sorted_pairs = sorted(by_pair.items(), key=lambda x: -x[1]["pnl"])
+    top = sorted_pairs[0]
+    worst = sorted_pairs[-1]
+    total_pnl = sum(v["pnl"] for v in by_pair.values())
+    total_n = sum(v["n"] for v in by_pair.values())
+    # 7d live baseline
+    try:
+        live_7d = con.execute(
+            """SELECT COALESCE(SUM(net_pnl),0), COUNT(*)
+               FROM trades
+               WHERE exit_time IS NOT NULL
+                 AND datetime(exit_time) >= datetime('now','-7 days')"""
+        ).fetchone()
+        live_7d_pnl, live_7d_n = live_7d
+    except sqlite3.OperationalError:
+        live_7d_pnl, live_7d_n = 0.0, 0
+    # mount msg
+    pairs_lines = []
+    for k, v in sorted_pairs:
+        if v["n"] >= args.min_trades:
+            pairs_lines.append(
+                f"• {k:<14} n={v['n']:>3} WR={v['wr']*100:>4.0f}% "
+                f"R${v['pnl']:>+8.2f} → {v['recommendation']}"
+            )
+        else:
+            pairs_lines.append(
+                f"• {k:<14} n={v['n']:>3} (skip, n<{args.min_trades})"
+            )
+    msg = (
+        f"📊 *FORWARD WALKER — {datetime.now():%Y-%m-%d %H:%M}*\n"
+        f"Duração: {state.started_at:%H:%M} → {datetime.now():%H:%M} "
+        f"({(datetime.now()-state.started_at).total_seconds()/60:.0f}min)\n"
+        f"Pares: {', '.join(args.symbols)} | TFs: {', '.join(args.tfs)}\n\n"
+        f"*PnL forward:* R$ {total_pnl:+.2f} (n={total_n})\n"
+        f"Top: {top[0]} R$ {top[1]['pnl']:+.2f}\n"
+        f"Worst: {worst[0]} R$ {worst[1]['pnl']:+.2f}\n\n"
+        f"Compared to last 7d live: live_pnl=R$ {live_7d_pnl:+.2f} "
+        f"(n={live_7d_n}), forward_pnl=R$ {total_pnl:+.2f}, "
+        f"delta=R$ {total_pnl - live_7d_pnl:+.2f}\n\n"
+        f"*Por par:*\n" + "\n".join(pairs_lines)
+    )
+    print(f"[TELEGRAM] enviando summary ({len(msg)} chars) → {TELEGRAM_TARGET}")
+    ok = hermes_send(TELEGRAM_TARGET, msg, timeout=20)
+    if ok:
+        print("[TELEGRAM] OK")
+    else:
+        print("[TELEGRAM] FALHOU (hermes_send retornou False)")
+    return ok
+
+
+def walker_loop(args, state: WalkerState) -> None:
+    """Loop principal — uma iteração por poll."""
+    # CRITICAL: inicializa strategy_utils (KeyError senão).
+    if not vat._strategy_utils:
+        vat._init_strategy_utils()
+
+    # WAL mode + busy_timeout: compartilha o DB com o autotrader sem causar
+    # "database is locked" (lock contention faliu inserções do edge_estimator
+    # durante o smoke 90min — autotrader perdeu 100+ inserts em 15min).
+    con = sqlite3.connect(str(TRADES_DB), timeout=30.0)
+    active_pairs: list[tuple[str, str]] = []  # default vazio pro finally
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA busy_timeout=30000")  # 30s
+        con.commit()
+    except Exception as _e:
+        print(f"[WARN] Não consegui ativar WAL: {_e} — seguindo com default")
+    try:
+        deadline = datetime.now() + timedelta(minutes=args.duration_min)
+        report_interval = timedelta(minutes=args.report_every_min)
+        drift_interval = timedelta(seconds=60)  # spec: a cada 60s
+        last_drift_t = datetime.now() - drift_interval  # dispara no 1º poll
+
+        # Coletar pares ativos (resolved → contract) pra drift
+        for s in args.symbols:
+            sym = resolve_contract(s)
+            for tf in args.tfs:
+                if is_tf_disabled(symbol_root_of(sym), tf):
+                    continue
+                active_pairs.append((sym, tf))
+        print(f"[drift] monitorando {len(active_pairs)} pares contra `trades` (1h window)")
+
+        while datetime.now() < deadline:
+            try:
+                for symbol_or_root in args.symbols:
+                    # resolve WIN → WINQ26 (ou contrato já é contrato, devolve igual)
+                    symbol = resolve_contract(symbol_or_root)
+                    root = symbol_root_of(symbol)
+                    # GATE: pula pares desabilitados na config live (não é writer,
+                    # apenas respeita). 16/07 walker contaminou forward com WSP/WDO
+                    # que estão pausados por decisão Wave G 15/07.
+                    if is_symbol_disabled(root):
+                        continue
+                    for tf in args.tfs:
+                        if is_tf_disabled(root, tf):
+                            continue
+                        # pula se já tem posição aberta nesse slot
+                        if (symbol, tf) in state.positions:
+                            # atualiza posição aberta com último bar
+                            bars = fetch_bars(symbol, tf, args.bars_count)
+                            if not bars or len(bars) < 2:
+                                continue
+                            pos = state.positions[(symbol, tf)]
+                            current_bar = bars[0]
+                            atr_now = vat.calculate_atr(bars, 14)
+                            held_min = (datetime.now() - pos.entry_time).total_seconds() / 60
+                            pos.update_extremes(current_bar)
+                            pos.apply_trailing(atr_now, held_min)
+                            should_exit, reason, exit_px = pos.check_exit(current_bar, held_min)
+                            # só conta novo bar se timestamp mudou
+                            new_bar_ts = current_bar.get("time", 0)
+                            if new_bar_ts != pos.last_bar_ts:
+                                pos.bars_held += 1
+                                pos.last_bar_ts = new_bar_ts
+                                state.total_bars_processed += 1
+                            if should_exit:
+                                res = close_sim_position(con, pos, exit_px, reason,
+                                                          datetime.now(), pos.bars_held)
+                                con.commit()  # commit por close (não a cada poll)
+                                print(f"  [CLOSE] {symbol} {tf} {pos.direction} "
+                                      f"@{exit_px:.0f} reason={reason} "
+                                      f"pts={res['gross_pts']:+.0f} R$ {res['net_brl']:+.2f}")
+                                del state.positions[(symbol, tf)]
+                            continue
+
+                        # sem posição → checa entry (SÓ EM CANDLE NOVO + EM HORÁRIO)
+                        # CRITICAL: bars[1] é o último candle FECHADO — entre polls ele
+                        # só muda quando um candle novo FECHA. Re-rodar check_entry no
+                        # mesmo bar produz o mesmo sinal → re-entry loop (bug achado no
+                        # smoke de 90min: 386 trades inflados de 2 sinais reais).
+                        # --force-trading-time (DEV/SMOKE): ignora pregão pra validar E2E.
+                        if not args.force_trading_time and not vat.is_trading_time():
+                            continue
+                        bars = fetch_bars(symbol, tf, args.bars_count)
+                        if not bars or len(bars) < args.bars_count:
+                            continue
+                        atr = vat.calculate_atr(bars, 14)
+                        if atr == 0:
+                            continue
+                        last_close = bars[1]["close"]
+                        last_bar_ts_unix = bars[1]["time"]
+                        # GATE: só processa se bars[1] mudou desde o último poll
+                        prev_ts = state.last_closed_bar_ts.get((symbol, tf), 0)
+                        if last_bar_ts_unix == prev_ts:
+                            continue  # mesmo candle, pula
+                        state.last_closed_bar_ts[(symbol, tf)] = last_bar_ts_unix
+                        last_bar_ts = datetime.fromtimestamp(last_bar_ts_unix)
+                        # dispatch igual ao autotrader (passa ROOT, não contrato)
+                        strategy_name = vat._get_strategy_for_tf(root, tf)
+                        if not strategy_name:
+                            continue
+                        params = get_params_for_pair(root, tf)
+                        strat_func = get_strategy_func(strategy_name)
+                        if not strat_func:
+                            continue
+                        result = strat_func(
+                            symbol, tf, last_close, atr,
+                            bar_ts=last_bar_ts, bars=bars,
+                            params=params, utils=vat._strategy_utils,
+                        )
+                        state.total_signals_seen += 1
+                        if not result:
+                            continue
+                        # ANTI-RE-ENTRY COOLDOWN: se já vimos signal igual recente,
+                        # não re-executa (proteção extra além do gate de candle novo).
+                        sig_key = (symbol, tf, strategy_name, result["direction"])
+                        last_seen = state.last_signal_seen_at.get(sig_key[:2], 0)
+                        # cooldown = 1 candle em segundos (5min pra M5, 15min pra M15)
+                        tf_secs = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800,
+                                   "H1": 3600, "H4": 14400}.get(tf, 300)
+                        if last_seen and (last_bar_ts_unix - last_seen) < tf_secs:
+                            continue
+                        state.last_signal_seen_at[sig_key[:2]] = last_bar_ts_unix
+                        # ABRE SIM (não toca broker)
+                        direction = result["direction"]
+                        sl_pts = result["sl_pts"]
+                        # entry_sl_price (pra log) — calcula via point_val
+                        pv = POINT_VAL_MAP.get(root, 1.0)
+                        if direction == "BUY":
+                            entry_sl_price = last_close - sl_pts * pv
+                        else:
+                            entry_sl_price = last_close + sl_pts * pv
+                        pos = open_sim_position(
+                            state, symbol, tf, strategy_name, direction,
+                            last_close, sl_pts, last_bar_ts, atr, params,
+                            result.get("info", {}),
+                        )
+                        print(f"  [OPEN]  {symbol} {tf} {strategy_name} {direction} "
+                              f"@{last_close:.0f} sl@{entry_sl_price:.0f} "
+                              f"(atr={atr:.0f}, sl_pts={sl_pts:.0f}, pv={pv})")
+                        # sem commit aqui — open não muda DB, só close persiste
+
+                # relatório periódico + drift check (60s)
+                now = datetime.now()
+                if now - state.last_report_t >= report_interval:
+                    print_report(state, con, f"REPORT @{now:%H:%M:%S}",
+                                 min_trades=args.min_trades)
+                    state.last_report_t = now
+                if now - last_drift_t >= drift_interval:
+                    check_drift(con, active_pairs)
+                    last_drift_t = now
+
+                time.sleep(args.poll_secs)
+
+            except KeyboardInterrupt:
+                print("\n[!] KeyboardInterrupt — fechando posições abertas…")
+                for (sym, tf), pos in list(state.positions.items()):
+                    bars = fetch_bars(sym, tf, 5)
+                    if bars:
+                        exit_px = bars[0]["close"]
+                        close_sim_position(con, pos, exit_px, "WALKER_STOP",
+                                           datetime.now(), pos.bars_held)
+                con.commit()
+                break
+            except Exception as e:
+                print(f"[ERROR loop] {type(e).__name__}: {e}")
+                import traceback
+                traceback.print_exc()
+                time.sleep(args.poll_secs)
+
+        # fim do tempo — fecha abertas
+        print("\n[DEADLINE] Fechando posições abertas…")
+        for (sym, tf), pos in list(state.positions.items()):
+            bars = fetch_bars(sym, tf, 5)
+            if bars:
+                exit_px = bars[0]["close"]
+                close_sim_position(con, pos, exit_px, "DEADLINE",
+                                   datetime.now(), pos.bars_held)
+        con.commit()
+
+    finally:
+        con.close()
+        # relatório final
+        con = sqlite3.connect(str(TRADES_DB))
+        try:
+            final = print_report(state, con,
+                                 f"FINAL @{datetime.now():%H:%M:%S}",
+                                 min_trades=args.min_trades)
+            # drift final + telegram
+            print("\n[drift] check final:")
+            check_drift(con, active_pairs)
+            if not args.no_telegram:
+                send_telegram_summary(con, state, args, final.get("by_pair", {}))
+            else:
+                print("[TELEGRAM] --no-telegram set, summary não enviado")
+        finally:
+            con.close()
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--duration-min", type=int, default=60,
+                   help="Duração total em minutos (default: 60)")
+    p.add_argument("--poll-secs", type=int, default=15,
+                   help="Intervalo entre polls em segundos (default: 15)")
+    p.add_argument("--bars-count", type=int, default=100,
+                   help="Bars fetchadas por iteração (default: 100)")
+    p.add_argument("--report-every-min", type=int, default=10,
+                   help="Relatório forward a cada N min (default: 10)")
+    p.add_argument("--symbols", nargs="+",
+                   default=CONFIG.get("active_symbols", CONFIG.get("symbols", ["WINQ26"])),
+                   help="Símbolos ou raízes a monitorar (default: CONFIG.symbols)")
+    p.add_argument("--tfs", nargs="+", default=["M5", "M15"],
+                   help="Timeframes (default: M5 M15)")
+    p.add_argument("--include-disabled", action="store_true",
+                   help="Incluir pares desabilitados em vt_config.json:disabled_timeframes "
+                        "(default: respeita config e pula)")
+    p.add_argument("--no-telegram", action="store_true",
+                   help="Não envia summary ao Telegram ao final (default: envia)")
+    p.add_argument("--min-trades", type=int, default=5,
+                   help="Só reporta/recomenda pares com n >= N (default: 5)")
+    p.add_argument("--force-trading-time", action="store_true",
+                   help="[DEV/SMOKE] Força is_trading_time()=True ignorando pregão. "
+                        "USAR APENAS em testes — em produção o autotrader segue o calendário.")
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    print(f"[forward_walker] Duração: {args.duration_min}min | Poll: {args.poll_secs}s | "
+          f"Símbolos: {args.symbols} | TFs: {args.tfs}")
+    print(f"[forward_walker] include_disabled={args.include_disabled} | "
+          f"min_trades={args.min_trades} | no_telegram={args.no_telegram}")
+    print(f"[forward_walker] DB: {TRADES_DB} | Tabela isolada: {SIM_TABLE}")
+    print(f"[forward_walker] Read-only no MT5 — ZERO ordens serão enviadas")
+    print(f"[forward_walker] PID: {os.getpid()} | Início: {datetime.now():%Y-%m-%d %H:%M:%S}")
+    print()
+
+    ensure_schema()
+    state = WalkerState()
+
+    # Se --include-disabled, finge que lista de disabled tá vazia (override runtime)
+    if args.include_disabled:
+        global CONFIG
+        CONFIG = dict(CONFIG)
+        CONFIG["disabled_timeframes"] = []
+        CONFIG["disabled_symbols"] = []
+        # reload CONFIG-aware helpers (eles usam o module-level CONFIG)
+        print("[forward_walker] --include-disabled: ignorando disabled_timeframes/disabled_symbols")
+
+    walker_loop(args, state)
+
+
+if __name__ == "__main__":
+    main()

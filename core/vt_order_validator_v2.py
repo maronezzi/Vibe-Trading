@@ -304,7 +304,7 @@ class ValidatorV2:
 
         Níveis:
           1. Local check (SL_LIMITS, SL_LADO_ERRADO) — sempre
-          2. Histórico do setup (DB) — bloqueia se WR<30% com 10+ trades
+          2. Histórico do setup (DB) — apenas contexto pro LLM, sem bloqueio
           3. Contexto de sessão (PnL diário, streak) — limita aumento de SL
           4. Cache (5min) — reusa resposta se mesmo setup
           5. LLM — só chamada se passou pelos níveis anteriores
@@ -333,20 +333,8 @@ class ValidatorV2:
             for a in local_alerts:
                 _log(f"[LOCAL] {symbol} {direction} — [{a['severity']}] {a['type']}: {a['detail']}")
 
-        # ── NÍVEL 2: Histórico do setup ──
+        # ── NÍVEL 2: Histórico do setup (apenas contexto pro LLM, sem bloqueio) ──
         h_stats = historical_setup_stats(symbol, tf, strategy, direction, days=30)
-        if h_stats["n_trades"] >= HISTORICAL_MIN_TRADES and h_stats["win_rate"] < HISTORICAL_WR_THRESHOLD:
-            result["valid"] = False
-            result["alerts"].append({
-                "type": "HISTORICAL_LOSING",
-                "severity": "HIGH",
-                "detail": f"Setup {symbol} {tf} {strategy} {direction}: WR={h_stats['win_rate']:.1f}% em {h_stats['n_trades']} trades (últimos 30d). PnL médio R$ {h_stats['avg_pnl']:.2f}.",
-                "suggestion": "NÃO ABRIR. AGI deve desativar este setup ou revisar parâmetros."
-            })
-            self.stats["blocked_historical"] += 1
-            _log(f"[HIST] {symbol} {tf} {strategy} {direction}: WR={h_stats['win_rate']:.1f}% em {h_stats['n_trades']}t → bloqueado")
-            # Se histórico é ruim, NÃO consulta LLM (decisão clara)
-            return result
 
         # ── NÍVEL 3: Contexto de sessão ──
         daily_pnl = get_daily_pnl()
@@ -581,6 +569,61 @@ Retorne APENAS JSON:
                 _log(f"[LLM] SL mantido em {sl_pts} (sugerido {new_sl}, diff {diff}pts) — {data.get('resumo', '')[:100]}")
         except (json.JSONDecodeError, ValueError) as e:
             _log(f"[WARN] parse_llm_response: {e} — raw: {llm_response[:300]}")
+
+
+def validate_pre_send(order_data: dict) -> dict:
+    """Gate pré-envio: apenas corrige SL quando necessário.
+
+    Roda ANTES de safe_buy/safe_sell. Usa checks determinísticos locais
+    (SL_LIMITS, ATR) para sugerir ajuste de SL. Nunca bloqueia a ordem.
+
+    Returns:
+        {
+            "allowed": True,  # sempre permitido (sem bloqueio)
+            "block_reason": None,
+            "alerts": list[dict],
+            "adjusted_sl": int | None,  # sugestão de SL
+        }
+    """
+    import re as _re
+
+    v = ValidatorV2()
+    symbol = order_data.get("symbol", "UNKNOWN")
+    direction = order_data.get("direction", "UNKNOWN")
+    tf = order_data.get("tf", order_data.get("timeframe", "?"))
+    base = _get_base(symbol)
+
+    result = {
+        "allowed": True,
+        "block_reason": None,
+        "alerts": [],
+        "adjusted_sl": None,
+    }
+
+    # ── Checks locais (SL_LIMITS, ATR, lado) ──
+    local_alerts = v._validate_local(order_data, base)
+    result["alerts"] = local_alerts
+    if local_alerts:
+        for a in local_alerts:
+            _log(f"[PRE-SEND] {symbol} {direction} {tf}: "
+                 f"[{a['severity']}/{a['type']}] {a['detail']}")
+
+    # ── Extrair sugestão de SL dos alerts ──
+    for a in local_alerts:
+        suggestion = a.get("suggestion", "")
+        match = _re.search(r"(\d+)\s*pts", suggestion)
+        if match:
+            suggested = int(match.group(1))
+            limits = SL_LIMITS.get(base, {"min": 200, "max": 50000})
+            suggested = max(limits["min"], min(limits["max"], suggested))
+            if suggested != order_data.get("sl_pts", 0):
+                result["adjusted_sl"] = suggested
+                _log(f"[PRE-SEND] ADJUST {symbol} {direction} {tf}: "
+                     f"SL {order_data.get('sl_pts', 0)} → {suggested} "
+                     f"([{a['type']}] {a['detail']})")
+                break
+
+    return result
 
 
 # Função de compatibilidade com v1

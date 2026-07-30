@@ -283,6 +283,61 @@ def check_trade_log(mt5_positions):
 
 
 # ===== 6. CHECK DAILY PNL DRIFT (FASE 4 — TRUTH LAYER) =====
+def get_events_daily_pnl(date_iso: Optional[str] = None) -> Optional[Decimal]:
+    """PnL diario via mt5_trade_events (EA TradeLogger → CSV → watcher → SQLite).
+
+    Fonte broker-truth LOCAL (~1ms). Retorna Decimal se pipeline saudável
+    (heartbeat <10min), None se indisponível/stale (caller cai no Wine).
+
+    Args:
+        date_iso: data YYYY-MM-DD. Se None, usa hoje.
+
+    Returns:
+        Decimal em R$ ou None (pipeline indisponível).
+    """
+    if date_iso is None:
+        date_iso = datetime.now().strftime("%Y-%m-%d")
+    if not DB_PATH.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5.0)
+        conn.execute("PRAGMA busy_timeout=5000")
+
+        # Staleness check: último evento relevante deve ter < 10 min
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S")
+        last_ev = conn.execute(
+            "SELECT MAX(event_time) FROM mt5_trade_events "
+            "WHERE trans_type IN ('HEARTBEAT', 'LOGGER_START', 'DEAL_ADD', 'ORDER_ADD')"
+        ).fetchone()[0]
+
+        if last_ev is None or last_ev < cutoff:
+            conn.close()
+            return None  # pipeline stale/vazio → caller usa Wine
+
+        # PnL: DEAL_ADD com deal_entry='OUT' na data alvo.
+        # Dedup por deal_ticket: o watcher CSV pode ingerir o mesmo deal
+        # duas vezes (EA emite duplicatas em restart/reconect). Sem dedup
+        # o SUM conta o dobro e distorce o drift alert (Bruno 27/07).
+        row = conn.execute("""
+            SELECT COALESCE(SUM(pnl), 0.0)
+            FROM (
+                SELECT deal_profit + deal_commission + deal_swap AS pnl
+                FROM mt5_trade_events
+                WHERE trans_type = 'DEAL_ADD'
+                  AND deal_entry = 'OUT'
+                  AND date(event_time) = ?
+                GROUP BY deal_ticket
+            )
+        """, (date_iso,)).fetchone()
+        conn.close()
+
+        return Decimal(str(row[0])).quantize(Decimal("0.01"))
+    except Exception as e:
+        log(f"[EVENTS PNL ERRO] {e}")
+        return None
+
+
 def get_db_daily_pnl(date_iso: Optional[str] = None) -> Decimal:
     """PnL diario calculado direto do DB local (fonte SECUNDARIA).
 
@@ -329,10 +384,11 @@ def get_db_daily_pnl(date_iso: Optional[str] = None) -> Decimal:
 
 
 def get_mt5_daily_pnl_truth(date_iso: Optional[str] = None) -> Decimal:
-    """PnL diario MT5-truth via truth layer (fonte AUTORITATIVA).
+    """PnL diario broker-truth (fonte AUTORITATIVA).
 
-    Wrapper sobre core.vt_truth.get_daily_pnl() que expoe Decimal em R$
-    (precisao 0.01) com cache TTL interno de 5s.
+    Tenta mt5_trade_events PRIMEIRO (EA TradeLogger, local ~1ms).
+    Se pipeline stale/indisponível, cai no Wine/MT5 history (~200ms)
+    via core.vt_truth.get_daily_pnl().
 
     Args:
         date_iso: data de referencia YYYY-MM-DD. Se None, usa "hoje".
@@ -341,9 +397,15 @@ def get_mt5_daily_pnl_truth(date_iso: Optional[str] = None) -> Decimal:
         Decimal em R$. Zero se MT5 indisponivel / sem deals no dia.
 
     Comportamento:
-        - FAIL-SAFE: se MT5 falha, retorna Decimal('0.00') (truth layer
-          ja eh defensivo — ver core/vt_truth.py).
+        - FAIL-SAFE: se ambas fontes falham, retorna Decimal('0.00').
     """
+    # 1) Tentar events local (~1ms)
+    events_pnl = get_events_daily_pnl(date_iso=date_iso)
+    if events_pnl is not None:
+        return events_pnl
+
+    # 2) Fallback: Wine/MT5 history via truth layer (~200ms)
+    log("[TRUTH] mt5_trade_events indisponivel, usando Wine/MT5 history")
     try:
         return vt_truth.get_daily_pnl(date_iso=date_iso)
     except Exception as e:
@@ -352,28 +414,37 @@ def get_mt5_daily_pnl_truth(date_iso: Optional[str] = None) -> Decimal:
 
 
 def compute_pnl_drift(date_iso: Optional[str] = None) -> Dict[str, Any]:
-    """Calcula drift entre PnL MT5-truth e PnL DB.
+    """Calcula drift entre PnL broker-truth e PnL DB.
 
-    Compara a fonte autoritativa (MT5 history, via truth layer) contra o
-    DB local. Drift = |mt5 - db|. Acima de DRIFT_THRESHOLD_REAIS eh
-    dessincronizacao real.
+    Compara a fonte autoritativa (mt5_trade_events local ou MT5 history
+    via Wine) contra o DB local. Drift = |broker - db|. Acima de
+    DRIFT_THRESHOLD_REAIS eh dessincronizacao real.
 
     Args:
         date_iso: data de referencia YYYY-MM-DD. Se None, usa "hoje".
 
     Returns:
         Dict com:
-          - mt5_pnl: Decimal em R$ (MT5-truth)
+          - mt5_pnl: Decimal em R$ (broker-truth)
           - db_pnl: Decimal em R$ (DB local)
           - drift: Decimal em R$ (|mt5 - db|)
           - drift_alert: bool (drift > DRIFT_THRESHOLD_REAIS)
           - threshold: Decimal em R$ (limiar usado na comparacao)
           - date_iso: str (data alvo)
-          - source: "TRUTH_LAYER" (sempre via vt_truth)
+          - source: "MT5_EVENTS" (local) | "TRUTH_LAYER" (Wine)
     """
     if date_iso is None:
         date_iso = datetime.now().strftime("%Y-%m-%d")
-    mt5_pnl = get_mt5_daily_pnl_truth(date_iso=date_iso)
+
+    # Determinar fonte: events local ou Wine
+    events_pnl = get_events_daily_pnl(date_iso=date_iso)
+    if events_pnl is not None:
+        mt5_pnl = events_pnl
+        source = "MT5_EVENTS"
+    else:
+        mt5_pnl = get_mt5_daily_pnl_truth(date_iso=date_iso)
+        source = "TRUTH_LAYER"
+
     db_pnl = get_db_daily_pnl(date_iso=date_iso)
     drift = (mt5_pnl - db_pnl).copy_abs()
     return {
@@ -383,7 +454,7 @@ def compute_pnl_drift(date_iso: Optional[str] = None) -> Dict[str, Any]:
         "drift_alert": drift > DRIFT_THRESHOLD_REAIS,
         "threshold": DRIFT_THRESHOLD_REAIS,
         "date_iso": date_iso,
-        "source": "TRUTH_LAYER",
+        "source": source,
     }
 
 

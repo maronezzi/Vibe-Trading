@@ -82,6 +82,10 @@ ALLOWED_WRITERS = (
     # calibração broker-truth contract_specs sobrescrita pelo AGI v3 restaurado.
     # Uso ÚNICO/PONTUAL; rodar com autotrader fora do pregão (como agora).
     "scripts/w873_recovery_20260707.py",
+    # scripts/w_protect_monday_20260727.py: proteção anti-repetição sexta 24/07.
+    # max_consecutive_losses 999→5, cooldown 60min/3, RSI→ENHANCED_RSI.
+    # Autorizado Bruno 2026-07-26. Rodar com autotrader PAUSADO.
+    "scripts/w_protect_monday_20260727.py",
     # scripts/w873_pause_losing_tfs_20260707.py: pause dos 12 TFs negativos
     # após AGI v4 não convergir (specs W873 corretas). Lei 5 (nunca negativo).
     "scripts/w873_pause_losing_tfs_20260707.py",
@@ -119,6 +123,14 @@ ALLOWED_WRITERS = (
     # mexe em sl_atr_mult, NÃO remove de disabled_timeframes. Rodar com
     # autotrader PAUSADO.
     "scripts/w14_6_meio_dia_20260715.py",
+    # scripts/w_cleanup_time_blocks_orphan_20260726.py (Bruno 2026-07-26, dom):
+    # remove time_blocks["WINQ26"] órfão (block VWAP 9-17h criado na Wave 8.4
+    # quando WIN usava VWAP; AGI depois trocou todos os TFs do WIN para
+    # SMART_EMA/HTF_BIAS/RSI_REVERSION — nenhum usa VWAP). Verificado em
+    # core/vt_autotrader.py:1093-1101 que o block só age se active_strategy
+    # == block.strategy, então é inócuo. Limpeza pura, zero efeito
+    # comportamental. Mantém BITM26 intacto. Rodar com autotrader PAUSADO.
+    "scripts/w_cleanup_time_blocks_orphan_20260726.py",
     "backtest/apply_optimization.py",
     # monitoring/vt_pre_flight.py roda 8h55 ANTES do autotrader (pre-flight
     # gate) — é seguro persistir resolved_symbols nessa janela.
@@ -173,6 +185,12 @@ ALLOWED_WRITERS = (
     # estratégia, NÃO mexe em sl_atr_mult, NÃO remove de disabled_timeframes.
     # Rodar com autotrader PAUSADO (data/autotrader.paused presente).
     "scripts/w878_11h_copilot_overtrading_cooldown.py",
+    # Wave 880.G (2026-07-20, Bruno): corrige contract_specs.mult no config
+    # (WIN 1.0→0.20 mini, WDO/BIT/DOL também). Rodar com autotrador PAUSADO.
+    "scripts/w14_7_fix_contract_specs_mult_20260720.py",
+    # Wave 880.H (2026-07-20, Bruno): Profit Lock Adaptativo — adiciona chaves
+    # profit_lock_* no config. Rodar com autotrador PAUSADO.
+    "scripts/w14_9_enable_profit_lock_20260720.py",
 )
 
 # Cache

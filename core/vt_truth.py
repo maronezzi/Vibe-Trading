@@ -66,7 +66,11 @@ def _mt5_status() -> Dict[str, Any]:
     return _mt5_status_raw()  # type: ignore[no-any-return]
 
 
-def _mt5_history(symbol: Optional[str] = None, days: int = 7) -> Dict[str, Any]:
+def _mt5_history(symbol: Optional[str] = None, days: int = 7,
+                 position: Optional[str] = None) -> Dict[str, Any]:
+    # Wave 880.I: repassa position quando informado (caminho confiável no Wine).
+    if position is not None:
+        return _mt5_history_raw(position=position)  # type: ignore[arg-type,no-any-return]
     return _mt5_history_raw(symbol, days)  # type: ignore[arg-type,no-any-return]
 
 
@@ -306,13 +310,16 @@ def get_open_positions(magic_filter: int = MAGIC_VIBETRADING) -> List[Position]:
 
 # ===== 2. get_position_history =====
 def get_position_history(
-    symbol: Optional[str] = None, days: int = 1
+    symbol: Optional[str] = None, days: int = 1, position: Optional[str] = None
 ) -> List[Deal]:
     """Retorna deals historicos do MT5 (autoritativo).
 
     Args:
         symbol: filtro de simbolo (None = todos). Ex: "WINM26", "WDON26".
         days: janela retroativa em dias. Default 1 (so hoje).
+        position: filtro por position_id (ticket da posição). Wave 880.I
+            (Bruno 2026-07-20): quando informado, usa o caminho history(position=)
+            que é o ÚNICO confiável no Wine MT5 (symbol=/date_from= retornam []).
 
     Returns:
         Lista de Deal (frozen dataclass). Vazia se MT5 indisponivel / sem deals.
@@ -322,13 +329,13 @@ def get_position_history(
         - FAIL-SAFE: erros nao levantam.
         - Tolerante a formato de entrada errado (pula pos malformada com warn).
     """
-    cache_key = f"hist_{symbol or 'ALL'}_{days}"
+    cache_key = f"hist_{symbol or 'ALL'}_{days}_{position or 'NOPOS'}"
     cached = _history_cache.get(cache_key)
     if cached is not None:
         return list(cached)
 
     try:
-        raw = _mt5_history(symbol=symbol, days=days) or {}
+        raw = _mt5_history(symbol=symbol, days=days, position=position) or {}
     except Exception as e:
         _log(f"get_position_history: MT5 history() falhou ({type(e).__name__}: {e})")
         return []

@@ -116,6 +116,8 @@ vt_config.json.bak*
 
 # Database (runtime data, not source)
 vt_trades.db
+vt_trades.db-shm
+vt_trades.db-wal
 journal.db
 trade_log.db
 
@@ -142,6 +144,9 @@ vt_config.json.snapshot_*
 
 # ZCode workspace (workflow separado, não parte do VT)
 .zcode/
+
+# Qwen Code workspace (IDE local, não parte do VT)
+.qwen/
 
 # Archive docs (sepultura)
 archive/docs/

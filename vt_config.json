@@ -1,6 +1,6 @@
 {
-  "_version": 1113,
-  "_updated_at": "2026-07-23T17:41:00.375600",
+  "_version": 1145,
+  "_updated_at": "2026-07-30T12:08:27.161204",
   "_updated_by": "agi_v4_stage5",
   "_notes": "auto-resolve vencimento: WDO: WDOU26 → WDOQ26",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
@@ -114,10 +114,10 @@
     "WIN_M5": "SMART_EMA",
     "WIN_M15": "HTF_BIAS_LTF_ENTRY",
     "WIN_M30": "HTF_BIAS_LTF_ENTRY",
-    "WIN_H1": "RSI_REVERSION",
-    "BIT_M5": "SUPERTREND",
-    "BIT_M15": "EMA_PULLBACK",
-    "BIT_M30": "RSI_REVERSION",
+    "WIN_H1": "ENHANCED_RSI_REVERSION",
+    "BIT_M5": "RANGE_TRADING",
+    "BIT_M15": "DIVERGENCE_RSI",
+    "BIT_M30": "DIVERGENCE_RSI",
     "BIT_H1": "ADX_TREND",
     "WSP_M5": "RSI_REVERSION",
     "WSP_M15": "ADX_TREND",
@@ -245,16 +245,16 @@
   "global_max_daily_trades": 999,
   "params_by_tf": {
     "WIN_M5": {
-      "cooldown_seconds": 1200,
+      "cooldown_seconds": 1800,
       "ema_fast": 10,
       "ema_slow": 30,
       "halt_duration_minutes": 60,
-      "max_consecutive_losses": 4,
+      "max_consecutive_losses": 3,
       "profit_lock_r": 1.5,
       "sl_atr_mult": 1.8
     },
     "WIN_M15": {
-      "cooldown_seconds": 1200,
+      "cooldown_seconds": 1800,
       "halt_duration_minutes": 45,
       "max_consecutive_losses": 3,
       "profit_lock_r": 0.7,
@@ -262,11 +262,11 @@
       "adx_min": 22
     },
     "WIN_M30": {
-      "cooldown_seconds": 600,
-      "halt_duration_minutes": 30,
-      "max_consecutive_losses": 3,
-      "profit_lock_r": 1.5,
-      "sl_atr_mult": 1.5
+      "cooldown_seconds": 900,
+      "halt_duration_minutes": 90,
+      "max_consecutive_losses": 5,
+      "profit_lock_r": 0.5,
+      "sl_atr_mult": 2.5
     },
     "WIN_H1": {
       "cooldown_seconds": 60,
@@ -279,17 +279,17 @@
       "sl_atr_mult": 2.5
     },
     "BIT_M5": {
-      "cooldown_seconds": 180,
-      "halt_duration_minutes": 30,
+      "cooldown_seconds": 60,
+      "halt_duration_minutes": 180,
       "macd_fast": 14,
       "macd_signal": 7,
       "macd_slow": 30,
-      "max_consecutive_losses": 3,
+      "max_consecutive_losses": 6,
       "profit_lock_r": 0.5,
-      "sl_atr_mult": 2.0,
-      "rsi_overbought": 75,
-      "rsi_oversold": 25,
-      "rsi_period": 10,
+      "sl_atr_mult": 1.2,
+      "rsi_overbought": 85,
+      "rsi_oversold": 35,
+      "rsi_period": 7,
       "range_atr_pct": 0.01,
       "touch_pct": 0.005,
       "lookback": 20,
@@ -297,26 +297,29 @@
       "multiplier": 3.5
     },
     "BIT_M15": {
-      "cooldown_seconds": 600,
+      "cooldown_seconds": 60,
       "ema_fast": 5,
       "ema_slow": 20,
       "halt_duration_minutes": 60,
       "max_consecutive_losses": 3,
       "profit_lock_r": 1.0,
       "pullback_pct": 0.15,
-      "sl_atr_mult": 3.0
+      "sl_atr_mult": 0.8,
+      "rsi_overbought": 65,
+      "rsi_oversold": 15,
+      "rsi_period": 7
     },
     "BIT_M30": {
       "cooldown_seconds": 300,
-      "halt_duration_minutes": 120,
-      "max_consecutive_losses": 5,
-      "profit_lock_r": 0.0,
-      "rsi_overbought": 80,
+      "halt_duration_minutes": 180,
+      "max_consecutive_losses": 6,
+      "profit_lock_r": 0.5,
+      "rsi_overbought": 65,
       "rsi_oversold": 15,
       "rsi_period": 7,
-      "sl_atr_mult": 2.5,
+      "sl_atr_mult": 1.2,
       "ema_period": 21,
-      "max_ema_distance_pct": 2.5
+      "max_ema_distance_pct": 1.5
     },
     "BIT_H1": {
       "sl_atr_mult": 1.0,
@@ -329,7 +332,7 @@
       "rsi_overbought": 75,
       "rsi_oversold": 30,
       "adx_period": 28,
-      "adx_threshold": 18,
+      "adx_threshold": 15,
       "trail_activate": 1.0,
       "tp1_r": 1.0,
       "tp1_pct": 0.5,
@@ -468,22 +471,22 @@
   },
   "max_daily_trades": 999,
   "max_consecutive_losses_by_tf": {
-    "WIN_M5": 999,
-    "WIN_M15": 999,
-    "WIN_M30": 999,
-    "WIN_H1": 999,
-    "BIT_M5": 999,
-    "BIT_M15": 999,
-    "BIT_M30": 999,
-    "BIT_H1": 999,
-    "WSP_M5": 999,
-    "WSP_M15": 999,
-    "WSP_M30": 999,
-    "WSP_H1": 999,
-    "WDO_M5": 999,
-    "WDO_M15": 999,
-    "WDO_M30": 999,
-    "WDO_H1": 999,
+    "WIN_M5": 5,
+    "WIN_M15": 5,
+    "WIN_M30": 5,
+    "WIN_H1": 5,
+    "BIT_M5": 5,
+    "BIT_M15": 5,
+    "BIT_M30": 5,
+    "BIT_H1": 5,
+    "WSP_M5": 5,
+    "WSP_M15": 5,
+    "WSP_M30": 5,
+    "WSP_H1": 5,
+    "WDO_M5": 5,
+    "WDO_M15": 5,
+    "WDO_M30": 5,
+    "WDO_H1": 5,
     "IND_M5": 3,
     "IND_M15": 3,
     "IND_M30": 3,
@@ -543,14 +546,6 @@
         "start": 9,
         "end": 11,
         "reason": "DB 30d: BITM26 STRONG_TREND 09h-11h = -R$3.234 (12 trades, 41% WR mas avg loss >> avg win)"
-      }
-    ],
-    "WINQ26": [
-      {
-        "start": 9,
-        "end": 17,
-        "strategy": "VWAP",
-        "reason": "DB 30d: WINQ26 VWAP = 52 SL_SERVIDOR, 23.1% WR, -R$331. Sem edge, só ruído."
       }
     ]
   },
@@ -614,8 +609,8 @@
   },
   "loss_cooldown": {
     "enabled": true,
-    "max_consecutive": 2,
-    "cooldown_minutes": 30,
+    "max_consecutive": 3,
+    "cooldown_minutes": 60,
     "scope": "symbol_direction"
   },
   "latency_slo": {
@@ -631,5 +626,8 @@
   "trailing_profit_lock_enabled": true,
   "trailing_activation_pct": 0.5,
   "trailing_floor_pct": 0.5,
-  "_note_trailing_profit_lock": "Wave 1110 (23/07): Trailing Profit Lock — ratchet progressivo. Ativa em trailing_activation_pct do target, floor sobe linearmente de trailing_floor_pct×pico até 1.0×pico no target. Breach → fecha tudo + arma profit lock. Config: trailing_profit_lock_enabled, trailing_activation_pct, trailing_floor_pct."
+  "_note_trailing_profit_lock": "Wave 1110 (23/07): Trailing Profit Lock — ratchet progressivo. Ativa em trailing_activation_pct do target, floor sobe linearmente de trailing_floor_pct×pico até 1.0×pico no target. Breach → fecha tudo + arma profit lock. Config: trailing_profit_lock_enabled, trailing_activation_pct, trailing_floor_pct.",
+  "trailing_target_per_lot": 250.0,
+  "_note_trailing_target_per_lot": "Target do trailing profit lock = R$250 x volume total das posicoes abertas. Ativa em 50% (R$125/lot), floor sobe ate 100% no target. Bruno 27/07.",
+  "trailing_fast_interval": 5
 }

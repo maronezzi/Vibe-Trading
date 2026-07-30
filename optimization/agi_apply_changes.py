@@ -48,6 +48,10 @@ def main():
         return
 
     # Estratégias (Wave W874): atualiza strategy_by_tf
+    # FIX 2026-07-26 (gate de lucratividade — Bruno): AGI é autônomo pra trocar
+    # estratégias, MAS só pode atribuir uma que dê lucro. Gate: se a estratégia
+    # candidata tem PnL negativo nos últimos 20 trades live naquele TF, bloqueia.
+    # Sem dados live (estratégia nova) → permite (backtest do AGI é a evidência).
     if args.strategy_changes:
         sc = json.loads(args.strategy_changes)
         strat_map = cfg.setdefault("strategy_by_tf", {})
@@ -58,6 +62,35 @@ def main():
             if not tf or not strat:
                 print(f"  SKIP-STRAT (sem tf/strategy): {ch}")
                 continue
+
+            # Gate de lucratividade: checar PnL recente da estratégia candidata
+            _blocked = False
+            try:
+                import sqlite3
+                _db = sqlite3.connect("vt_trades.db", timeout=5.0)
+                _row = _db.execute("""
+                    SELECT COUNT(*) as n, SUM(net_pnl) as pnl
+                    FROM (
+                        SELECT net_pnl FROM trades
+                        WHERE strategy = ? AND timeframe = ?
+                          AND exit_time IS NOT NULL
+                        ORDER BY exit_time DESC LIMIT 20
+                    )
+                """, (strat, tf.rsplit("_", 1)[-1] if "_" in tf else tf)).fetchone()
+                _db.close()
+                if _row and _row[0] >= 5 and (_row[1] or 0) < 0:
+                    print(
+                        f"  🚫 GATE-LUCRO: {tf} → {strat} BLOQUEADA "
+                        f"(PnL últimos {_row[0]} trades: R${_row[1]:+.2f}). "
+                        f"Estratégia precisa dar lucro pra ser atribuída."
+                    )
+                    _blocked = True
+            except Exception as _e_gate:
+                print(f"  ⚠️ Gate check falhou ({_e_gate}) — permitindo por segurança")
+
+            if _blocked:
+                continue
+
             old = strat_map.get(tf, "?")
             strat_map[tf] = strat
             print(f"  ✅ STRAT {tf}: {old} → {strat} ({reason})")

@@ -74,7 +74,7 @@ TELEGRAM_TARGET = "telegram:-1004284773048"
 LOG_STALE_MINUTES = 5
 STATE_STALE_MINUTES = 30
 LOCK_STALE_SECONDS = 300          # espelha vt_config_loader._STALE_LOCK_SECONDS
-MT5_TIMEOUT_SEC = 2
+MT5_TIMEOUT_SEC = 5  # Wave VPS-prep: 2s era apertado demais (Wine idle cold-start ~2-3s)
 DB_TIMEOUT_SEC = 5
 
 # Severity ladder
@@ -304,6 +304,12 @@ def _check_mt5_tick_freshness() -> Optional[HealthIssue]:
     except (ValueError, TypeError):
         return None
     if age_min > MT5_TICK_STALE_MINUTES:
+        # Wave VPS-prep: não alertar tick stale fora do pregão (B3 09:00-17:00)
+        from datetime import datetime as _dt
+        _now = _dt.now()
+        _h = _now.hour + _now.minute / 60
+        if _h < 9.0 or _h >= 17.5:
+            return None  # pós-mercado — tick parado é normal
         return HealthIssue(
             "mt5_tick_stale", SEV_HIGH,
             f"Tick {sample_sym} stale ({age_min:.0f}min). Dados de mercado "
@@ -513,6 +519,16 @@ def _heal_mt5_unreachable(issue: HealthIssue) -> HealResult:
     if not MT5_START_SCRIPT.exists():
         return HealResult(issue.type, "skipped (no script)", False,
                           f"{MT5_START_SCRIPT} ausente")
+    # Wave VPS-prep: se MT5 + RPyC já estão rodando, não restartar
+    # (evita timeout de 60s quando o script espera RPyC que já está up)
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", 5001), timeout=2):
+            # RPyC já está ouvindo — MT5 provavelmente só está lento (idle)
+            return HealResult(issue.type, "skipped (RPyC :5001 already up)", True,
+                              "MT5 bridge ativo, latência transitória")
+    except (ConnectionRefusedError, OSError, socket.timeout):
+        pass  # RPyC realmente down — prosseguir com restart
     try:
         subprocess.run(
             ["bash", str(MT5_START_SCRIPT)],

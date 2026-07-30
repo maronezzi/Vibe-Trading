@@ -553,8 +553,18 @@ def bars(symbol: str, tf_str: str = "M5", count: int = 50) -> dict:
     return _run_wine(EXECUTOR_WIN, "bars", symbol, tf_str, str(count))
 
 
-def history(symbol: str = None, days: int = 7) -> dict:
-    """Deal history for the last N days."""
+def history(symbol: str = None, days: int = 7, position: str = None) -> dict:
+    """Deal history for the last N days, or by specific ticket (position_id).
+
+    Wave 14.3 (Bruno 2026-07-14): adicionado `position` para contornar bug do
+    Wine MT5 onde history_deals_get(symbol=..., date_from=...) retorna [].
+    Wave 880.I (Bruno 2026-07-20): restaurado — parâmetro tinha sido perdido
+    por reset/git, quebrando reconcile ghost (C-2) e get_position_history (C-1).
+    Filtrar por position_id funciona e é o único caminho confiável no Wine.
+    """
+    if position:
+        # Filtrar por ticket — formato: history <ticket>
+        return _run_wine(EXECUTOR_WIN, "history", str(position), timeout=60)
     args = ["history"]
     if symbol:
         args.append(symbol)

@@ -36,7 +36,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "mt5"))  # para imports 'from mt5_orchestrator' em mt5_error_recovery
 
-from core.vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary, sync_fees_from_mt5
+from core.vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary, get_events_daily_summary, sync_fees_from_mt5
 from mt5.mt5_orchestrator import status, tick, history, _run_wine, EXECUTOR_WIN
 from mt5.mt5_error_recovery import safe_buy, safe_sell, safe_close
 from core.vt_emergency import safe_modify_sl_with_emergency_close
@@ -109,6 +109,10 @@ _strategy_utils = {}
 # entre iterações do run_daemon. Mutável (list) porque counter += 1 em loop
 # sem precisar redeclarar global.
 _iter_counter = [0]
+# Wave 1110.B (Bruno 30/07): fast-check mode — quando trailing profit lock
+# está ativo (PnL >= 50% do target), o loop acelera de check_interval (30s)
+# para trailing_fast_interval (5s) pra capturar o pico com precisão.
+_trailing_fast_mode = [False]
 
 
 def _init_strategy_utils():
@@ -3328,19 +3332,38 @@ def close_all_and_report(close_source: str = "EOD_CLOSE", exit_reason: str = "EO
     state.save()
 
     today = datetime.now().strftime("%d/%m/%Y")
-    db_summary = {}
-    try:
-        db_summary = get_daily_summary()
-        n_trades_db = db_summary["total_trades"]
-        net_pnl_db = db_summary["net_pnl"]
-        best = db_summary["best_trade"]
-        worst = db_summary["worst_trade"]
-        wr = db_summary["win_rate"]
-    except Exception:
-        n_trades_db = state.trade_count
-        net_pnl_db = state.daily_pnl
-        best = worst = 0
-        wr = 0
+    # Fonte primária: EA events (broker-truth, dedup por deal_ticket).
+    # Fallback: tabela trades do DB (pode ter fantasmas/duplicatas).
+    # Bruno 27/07: relatório deve usar EA como fonte principal.
+    ev_summary = get_events_daily_summary()
+    if ev_summary is not None:
+        n_trades_db = ev_summary["total_trades"]
+        net_pnl_db = ev_summary["net_pnl"]
+        best = ev_summary["best_trade"]
+        worst = ev_summary["worst_trade"]
+        wr = ev_summary["win_rate"]
+        _report_source = "EA"
+        _ev_wins = ev_summary["wins"]
+        _ev_losses = ev_summary["losses"]
+        _ev_by_symbol = ev_summary.get("by_symbol", {})
+    else:
+        db_summary = {}
+        try:
+            db_summary = get_daily_summary()
+            n_trades_db = db_summary["total_trades"]
+            net_pnl_db = db_summary["net_pnl"]
+            best = db_summary["best_trade"]
+            worst = db_summary["worst_trade"]
+            wr = db_summary["win_rate"]
+        except Exception:
+            n_trades_db = state.trade_count
+            net_pnl_db = state.daily_pnl
+            best = worst = 0
+            wr = 0
+        _report_source = "DB"
+        _ev_wins = db_summary.get("wins", state.wins)
+        _ev_losses = db_summary.get("losses", state.losses)
+        _ev_by_symbol = {}
 
     try:
         mt5_status = status()
@@ -3352,6 +3375,7 @@ def close_all_and_report(close_source: str = "EOD_CLOSE", exit_reason: str = "EO
         balance = equity = margin_free = 0
 
     pnl_emoji = "🟢" if net_pnl_db >= 0 else "🔴"
+    src_label = "EA broker-truth" if _report_source == "EA" else "DB (fallback)"
     msg = (
         f"📊 *RELATÓRIO DIÁRIO Vibe-Trading*\n"
         f"📅 {today}\n"
@@ -3363,10 +3387,10 @@ def close_all_and_report(close_source: str = "EOD_CLOSE", exit_reason: str = "EO
     )
 
     msg += (
-        f"📈 *Operações do Dia*\n"
+        f"📈 *Operações do Dia* _(fonte: {src_label})_\n"
         f"• Trades: {n_trades_db}\n"
-        f"• Acertos: {db_summary.get('wins', state.wins)} ({wr:.0f}%)\n"
-        f"• Erros: {db_summary.get('losses', state.losses)}\n"
+        f"• Acertos: {_ev_wins} ({wr:.0f}%)\n"
+        f"• Erros: {_ev_losses}\n"
     )
 
     if n_trades_db > 0:
@@ -3376,6 +3400,14 @@ def close_all_and_report(close_source: str = "EOD_CLOSE", exit_reason: str = "EO
         )
 
     msg += f"\n{pnl_emoji} *PnL Líquido: R$ {net_pnl_db:+.2f}*\n"
+
+    # Breakdown por símbolo (EA events)
+    if _ev_by_symbol:
+        msg += "\n📊 *Por Símbolo*\n"
+        for sym, data in _ev_by_symbol.items():
+            sym_wr = (data["wins"] / data["trades"] * 100) if data["trades"] > 0 else 0
+            icon = "🟢" if data["pnl"] > 0 else "🔴" if data["pnl"] < 0 else "⚪"
+            msg += f"  {icon} {sym}: {data['trades']}t | WR {sym_wr:.0f}% | R$ {data['pnl']:+.2f}\n"
 
     try:
         # Fase 2.5: via truth layer (cache 2s) ao inves de status() direto.
@@ -4626,7 +4658,13 @@ def run_daemon():
                     from core import vt_profit_lock as _pl_for_trail
                     _tpl_locked, _ = _pl_for_trail.is_locked()
                     if not _tpl_locked:
-                        _tpl_target = _pl_for_trail.get_target(CONFIG)
+                        # Target baseado em volume base do config (Bruno 30/07).
+                        # NÃO soma volume das posições abertas (isso multiplica
+                        # pelo nº de TFs). Usa o lote configurado: volume=1 →
+                        # target R$250, volume=2 → R$500, etc.
+                        _tpl_vol_base = float(CONFIG.get("volume", 1.0) or 1.0)
+                        _tpl_per_lot = float(CONFIG.get("trailing_target_per_lot", 250.0))
+                        _tpl_target = _tpl_per_lot * _tpl_vol_base
                         _tpl_pnl = _pl_for_trail.get_intraday_pnl_total()
                         _tpl_decision = _tpl.update_trailing(_tpl_pnl, _tpl_target, CONFIG)
 
@@ -4658,6 +4696,29 @@ def run_daemon():
                             log(f"📈 TRAILING TIGHTEN: pico R$ {_tpl_decision.peak:.2f} → "
                                 f"floor R$ {_tpl_decision.floor:.2f} "
                                 f"(progress {_tpl_decision.progress:.0%}, factor {_tpl_decision.trail_factor:.2f})")
+
+                        # Wave 1110.B: fast-check mode — ativa quando trailing
+                        # está engajado (TIGHTEN ou HOLD com activated), desliga
+                        # no BREACH/TARGET (posição fechada, lock armado).
+                        if _tpl_decision.action in (_tpl.TrailingAction.TIGHTEN,):
+                            if not _trailing_fast_mode[0]:
+                                _trailing_fast_mode[0] = True
+                                _fast_iv = CONFIG.get("trailing_fast_interval", 5)
+                                log(f"⚡ FAST-CHECK ATIVADO: loop acelerado para {_fast_iv}s "
+                                    f"(trailing profit lock engajado)")
+                        elif _tpl_decision.action in (_tpl.TrailingAction.BREACH, _tpl.TrailingAction.TARGET):
+                            if _trailing_fast_mode[0]:
+                                _trailing_fast_mode[0] = False
+                                log("⚡ FAST-CHECK DESATIVADO: trailing concluído (breach/target)")
+                        elif _tpl_decision.action == _tpl.TrailingAction.HOLD:
+                            # Cobre restart do daemon: trailing já ativado (state
+                            # persistido) mas sem novo pico → HOLD. Re-ativa fast.
+                            _tpl_st = _tpl.get_trailing_state()
+                            if _tpl_st.get("activated") and not _trailing_fast_mode[0]:
+                                _trailing_fast_mode[0] = True
+                                _fast_iv = CONFIG.get("trailing_fast_interval", 5)
+                                log(f"⚡ FAST-CHECK RE-ATIVADO: trailing ativo (pico R$ {_tpl_st.get('peak', 0):.2f}, "
+                                    f"floor R$ {_tpl_st.get('floor', 0):.2f})")
 
                 except Exception as _e_tpl_tick:
                     log(f"[TRAILING-PL] tick falhou (não-crash): {_e_tpl_tick}")
@@ -4794,7 +4855,13 @@ def run_daemon():
         except Exception as _e_ee:
             log(f"[EDGE-EST] tick falhou: {_e_ee!r}")
 
-        time.sleep(CONFIG["check_interval"])
+        # Wave 1110.B: fast-check mode — quando trailing profit lock está
+        # engajado, acelera o loop de check_interval (30s) para
+        # trailing_fast_interval (5s) pra capturar o pico com precisão.
+        if _trailing_fast_mode[0]:
+            time.sleep(CONFIG.get("trailing_fast_interval", 5))
+        else:
+            time.sleep(CONFIG["check_interval"])
 
 
 def main():

@@ -175,6 +175,7 @@ def update_trailing(pnl: float, target: float, config: dict) -> TrailingDecision
                     action=TrailingAction.BREACH,
                     pnl=pnl, peak=state.get("peak", 0),
                     floor=floor, target=target, progress=progress,
+                    trail_factor=state.get("trail_factor", 0.0),
                 )
         return TrailingDecision(
             action=TrailingAction.HOLD, pnl=pnl, target=target, progress=progress,
