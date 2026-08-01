@@ -75,6 +75,14 @@ def evaluate_candidate(
     full_trades = _run_backtest(df, sym_root, tf, strategy_name, params)
     full_metrics = _compute_metrics(full_trades)
     full_metrics["n_bars"] = len(df)
+    # Wave fix-contract (01/08): se backtest_combo reportou erros de runtime
+    # no check_entry (bug de código, ex: TypeError indexando float), anexamos
+    # ao diagnóstico — para o operador distinguir bug de código de falta de
+    # edge. A telemetria vem anexada à lista (TradesList) pelo backtest_v944.
+    perr = getattr(full_trades, "plugin_errors", 0) or 0
+    if perr:
+        full_metrics["plugin_errors"] = perr
+        full_metrics["plugin_first_error"] = getattr(full_trades, "plugin_first_error", None)
 
     # Gate de profitability no full 30d
     prof = _check_profitability(full_metrics, th)
@@ -349,6 +357,14 @@ def _check_profitability(metrics: dict, th: dict) -> dict:
         failures.append(f"WR={metrics['wr']:.1f}%<{th['min_win_rate']*100:.0f}%")
     if metrics["n_trades"] < th["min_trades"]:
         failures.append(f"n_trades={metrics['n_trades']}<{th['min_trades']}")
+        # Wave fix-contract (01/08): se houve erros de runtime no check_entry,
+        # os 0 trades são BUG DE CÓDIGO, não falta de edge. Sinaliza explícito.
+        if metrics.get("plugin_errors"):
+            failures.append(
+                f"⚠️ BUG DE CÓDIGO: check_entry lançou {metrics['plugin_errors']}x "
+                f"exceção ({metrics.get('plugin_first_error', '?')}) — "
+                f"corrija o plugin antes de reavaliar"
+            )
     # Wave 880.C1: max_dd gate. max_dd está em R$ (negativo); floor em % do
     # maior entre avg_loss absoluto — evita candidatos com drawdown mordaz
     # mesmo com PF ok. Se avg_loss==0 (sem losses), não há o que checar.

@@ -216,6 +216,18 @@ def load_csv(path):
 
 # ─── Backtest de uma combinação ────────────────────────────────────────────
 
+class TradesList(list):
+    """Lista de trades com metadados de telemetria do backtest.
+
+    Wave fix-contract (Bruno 01/08): expõe plugin_errors/plugin_first_error
+    para o evaluator distinguir "0 trades por bug de código" de "0 trades por
+    falta de edge". Comporta-se como list em tudo (iterável, indexável).
+    """
+
+    plugin_errors = 0
+    plugin_first_error = None
+
+
 def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
     """Roda backtest de 1 (symbol, tf) e retorna lista de trades."""
     symbol = f"{sym_root}$"
@@ -279,7 +291,14 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
     bars_in_trade = 0
     last_trade_dt = None
     daily_count = defaultdict(int)
-    trades = []
+    trades = TradesList()
+    # Wave fix-contract (Bruno 01/08): contabiliza exceções do plugin check_entry.
+    # Antes, um TypeError (ex: indexar float de calculate_rsi) era engolido em
+    # silêncio pelo except abaixo e a combinação aparecia como "0 trades / sem
+    # edge" — confundindo bug de código com falta de alpha. Agora contamos e
+    # guardamos a 1ª exceção real para o diagnóstico subir no resultado.
+    plugin_errors = 0
+    plugin_first_error = None
     # Wave Melhoria 1: estado do circuit breaker (per-(sym,tf) dentro deste combo).
     consec_losses = 0          # contador de perdas consecutivas
     halt_until_dt = None       # datetime até o qual novas entradas estão bloqueadas
@@ -516,6 +535,13 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
         try:
             sig = func(symbol, tf, price, cur_atr, dt, bars_nf, params, utils)
         except Exception as ex:
+            # Wave fix-contract (01/08): registra a exceção real do plugin.
+            # Se n_trades=0 E plugin_errors>0, o problema é BUG DE CÓDIGO no
+            # check_entry (não falta de edge). A telemetria vai na instância
+            # trades (TradesList) para o evaluator ler.
+            plugin_errors += 1
+            if plugin_first_error is None:
+                plugin_first_error = f"{type(ex).__name__}: {ex}"
             if debug and i < 5:
                 import traceback
                 traceback.print_exc()
@@ -559,6 +585,10 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
     if pos != 0:
         _close(float(closes[-1]), df.index[-1], "FORCE")
 
+    # Wave fix-contract (01/08): anexa telemetria de erros do plugin na lista
+    # retornada, para o evaluator distinguir bug de código de falta de edge.
+    trades.plugin_errors = plugin_errors
+    trades.plugin_first_error = plugin_first_error
     return trades
 
 

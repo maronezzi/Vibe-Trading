@@ -6,13 +6,17 @@ Python novo. Por isso tem a defesa mais pesada de todo o sistema.
 
 Fluxo (4 camadas de defesa):
   1. GERAÇÃO: LLM (ask_llm) recebe hipóteses do stage2 + template do plugin
-     format e gera código .py. Output vai DIRETO para strategies/_pending/.
-  2. SANDBOX: o loader existente (vt_strategy_loader.py:68-69) IGNORA arquivos
-     _-prefixed — então NADA em _pending/ é carregado no runtime até promoção.
+     format (com CONTRATO de tipos de retorno do utils) e gera código .py.
+     Output vai DIRETO para strategies/_pending/.
+  2. SANDBOX: o loader existente (vt_strategy_loader.py) só lê strategies/*.py
+     top-level — NADA em _pending/ é carregado no runtime até promoção.
   3. GATES DE VALIDAÇÃO (antes de promover):
      a. ast_gate: syntax + STRATEGY_NAME + check_entry + LEI 3 (SL) + sandbox
-     b. profitability_gate: backtest 30d PF/WR/n_trades/max_dd
-     c. walk_forward_gate: consistência entre janelas (anti-overfit)
+     b. runtime_smoke_gate (fix-contract 01/08): EXECUTA check_entry com
+        barras sintéticas — captura TypeError/AttributeError de runtime que
+        o ast_gate (só ast.parse) não vê. Torna bug de contrato visível.
+     c. profitability_gate: backtest 30d PF/WR/n_trades/max_dd
+     d. walk_forward_gate: consistência entre janelas (anti-overfit)
   4. PROMOÇÃO MANUAL-AGI: só após TODOS os gates, copia _pending/X.py → X.py.
      Em dry_run: NÃO promove, só valida e loga.
 
@@ -26,13 +30,15 @@ este stage retorna [] e a AGI continua (Lei 5: itera com o que tem).
 from __future__ import annotations
 
 import ast
+import importlib.util
 import logging
+import random
 import re
 import shutil
 from datetime import datetime
 from pathlib import Path
 
-from .gates import ast_gate, load_thresholds
+from .gates import GateResult, ast_gate, load_thresholds
 
 log = logging.getLogger("agi_v4.stage4")
 
@@ -209,6 +215,18 @@ def _generate_and_validate_one(
         log.warning(f"{strat_name} REJEITADA pelo ast_gate: {g_ast.reason}")
         return _reject_strategy(strat_name, pending_path, "ast_gate", g_ast.reason)
 
+    # 3b. Gate A2: SMOKE-TEST DE RUNTIME (fix-contract 01/08)
+    # O ast_gate só faz ast.parse — não executa check_entry. Estratégias com
+    # TypeError de runtime (ex: indexar float retornado por calculate_rsi)
+    # passavam pelo ast_gate e morriam silenciosamente no backtest como
+    # "0 trades". Este gate executa check_entry com barras sintéticas e
+    # captura a exceção REAL, tornando o bug visível.
+    g_smoke = _runtime_smoke_gate(pending_path)
+    if not g_smoke:
+        log.warning(f"{strat_name} REJEITADA pelo runtime_smoke: {g_smoke.reason}")
+        return _reject_strategy(strat_name, pending_path, "runtime_smoke", g_smoke.reason)
+    log.info(f"{strat_name} runtime_smoke OK: {g_smoke.reason}")
+
     # 4. Gate B: simulação bar-by-bar 30d + walk-forward (via evaluator)
     # Em ambiente sem MT5/Wine, a simulação pode falhar. Não bloqueamos a
     # geração só por isso — a estratégia fica em _pending/ aprovada pelo AST,
@@ -253,6 +271,128 @@ def _generate_and_validate_one(
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Smoke-test de runtime (gate entre ast_gate e backtest)
+# ═══════════════════════════════════════════════════════════════════
+# Wave fix-contract (Bruno 01/08): o ast_gate só faz ast.parse — ele NÃO
+# executa check_entry, então um TypeError de runtime (ex: indexar um float
+# retornado por calculate_rsi) passa batido e vira "0 trades" silencioso no
+# backtest. Este gate executa check_entry UMA vez com barras sintéticas e
+# captura a exceção REAL, tornando o bug visível. Defesa em profundidade:
+# mesmo que a LLM gere código com contrato errado, ele é rejeitado aqui.
+
+def _synthetic_bars(n: int = 60, seed: int = 42) -> list[dict]:
+    """Gera n barras OHLCV sintéticas (newest-first, como o MT5).
+
+    Walk aleatório determinístico (seed fixa) com high/low/volume plausíveis
+    para índice/asset — o objetivo não é realismo de mercado, e sim oferecer
+    dados suficientes para que qualquer uso legítimo de utils não KeyError.
+    """
+    rng = random.Random(seed)
+    bars: list[dict] = []
+    price = 150_000.0
+    # newest-first: geramos cronológico e invertemos no fim
+    chrono = []
+    for _ in range(n):
+        drift = rng.uniform(-1.0, 1.0) * 350.0
+        close = max(10_000.0, price + drift)
+        high = close + rng.uniform(50, 400)
+        low = max(10_000.0, close - rng.uniform(50, 400))
+        chrono.append({
+            "open": price,
+            "high": high,
+            "low": low,
+            "close": close,
+            "tick_volume": rng.randint(500, 5000),
+        })
+        price = close
+    bars = list(reversed(chrono))
+    return bars
+
+
+def _runtime_smoke_gate(path: Path) -> GateResult:
+    """Executa check_entry uma vez com barras sintéticas para capturar erros
+    de runtime (TypeError, AttributeError, KeyError) que o ast_gate não vê.
+
+    Retorna GateResult(passed=True) se check_entry rodou sem exceção (mesmo
+    que tenha retornado None — "sem sinal" é válido). Em caso de exceção,
+    retorna GateResult(passed=False) com gate_name="runtime_smoke" e a
+    mensagem de erro real — para o operador ver que foi bug de código, não
+    "sem edge".
+
+    Importação das funções de indicador vem de backtest_v944, que define
+    cópias puras (sem side-effect de MT5/DB que vt_autotrader carregaria).
+    """
+    try:
+        import sys as _sys
+        # backtest_v944 define calculate_* puras no module-level; import é leve
+        # (contato com MT5 só acontece dentro de funções, não no import).
+        _root = str(Path(__file__).resolve().parent.parent.parent)
+        if _root not in _sys.path:
+            _sys.path.insert(0, _root)
+        from backtest import backtest_v944 as _bt
+    except Exception as e:
+        # Não conseguimos montar o utils — fail-safe: NÃO rejeitamos a
+        # estratégia por uma falha de infra do gate. Loga e passa.
+        log.warning(f"runtime_smoke: não pôde importar backtest_v944 ({e}); pulando gate")
+        return GateResult(passed=True, gate_name="runtime_smoke",
+                          reason="gate indisponível (import backtest_v944 falhou)")
+
+    utils = {
+        "calculate_ema": _bt.calculate_ema,
+        "calculate_rsi": _bt.calculate_rsi,
+        "calculate_adx": _bt.calculate_adx,
+        "calculate_bollinger": _bt.calculate_bollinger,
+        "calculate_vwap": _bt.calculate_vwap,
+        "calculate_atr": _bt.calculate_atr,
+        "calc_sl": lambda symbol, atr, params: int(max(1, atr * 1.5)),
+    }
+
+    # Carrega o módulo da estratégia via importlib (sandbox isolado).
+    spec = importlib.util.spec_from_file_location("_smoke_target", path)
+    if spec is None or spec.loader is None:
+        return GateResult(passed=False, gate_name="runtime_smoke",
+                          reason=f"não pôde criar module spec para {path.name}")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as e:
+        return GateResult(passed=False, gate_name="runtime_smoke",
+                          reason=f"import/exec do módulo falhou: {type(e).__name__}: {e}")
+
+    check_entry = getattr(module, "check_entry", None)
+    if not callable(check_entry):
+        return GateResult(passed=False, gate_name="runtime_smoke",
+                          reason="módulo não expõe check_entry() chamável")
+
+    # Executa com barras sintéticas + params representativos.
+    bars = _synthetic_bars(60)
+    params = {
+        "ema_fast": 9, "ema_slow": 21, "rsi_period": 14, "adx_period": 14,
+        "bb_period": 20, "bb_std": 2.0, "sl_atr_mult": 1.5,
+    }
+    try:
+        result = check_entry(
+            "WINQ26", "M15", bars[0]["close"], 1500.0, 1700000000,
+            bars, params, utils,
+        )
+    except Exception as e:
+        return GateResult(
+            passed=False, gate_name="runtime_smoke",
+            reason=f"check_entry lançou exceção: {type(e).__name__}: {e}",
+        )
+
+    # Aceita None (sem sinal) ou dict com direction/sl_pts.
+    if result is None:
+        return GateResult(passed=True, gate_name="runtime_smoke",
+                          reason="executou limpo (retornou None = sem sinal)")
+    if isinstance(result, dict) and "direction" in result:
+        return GateResult(passed=True, gate_name="runtime_smoke",
+                          reason=f"executou limpo (sinal={result.get('direction')})")
+    return GateResult(passed=False, gate_name="runtime_smoke",
+                      reason=f"retorno inválido (esperado None/dict, veio {type(result).__name__})")
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Geração de código via LLM
 # ═══════════════════════════════════════════════════════════════════
 
@@ -287,8 +427,57 @@ REGRAS OBRIGATÓRIAS:
 3. LEI 3: TODO sinal retornado DEVE incluir "sl_pts" calculado via calc_sl = utils["calc_sl"]; sl_pts = calc_sl(symbol, atr, params)
 4. SANDBOX: NÃO importar nada (sem import os, subprocess, mt5, etc). Receba tudo via utils e params.
 5. Retornar None se não há sinal, ou dict {{"direction": "BUY"/"SELL", "sl_pts": int, "info": {{...}}}}
-6. Indicadores via utils: utils["calculate_rsi"](bars, period), utils["calculate_ema"](bars, period), utils["calculate_bollinger"](bars, period, std), utils["calculate_adx"](bars, period), utils["calc_sl"](symbol, atr, params)
-7. Params via params.get("nome", default)
+6. Params via params.get("nome", default)
+
+CONTRATO DOS INDICADORES (utils) — TIPOS DE RETORNO EXATOS:
+No início de check_entry, extraia os helpers para nomes locais:
+    calculate_ema = utils["calculate_ema"]
+    calculate_rsi = utils["calculate_rsi"]
+    calculate_adx = utils["calculate_adx"]
+    calculate_bollinger = utils["calculate_bollinger"]
+    calc_sl = utils["calc_sl"]
+
+CADA função retorna um ÚNICO valor (escalar ou tupla fixa), NÃO uma lista/série.
+Use o resultado DIRETAMENTE — NUNCA indexe com [-1], [:], len(), nem chame .get():
+
+  calculate_ema(bars, period)        -> float         (ex: 152340.5)
+  calculate_rsi(bars, period)        -> float         (ex: 42.3; 50 se faltar barra)
+  calculate_adx(bars, period)        -> tuple de 3    unpack: adx, plus_di, minus_di = calculate_adx(bars, period)
+  calculate_bollinger(bars, p, std)  -> tuple de 3    unpack: upper, mid, lower = calculate_bollinger(bars, period, std)
+  calc_sl(symbol, atr, params)       -> int           sl_pts = calc_sl(symbol, atr, params)
+
+⚠️ ERRO COMUM (REJEITADO): rsi_values = calculate_rsi(bars, 14); rsi_values[-1]  ← ERRADO, float não é subscritável.
+✅ CORRETO: rsi = calculate_rsi(bars, 14)  ← use 'rsi' direto.
+
+EXEMPLO CANÔNICO (siga este padrão de uso dos retornos):
+    def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
+        calculate_ema = utils["calculate_ema"]
+        calculate_rsi = utils["calculate_rsi"]
+        calculate_adx = utils["calculate_adx"]
+        calc_sl = utils["calc_sl"]
+
+        ema_fast_period = params.get("ema_fast", 9)
+        ema_slow_period = params.get("ema_slow", 21)
+        adx_period = params.get("adx_period", 14)
+
+        min_bars = max(ema_slow_period, adx_period * 2) + 5
+        if not bars or len(bars) < min_bars:
+            return None
+        if atr <= 0:
+            return None
+
+        ema_fast_val = calculate_ema(bars, ema_fast_period)   # float direto
+        ema_slow_val = calculate_ema(bars, ema_slow_period)   # float direto
+        adx_val, plus_di, minus_di = calculate_adx(bars, adx_period)  # tupla unpack
+        rsi = calculate_rsi(bars, params.get("rsi_period", 14))       # float direto
+
+        if ema_fast_val == 0 or ema_slow_val == 0 or adx_val == 0:
+            return None
+
+        # ... sua lógica de entrada aqui ...
+
+        sl_pts = calc_sl(symbol, atr, params)
+        return {{"direction": direction, "sl_pts": sl_pts, "info": {{...}}}}
 
 ESTRATÉGIA PARA IMPLEMENTAR:
 Par: {pair}
