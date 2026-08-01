@@ -47,9 +47,71 @@ def run(ctx: dict) -> dict:
     ctx["applied_changes"] = applied
     ctx["rejected_changes"] = rejected
 
+    # Wave AGI-soberano (Bruno 01/08): reativa pares lucrativos que estão
+    # bloqueados. O stage1 popula ctx["profitable_pairs"] com pares cuja
+    # simulação 30d deu PnL>0. Se algum desses está em disabled_timeframes,
+    # o AGI (soberano) remove o bloqueio e ativa day_trade_intent — não faz
+    # sentido manter bloqueado um par que o próprio backtest validou como
+    # lucrativo. Antes, pares otimizados ficavam presos no bloqueio.
+    reactivated = []
+    if not dry_run:
+        reactivated = _reactivate_profitable_pairs(ctx)
+    elif ctx.get("profitable_pairs"):
+        profitable = ctx.get("profitable_pairs", [])
+        disabled = config.get("disabled_timeframes", []) or []
+        would = [p for p in profitable if p in disabled]
+        if would:
+            log.info(f"[DRY-RUN] AGI-SOBERANO reativaria {len(would)} par(es): {would}")
+
     mode = "DRY-RUN" if dry_run else "APLICADO"
     summary = f"{len(applied)} mudança(s) {mode}, {len(rejected)} rejeitada(s)"
-    return {"applied_changes": applied, "rejected": rejected, "summary": summary}
+    if reactivated:
+        summary += f", {len(reactivated)} reativado(s)"
+    return {"applied_changes": applied, "rejected": rejected,
+            "reactivated": reactivated, "summary": summary}
+
+
+def _reactivate_profitable_pairs(ctx: dict) -> list[str]:
+    """Reativa pares lucrativos bloqueados (AGI soberano).
+
+    Lê ctx["profitable_pairs"] (populado pelo stage1) e, para cada par que
+    está em disabled_timeframes ou com day_trade_intent=false, remove o
+    bloqueio. Persiste via save_full_config (stage5 é o writer autorizado).
+
+    Returns:
+        Lista de pares efetivamente reativados.
+    """
+    profitable = ctx.get("profitable_pairs", []) or []
+    if not profitable:
+        return []
+    from core.vt_config_loader import load_config, save_full_config
+    fresh = load_config(force=True)
+    disabled = fresh.get("disabled_timeframes", []) or []
+    dti = fresh.setdefault("day_trade_intent", {})
+    changed = False
+    reactivated = []
+    for pair in profitable:
+        was_blocked = pair in disabled or not dti.get(pair, False)
+        if pair in disabled:
+            disabled = [x for x in disabled if x != pair]
+            changed = True
+        if not dti.get(pair, False):
+            dti[pair] = True
+            changed = True
+        if was_blocked:
+            reactivated.append(pair)
+    if changed:
+        fresh["disabled_timeframes"] = disabled
+        fresh["day_trade_intent"] = dti
+        save_full_config(fresh, updated_by="agi_v4_stage5")
+        # Sincroniza config em memória do ctx
+        cfg = ctx.get("config", {}) or {}
+        cfg.clear()
+        cfg.update(fresh)
+        ctx["config"] = cfg
+        log.info(f"🔓 AGI-SOBERANO (stage5): reativou {len(reactivated)} "
+                 f"par(es) lucrativo(s): {reactivated}")
+    return reactivated
 
 
 def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: dict) -> dict:
@@ -208,6 +270,28 @@ def _write_to_config(config, change, pair):
         new_cfg.setdefault("strategy_by_tf", {})[k] = v
     for k, v in target.get("params_by_tf", {}).items():
         new_cfg.setdefault("params_by_tf", {}).setdefault(k, {}).update(v)
+
+    # Wave AGI-soberano (Bruno 01/08): se o AGI validou que um par é lucrativo
+    # (passou profitability + walk-forward + regra1), ele é SOBERANO para decidir
+    # se o par opera. Remove o par de disabled_timeframes e ativa day_trade_intent.
+    # Antes: o AGI otimizava a estratégia mas deixava o par bloqueado — pares
+    # lucrativos (WSP/WDO após a correção de mult) ficavam sem operar. Agora:
+    # estratégia lucrativa validada → par reativado automaticamente.
+    pair_reactivated = []
+    for pair_key in target.get("strategy_by_tf", {}):
+        dt = new_cfg.get("disabled_timeframes", [])
+        if pair_key in dt:
+            dt = [x for x in dt if x != pair_key]
+            new_cfg["disabled_timeframes"] = dt
+            pair_reactivated.append(pair_key)
+        dti = new_cfg.setdefault("day_trade_intent", {})
+        if not dti.get(pair_key, False):
+            dti[pair_key] = True
+            if pair_key not in pair_reactivated:
+                pair_reactivated.append(pair_key)
+    if pair_reactivated:
+        log.info(f"🔓 AGI-SOBERANO: reativou par(es) lucrativo(s): {pair_reactivated}")
+
     save_full_config(new_cfg, updated_by="agi_v4_stage5")
 
 

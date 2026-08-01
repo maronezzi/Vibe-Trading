@@ -17,9 +17,10 @@ Esta wave adiciona:
     metadata, identidade do bot, sizing.mode humano-only).
   - ``validate_write_target()``: gate atômico — default-deny. Se a chave não
     está na whitelist E não é forbidden (caiu em default-deny), rejeita.
-  - ``classify_disabled_timeframes_change()``: exceção controlada à Lei 2
-    — AGI pode PAUSAR (adicionar) TFs à ``disabled_timeframes``, mas NUNCA
-    DESPAUSAR (remover). Decisão documentada na §18.2 do plano.
+  - ``classify_disabled_timeframes_change()``: Wave AGI-soberano (01/08) —
+    o AGI é soberano: pode PAUSAR e DESPAUSAR TFs de ``disabled_timeframes``.
+    Antes (Lei 2 original) só podia pausar, deixando pares lucrativos
+    bloqueados. Agora: se validou lucratividade (stage5), reativa.
   - ``normalize_target_key()``: helper para construir caminhos
     ``"a.b.c"`` estáveis a partir de segmentos.
 
@@ -75,9 +76,12 @@ SAFE_WRITE_TARGETS: list[tuple[str, type | tuple[type, ...], tuple[float, float]
     # tp2_pct: fração do RESTANTE (não do original) a fechar em TP2.
     (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.tp2_r$", float, (1.5, 4.0)),
     (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.tp2_pct$", float, (0.1, 0.9)),
-    # disabled_timeframes: AGI pode PAUSAR (adicionar), nunca DESPAUSAR
-    # (remover). Validação semântica em classify_disabled_timeframes_change.
+    # disabled_timeframes: AGI soberano pode pausar E despausar (Wave 01/08).
+    # Validação semântica em classify_disabled_timeframes_change.
     (r"^disabled_timeframes$", list, None),
+    # day_trade_intent: AGI soberano pode ativar/desativar por par (Wave 01/08).
+    # Quando reativa um par lucrativo, precisa ligar day_trade_intent=true.
+    (r"^day_trade_intent\.[A-Z]+_(M5|M15|M30|H1)$", bool, None),
     # Volume por símbolo. Range (0, 10] é folgado — B3 mini-contratos vão
     # até ~5; BTC similar. AGI não toca volume_by_symbol.*[volume] num
     # futuro próximo, mas a regra fica preemptiva.
@@ -247,29 +251,34 @@ def normalize_target_key(*parts: Any) -> str:
 def classify_disabled_timeframes_change(
     current: list, proposed: list
 ) -> tuple[bool, str]:
-    """Lei 2 (directional): AGI pode ADICIONAR entradas a
-    ``disabled_timeframes`` (pause), nunca REMOVER (unpause é decisão
-    humana — implica confiança no renascimento de edge).
+    """Wave AGI-soberano (Bruno 01/08): o AGI é soberano — pode tanto PAUSAR
+    (adicionar) quanto DESPAUSAR (remover) entradas de ``disabled_timeframes``.
+
+    Antes (Lei 2 original): AGI só podia pausar, nunca despausar (unpause era
+    decisão humana). Mas isso deixava pares lucrativos bloqueados — o AGI
+    validava que WSP/WDO tinham edge (após a correção de mult), otimizava a
+    estratégia, mas não podia reativar o par. Decisão do Bruno: se o AGI
+    validou lucratividade (passou profitability + walk-forward + regra1 no
+    stage5), ele tem autoridade para reativar.
 
     Args:
         current: lista atual de TFs pausados no config.
         proposed: lista que o AGI quer escrever.
 
     Returns:
-        ``(True, "ok")`` se ``proposed ⊇ current`` (ou igual).
-        ``(False, reason)`` se ``proposed`` tenta remover alguma entry de
-        ``current`` (Lei 2 violada).
+        ``(True, "ok")`` sempre — AGI soberano pode pausar e despausar.
     """
     cur_set = set(current or [])
     prop_set = set(proposed or [])
-    if prop_set.issuperset(cur_set):
-        return True, "ok"
     removed = sorted(cur_set - prop_set)
-    return (
-        False,
-        f"disabled_timeframes: tentativa de remover {removed} "
-        f"(Lei 2: AGI só pausa, unpause é humano)",
-    )
+    added = sorted(prop_set - cur_set)
+    if removed and not added:
+        return True, f"AGI-soberano: despausou {removed} (lucratividade validada)"
+    if added and not removed:
+        return True, f"AGI-soberano: pausou {added}"
+    if removed and added:
+        return True, f"AGI-soberano: pausou {added}, despausou {removed}"
+    return True, "ok"
 
 
 def _type_matches(value: Any, expected: type | tuple[type, ...]) -> bool:

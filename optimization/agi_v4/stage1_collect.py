@@ -78,7 +78,7 @@ def run(ctx: dict) -> dict:
     # Selecionar pares perdedores por SIMULAÇÃO bar-a-bar (evaluate_baseline),
     # nunca por trades passados. Mesmo critério de _check_convergence_simulated
     # (pipeline.py:396): par é failing se PnL simulado <= 0.
-    failing_pairs = _identify_failing_simulated(config)
+    failing_pairs = _identify_failing_simulated(config, ctx)
 
     summary = (f"{len(performance.get('by_symbol', {}))} símbolos analisados, "
                f"{len(failing_pairs)} par(es) não-lucrativos em sim 30d, "
@@ -242,7 +242,7 @@ def _classify_regimes(config: dict, performance: dict) -> dict:
 # Identificação de pares perdedores — alvo dos stages 2-5
 # ═══════════════════════════════════════════════════════════════════
 
-def _identify_failing_simulated(config: dict) -> list[str]:
+def _identify_failing_simulated(config: dict, ctx: dict | None = None) -> list[str]:
     """Identifica pares SYM_TF não-lucrativos por SIMULAÇÃO bar-a-bar.
 
     REGRA DE OURO (Bruno 16/07): nunca julgar otimização em cima de trades
@@ -269,6 +269,7 @@ def _identify_failing_simulated(config: dict) -> list[str]:
     global_tfs = config.get("timeframes", [])
 
     failing: list[tuple[str, float]] = []  # (pair, pnl) para ordenar
+    profitable: list[str] = []  # pares lucrativos (ctx para stage5 reativar)
     for sym in symbols:
         for tf in tfs_by_sym.get(sym, global_tfs):
             pair = f"{sym}_{tf}"
@@ -284,6 +285,16 @@ def _identify_failing_simulated(config: dict) -> list[str]:
             if pnl <= 0:
                 failing.append((pair, pnl))
                 log.info(f"stage1 {pair}: PnL sim R$ {pnl:.2f} ({n_trades}t) → failing")
+            else:
+                profitable.append(pair)
+
+    # Wave AGI-soberano (Bruno 01/08): expõe pares lucrativos no ctx para o
+    # stage5 reativar. O AGI é soberano — se a simulação 30d mostra que um par
+    # é lucrativo (PnL>0, estratégia validada), ele deve operar. A reativação
+    # (remover de disabled_timeframes + day_trade_intent=true) é feita no
+    # stage5_apply (único writer autorizado do AGI v4).
+    if ctx is not None:
+        ctx["profitable_pairs"] = profitable
 
     # Ordena pelo PnL simulado (mais negativo primeiro = prioridade maior).
     failing.sort(key=lambda x: x[1])
