@@ -4537,6 +4537,21 @@ def run_daemon():
     log("=" * 60)
     log("Vibe-Trading Autotrader SPLIT INICIADO")
     log(f"Símbolos: {CONFIG['symbols']}")
+
+    # Wave 1110.C (Bruno 30/07): verifica profit lock no startup.
+    # Se lock estava armado antes do restart, loga e mantém bloqueio.
+    # Isso garante que o lock sobrevive a restarts do self-heal.
+    if CONFIG.get("profit_lock_enabled", False):
+        try:
+            from core import vt_profit_lock as _pl_startup
+            _pl_locked, _pl_state = _pl_startup.is_locked()
+            if _pl_locked:
+                log(f"🔒 PROFIT LOCK ativo desde {_pl_state.get('armed_at', '?')} "
+                    f"(target R$ {_pl_state.get('target', 0):.2f}, "
+                    f"PnL no arm R$ {_pl_state.get('armed_pnl', 0):.2f}, "
+                    f"closed_n={_pl_state.get('closed_n', 0)}) — novas entradas bloqueadas")
+        except Exception as e:
+            log(f"⚠️ Falha verificando profit lock no startup: {e}")
     for _s in CONFIG["symbols"]:
         _p = CONFIG.get(_s.lower(), {})
         log(f"{_s}: SL {_p.get('sl_atr_mult', 1.5)}x ATR | Trail {_p.get('trail_activate', 1.5)}x/{_p.get('trail_distance', 0.5)}x ATR")
