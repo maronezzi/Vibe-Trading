@@ -127,9 +127,14 @@ def _fetch_30d_bars(sym_root: str, tf: str, config: dict):
         return None
 
     n_bars = BARS_FOR_30D.get(tf, 500)
-    # resolved_symbols: WIN -> WINQ26 (contrato vigente). Fallback sintético.
-    resolved = config.get("resolved_symbols", {})
-    symbol = resolved.get(sym_root, f"{sym_root}$")
+    # Wave perpétua (Bruno 01/08): usa a forma contínua (WIN$/WDO$/WSP$/BIT$)
+    # em vez do contrato resolvido (WINQ26). Motivo: pós-rolagem de vencimento,
+    # o contrato novo não tem histórico de 30d (BITQ26 tinha só 93 barras M15
+    # no dia seguinte à rolagem, vs 2501 do BIT$). A perpétua costura a série
+    # dos contratos anteriores, dando 30d consistentes para o backtest.
+    # O path LIVE (vt_autotrader) continua usando contrato resolvido — só o
+    # AGI/backtest usa perpétua (histórico é o que importa na simulação).
+    symbol = f"{sym_root}$"
 
     try:
         path = bt.fetch(symbol, tf, n_bars)

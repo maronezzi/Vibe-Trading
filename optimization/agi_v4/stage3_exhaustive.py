@@ -112,8 +112,12 @@ def _search_pair_worker(args) -> dict:
 
     FIX 2026-07-26 (loop infinito — Bruno): max_attempts por par + dedup.
     Antes: 43 estratégias × ~80 combos × 6 pares = ~20k backtests sem teto.
-    Agora: MAX_ATTEMPTS_PER_PAIR=300 com early-stop + cache de combos já
+    Agora: MAX_ATTEMPTS_PER_PAIR=600 com early-stop + cache de combos já
     testados (evita repetir a mesma combinação dezenas de vezes).
+    Wave Stage3-justo (01/08): consecutive_rejects reseta POR estratégia, e
+    MAX_ATTEMPTS subiu 300→600 (~14 combos/estratégia × 43). Cada estratégia
+    recebe varredura justa — antes uma estratégia ruim saturava o contador e
+    as outras 42 testavam só 1 combo cada (pares "travados").
 
     Args: (pair, sym, tf, config, thresholds)
     Returns: {"pair", "best_candidate"|"None", "n_tested"}
@@ -123,11 +127,10 @@ def _search_pair_worker(args) -> dict:
     # Import tardio: o evaluator importa backtest_v944 que importa pandas etc.
     from optimization.agi_v4.backtest_evaluator import evaluate_candidate
 
-    MAX_ATTEMPTS_PER_PAIR = int(os.environ.get("VT_AGI_MAX_ATTEMPTS", "300"))
+    MAX_ATTEMPTS_PER_PAIR = int(os.environ.get("VT_AGI_MAX_ATTEMPTS", "600"))
     MAX_CONSECUTIVE_REJECTS = 50  # Qwen Code: 50 rejeições seguidas = espaço esgotado
 
     n_tested = 0
-    consecutive_rejects = 0
     best = None
     best_pnl = -float("inf")
     _seen_combos: set[str] = set()  # dedup: evita testar a mesma combo 2x
@@ -137,6 +140,14 @@ def _search_pair_worker(args) -> dict:
             log.info(f"  {pair}: MAX_ATTEMPTS={MAX_ATTEMPTS_PER_PAIR} atingido "
                      f"({n_tested} testados, melhor PnL={best_pnl:.2f})")
             break
+        # Wave Stage3-justo (Bruno 01/08): consecutive_rejects reseta POR
+        # ESTRATÉGIA, não globalmente. Antes o contador vivia fora do loop —
+        # uma estratégia ruim (sempre ADX_TREND, primeiro alfabético) saturava
+        # o contador em 50 e as outras 42 estratégias testavam só 1 combo cada
+        # (break imediato). Resultado: pares "travados" na baseline sem nunca
+        # ter chance real de testar alternativas. Agora cada estratégia recebe
+        # uma varredura justa independentemente das anteriores.
+        consecutive_rejects = 0
         for params in _generate_param_combos(strat):
             if n_tested >= MAX_ATTEMPTS_PER_PAIR:
                 break
@@ -155,16 +166,16 @@ def _search_pair_worker(args) -> dict:
                 log.debug(f"  {pair} {strat} params={params}: erro {e}")
                 consecutive_rejects += 1
                 if consecutive_rejects >= MAX_CONSECUTIVE_REJECTS:
-                    log.info(f"  {pair}: {MAX_CONSECUTIVE_REJECTS} rejeições "
-                             f"seguidas — espaço esgotado, parando.")
+                    log.info(f"  {pair} {strat}: {MAX_CONSECUTIVE_REJECTS} rejeições "
+                             f"seguidas — estratégia sem edge, pulando próx.")
                     break
                 continue
 
             if not result["passed"]:
                 consecutive_rejects += 1
                 if consecutive_rejects >= MAX_CONSECUTIVE_REJECTS:
-                    log.info(f"  {pair}: {MAX_CONSECUTIVE_REJECTS} rejeições "
-                             f"seguidas — espaço esgotado, parando.")
+                    log.info(f"  {pair} {strat}: {MAX_CONSECUTIVE_REJECTS} rejeições "
+                             f"seguidas — estratégia sem edge, pulando próx.")
                     break
                 continue
 
