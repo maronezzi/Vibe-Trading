@@ -191,6 +191,13 @@ ALLOWED_WRITERS = (
     # Wave 880.H (2026-07-20, Bruno): Profit Lock Adaptativo — adiciona chaves
     # profit_lock_* no config. Rodar com autotrador PAUSADO.
     "scripts/w14_9_enable_profit_lock_20260720.py",
+    # scripts/w_enable_all_win_tfs_20260731.py: habilita todos TFs do WIN
+    # (remove WIN_* de disabled_timeframes + day_trade_intent=true M30/H1).
+    # Autorizado Bruno 2026-07-31. Rodar com autotrader PAUSADO.
+    "scripts/w_enable_all_win_tfs_20260731.py",
+    # scripts/w_roll_bit_q26_20260731.py: rolagem BITN26→BITQ26 (vencimento 31/07).
+    # Autorizado Bruno 2026-07-31. Rodar com autotrader PAUSADO.
+    "scripts/w_roll_bit_q26_20260731.py",
 )
 
 # Cache
