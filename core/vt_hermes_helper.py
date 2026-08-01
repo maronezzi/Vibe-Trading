@@ -228,10 +228,17 @@ def _get_ask_llm_logger() -> logging.Logger:
 # com timeout 10s, mas o MiniMax leva ~15s de cold-start → toda chamada do Stage
 # 4 do AGI timeout antes de completar (168 chamadas, 0 sucessos em 30/07).
 # model=None sinaliza "usar default do hermes" no loop abaixo.
+#
+# Wave noturno-generoso (Bruno 01/08): o AGI roda às 17:10 (pós-close 16:45) e
+# tem a madrugada toda. O qwen leva ~40-60s para GERAR CÓDIGO (mais lento que
+# hipótese curta), e o timeout de 60s cortava no meio (3/3 gerações do Stage 4
+# morriam em 59s em 01/08). Subido p/ 180s. NOTA: validator_v2 (live, durante o
+# pregão) tem implementação PRÓPRIA (_ask_llm em vt_order_validator_v2.py) — não
+# usa esta lista, então este aumento NÃO afeta o path de ordens em horário real.
 _ASK_LLM_PROVIDERS = [
-    {"provider": None,           "model": None,             "timeout": 60},   # default hermes (qwen3.8) — cold-start + geração de código
-    {"provider": "minimax-oauth", "model": "MiniMax-M3",    "timeout": 25},   # fallback 1 (sync validator_v2: 10s→25s)
-    {"provider": "xiaomi",        "model": "mimo-v2.5-pro", "timeout": 25},   # fallback 2
+    {"provider": None,           "model": None,             "timeout": 180},  # default hermes (qwen3.8) — geração de código noturna
+    {"provider": "minimax-oauth", "model": "MiniMax-M3",    "timeout": 60},   # fallback 1 (25s→60s: também noturno)
+    {"provider": "xiaomi",        "model": "mimo-v2.5-pro", "timeout": 60},   # fallback 2
 ]
 
 

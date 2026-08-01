@@ -186,7 +186,9 @@ Responda APENAS em JSON válido, sem markdown:
 {{"hypotheses": [{{"type": "...", "description": "...", "justification": "..."}}]}}"""
 
     try:
-        response = ask_llm(prompt, timeout=45)
+        # Wave noturno-generoso (Bruno 01/08): AGI roda às 17:10 com a madrugada.
+        # Mesmo hipótese curta timed out em 44s (cold-start do qwen). Budget 120s.
+        response = ask_llm(prompt, timeout=120)
     except Exception as e:
         log.warning(f"ask_llm falhou para {pair}: {e}")
         return []

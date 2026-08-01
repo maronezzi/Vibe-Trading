@@ -487,7 +487,11 @@ Justificativa: {justification}
 Gere APENAS o código Python, sem markdown, sem explicação. Comece com as triplas aspas do docstring."""
 
     try:
-        code = ask_llm(prompt, timeout=60)
+        # Wave noturno-generoso (Bruno 01/08): AGI roda às 17:10 com a madrugada
+        # toda. Geração de CÓDIGO é mais lenta que hipótese curta — o qwen levava
+        # 40-60s e o budget 60s cortava no meio (3/3 gerações morriam em 59s).
+        # Budget 200s dá folga p/ o qwen (180s interno) + retry de fallback.
+        code = ask_llm(prompt, timeout=200)
     except Exception as e:
         log.warning(f"ask_llm falhou em stage4: {e}")
         return None
