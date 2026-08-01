@@ -54,21 +54,31 @@ def run(ctx: dict) -> dict:
     # sentido manter bloqueado um par que o próprio backtest validou como
     # lucrativo. Antes, pares otimizados ficavam presos no bloqueio.
     reactivated = []
+    deactivated = []
     if not dry_run:
         reactivated = _reactivate_profitable_pairs(ctx)
-    elif ctx.get("profitable_pairs"):
+        deactivated = _deactivate_failing_pairs(ctx)
+    else:
         profitable = ctx.get("profitable_pairs", [])
+        failing = ctx.get("failing_pairs", [])
         disabled = config.get("disabled_timeframes", []) or []
-        would = [p for p in profitable if p in disabled]
-        if would:
-            log.info(f"[DRY-RUN] AGI-SOBERANO reativaria {len(would)} par(es): {would}")
+        dti = config.get("day_trade_intent", {}) or {}
+        would_reactivate = [p for p in profitable if p in disabled]
+        would_deactivate = [p for p in failing if p not in disabled and dti.get(p, False)]
+        if would_reactivate:
+            log.info(f"[DRY-RUN] AGI-SOBERANO reativaria {len(would_reactivate)} par(es): {would_reactivate}")
+        if would_deactivate:
+            log.info(f"[DRY-RUN] AGI-SOBERANO desativaria {len(would_deactivate)} par(es): {would_deactivate}")
 
     mode = "DRY-RUN" if dry_run else "APLICADO"
     summary = f"{len(applied)} mudança(s) {mode}, {len(rejected)} rejeitada(s)"
     if reactivated:
         summary += f", {len(reactivated)} reativado(s)"
+    if deactivated:
+        summary += f", {len(deactivated)} desativado(s)"
     return {"applied_changes": applied, "rejected": rejected,
-            "reactivated": reactivated, "summary": summary}
+            "reactivated": reactivated, "deactivated": deactivated,
+            "summary": summary}
 
 
 def _reactivate_profitable_pairs(ctx: dict) -> list[str]:
@@ -112,6 +122,55 @@ def _reactivate_profitable_pairs(ctx: dict) -> list[str]:
         log.info(f"🔓 AGI-SOBERANO (stage5): reativou {len(reactivated)} "
                  f"par(es) lucrativo(s): {reactivated}")
     return reactivated
+
+
+def _deactivate_failing_pairs(ctx: dict) -> list[str]:
+    """Desativa pares failing que estão ativos (AGI soberano — lado saída).
+
+    Simétrico à _reactivate_profitable_pairs. Lê ctx["failing_pairs"]
+    (populado pelo stage1) e, para cada par que está ATIVO (não em
+    disabled_timeframes e day_trade_intent=true) mas está perdendo (PnL<=0
+    na sim 30d), o AGI desativa — adiciona em disabled_timeframes e seta
+    day_trade_intent=false. Não faz sentido operar um par que o backtest
+    mostra ser perdedor.
+
+    Bruno 01/08: "se ele decidir que deve entrar deve entrar, se deve sair
+    deve sair, a cada iteração do AGI ele decide o que fazer."
+
+    Returns:
+        Lista de pares efetivamente desativados.
+    """
+    failing = ctx.get("failing_pairs", []) or []
+    if not failing:
+        return []
+    from core.vt_config_loader import load_config, save_full_config
+    fresh = load_config(force=True)
+    disabled = fresh.get("disabled_timeframes", []) or []
+    dti = fresh.setdefault("day_trade_intent", {})
+    changed = False
+    deactivated = []
+    for pair in failing:
+        was_active = pair not in disabled and dti.get(pair, False)
+        if pair not in disabled:
+            disabled = disabled + [pair]
+            changed = True
+        if dti.get(pair, False):
+            dti[pair] = False
+            changed = True
+        if was_active:
+            deactivated.append(pair)
+    if changed:
+        fresh["disabled_timeframes"] = disabled
+        fresh["day_trade_intent"] = dti
+        save_full_config(fresh, updated_by="agi_v4_stage5")
+        # Sincroniza config em memória do ctx
+        cfg = ctx.get("config", {}) or {}
+        cfg.clear()
+        cfg.update(fresh)
+        ctx["config"] = cfg
+        log.info(f"🔒 AGI-SOBERANO (stage5): desativou {len(deactivated)} "
+                 f"par(es) failing: {deactivated}")
+    return deactivated
 
 
 def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: dict) -> dict:
