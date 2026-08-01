@@ -1,7 +1,7 @@
 {
-  "_version": 1159,
-  "_updated_at": "2026-07-31T13:09:23.215036",
-  "_updated_by": "hermes_13h_param_tuning",
+  "_version": 1166,
+  "_updated_at": "2026-08-01T17:21:03.313511",
+  "_updated_by": "agi_v4_stage5",
   "_notes": "auto-resolve vencimento: WDO: WDOU26 → WDOQ26",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
@@ -119,12 +119,12 @@
     "BIT_M15": "RANGE_TRADING",
     "BIT_M30": "BOLLINGER",
     "BIT_H1": "ADX_TREND",
-    "WSP_M5": "RSI_REVERSION",
+    "WSP_M5": "BOLLINGER",
     "WSP_M15": "ADX_TREND",
-    "WSP_M30": "SUPERTREND",
+    "WSP_M30": "EMA_PULLBACK",
     "WSP_H1": "EMA_PULLBACK",
     "WDO_M5": "ADX_TREND",
-    "WDO_M15": "ADX_TREND",
+    "WDO_M15": "EMA_PULLBACK",
     "WDO_M30": "ADX_TREND",
     "WDO_H1": "RSI_REVERSION"
   },
@@ -232,14 +232,9 @@
     "IND"
   ],
   "disabled_timeframes": [
-    "WSP_M5",
-    "WSP_M15",
-    "WSP_M30",
-    "WSP_H1",
-    "WDO_M5",
-    "WDO_M15",
-    "WDO_M30",
-    "WDO_H1"
+    "WDO_H1",
+    "WIN_H1",
+    "BIT_H1"
   ],
   "max_daily_loss": -2000,
   "global_max_daily_trades": 999,
@@ -309,13 +304,13 @@
     },
     "WSP_M5": {
       "sl_atr_mult": 1.0,
-      "cooldown_seconds": 300,
+      "cooldown_seconds": 60,
       "max_daily_trades": 8,
       "rsi_period": 7,
       "rsi_overbought": 72,
       "rsi_oversold": 20,
       "bb_period": 14,
-      "bb_std": 1.5,
+      "bb_std": 2.5,
       "adx_period": 10,
       "adx_threshold": 20,
       "trail_activate": 1.0,
@@ -341,8 +336,8 @@
       "halt_duration_minutes": 60
     },
     "WSP_M30": {
-      "sl_atr_mult": 1.0009392633353573,
-      "cooldown_seconds": 1227,
+      "sl_atr_mult": 1.8,
+      "cooldown_seconds": 180,
       "max_daily_trades": 999,
       "donchian_period": 14,
       "adx_period": 10,
@@ -354,7 +349,10 @@
       "min_confluence_score": 1,
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
-      "halt_duration_minutes": 60
+      "halt_duration_minutes": 60,
+      "ema_fast": 5,
+      "ema_slow": 15,
+      "pullback_pct": 0.15
     },
     "WSP_H1": {
       "sl_atr_mult": 1.0,
@@ -390,18 +388,19 @@
       "halt_duration_minutes": 60
     },
     "WDO_M15": {
-      "sl_atr_mult": 1.5,
-      "cooldown_seconds": 400,
+      "sl_atr_mult": 3.0,
+      "cooldown_seconds": 60,
       "adx_threshold": 35,
       "ema_fast": 5,
-      "ema_slow": 23,
+      "ema_slow": 35,
       "trail_activate": 1.0,
       "trail_distance": 0.4,
       "max_daily_trades": 10,
       "min_confluence_score": 1,
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
-      "halt_duration_minutes": 60
+      "halt_duration_minutes": 60,
+      "pullback_pct": 0.15
     },
     "WDO_M30": {
       "touch_pct": 0.0015,
@@ -568,9 +567,16 @@
     "BIT_M5": true,
     "BIT_M15": true,
     "WIN_M30": true,
-    "WIN_H1": true,
-    "BIT_M30": false,
-    "BIT_H1": false
+    "WIN_H1": false,
+    "BIT_M30": true,
+    "BIT_H1": false,
+    "WSP_M5": true,
+    "WSP_M15": true,
+    "WSP_M30": true,
+    "WSP_H1": true,
+    "WDO_M5": true,
+    "WDO_M15": true,
+    "WDO_M30": true
   },
   "loss_cooldown": {
     "enabled": true,
