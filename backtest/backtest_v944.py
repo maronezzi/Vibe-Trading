@@ -40,11 +40,23 @@ FETCH_SCRIPT = ROOT / "backtest" / "mt5_fetch.py"
 # W872.2 (2026-07-07): slip_r recalibrado = slippage_pts × mult (1-2 ticks).
 # Antes slip_r era R$5-10 fixo — absurdo quando mult baixo (WDO break-even 4133pts).
 # Agora slip_r escala com mult, refletindo slippage real (empírico ≈ R$0).
+#
+# Wave custo-real (Bruno 01/08): WDO e WSP estavam com mult COPIADO/ERRADO,
+# matando todo backtest com PF=0 (custo fixo R$1.20 superava lucro micro-penny).
+# Calibrado pelas especificações OFICIAIS B3:
+#   WDO (Mini Dólar): cada ponto = R$10.00, tick 0.5pt, 1 tick = R$5.00.
+#     Fonte: B3/Bora Investir/CM Capital — "cada ponto vale R$10".
+#     ANTES mult=0.0015 (erro 6667x): 8pts move = R$0.012, custo R$1.20 → PF=0.
+#   WSP (Micro S&P 500): cada ponto = USD 2.50 (~R$13.50 a 5.4), tick 0.25pt.
+#     Fonte: B3 oficial "Micro S&P 500 Futures Contract" — USD 2.50/point.
+#     ANTES mult=0.01 (cópia do BIT, erro 1350x): 10pts move = R$0.10 → PF=0.
+# slip_r = 2 ticks de slippage (conservador, alinhado ao WIN que usa 1 tick).
+# Câmbio USD→BRL embutido no mult do WSP: 2.50 × 5.4 = R$13.50/pt.
 CONTRACT_SPECS = {
-    "WIN$": {"mult": 1.0, "tick": 5, "slip_r": 5.0},
-    "WDO$": {"mult": 0.0015, "tick": 0.5, "slip_r": 0.0015},
-    "BIT$": {"mult": 0.01, "tick": 0.01, "slip_r": 0.0002},
-    "WSP$": {"mult": 0.01, "tick": 0.01, "slip_r": 0.0002},
+    "WIN$": {"mult": 1.0, "tick": 5, "slip_r": 5.0},       # WIN: R$1/pt, 1 tick=R$5
+    "WDO$": {"mult": 10.0, "tick": 0.5, "slip_r": 10.0},    # WDO: R$10/pt, 1 tick=R$5, slip=2 ticks
+    "BIT$": {"mult": 0.01, "tick": 0.01, "slip_r": 0.0002}, # BIT: R$0.01/pt
+    "WSP$": {"mult": 13.5, "tick": 0.25, "slip_r": 6.75},   # WSP: R$13.50/pt (USD2.50×5.4), slip=2 ticks
     "DOL$": {"mult": 0.0018, "tick": 0.5, "slip_r": 0.0018},
     "IND$": {"mult": 1.0, "tick": 5, "slip_r": 5.0},
 }
