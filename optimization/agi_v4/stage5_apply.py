@@ -147,13 +147,25 @@ def _deactivate_failing_pairs(ctx: dict) -> list[str]:
     failing = ctx.get("failing_pairs", []) or []
     if not failing:
         return []
+    # Normaliza: failing_pairs pode vir como list[str] (stage1) ou
+    # list[dict] ({"pair":..., "pnl":...} do _check_convergence_simulated).
+    # Extrai sempre o nome do par (str) para comparar com disabled_timeframes.
+    failing_pairs = []
+    for f in failing:
+        if isinstance(f, str):
+            failing_pairs.append(f)
+        elif isinstance(f, dict):
+            failing_pairs.append(f.get("pair", ""))
+    failing_pairs = [p for p in failing_pairs if p]
+    if not failing_pairs:
+        return []
     from core.vt_config_loader import load_config, save_full_config
     fresh = load_config(force=True)
     disabled = fresh.get("disabled_timeframes", []) or []
     dti = fresh.setdefault("day_trade_intent", {})
     changed = False
     deactivated = []
-    for pair in failing:
+    for pair in failing_pairs:
         was_active = pair not in disabled and dti.get(pair, False)
         if pair not in disabled:
             disabled = disabled + [pair]
