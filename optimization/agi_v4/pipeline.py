@@ -224,7 +224,7 @@ def run(days: int = 7,
         # Wave noturno-generoso (Bruno 01/08): estagnação 2→3 (configurável).
         # Dá uma chance extra ao Stage 4 gerar estratégia nova. "Tempo não é
         # problema" — o AGI tem a madrugada toda para tentar exaustivamente.
-        _MAX_STAGNATION = int(os.environ.get("VT_AGI_MAX_STAGNATION", "3"))
+        _MAX_STAGNATION = int(_os.environ.get("VT_AGI_MAX_STAGNATION", "3"))
         if stagnation_counter >= _MAX_STAGNATION:
             log.warning(f"[{TAG}] ⚠️ ESTAGNAÇÃO detectada ({stagnation_counter} iterações "
                         f"sem progresso). Espaço de busca esgotado nesta execução. "
