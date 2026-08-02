@@ -150,10 +150,18 @@ def hermes_send(telegram_target: str, message: str, timeout: int = 30) -> bool:
 
     Pitfall: hermes_send silenciosamente engolia erros ANTES — agora retorna
     False se o subprocess falha, mas o caller precisa checar (commit 3ebffa0e).
+
+    Wave noturno-generoso (Bruno 01/08): loga stderr do hermes quando um chunk
+    falha. Antes a falha era 100% silenciosa — o cron noturno não entregava a
+    notificação e ninguém sabia o porquê. Agora o stderr vai para o log do
+    caller (via logging) para diagnóstico.
     """
+    import logging as _logging
     import subprocess
+    _log = _logging.getLogger("vt_hermes")
     hermes_bin = find_hermes()
     if not hermes_bin:
+        _log.warning("hermes_send: binário hermes não encontrado — mensagem NÃO enviada")
         return False
 
     chunks = _split_long_message(message)
@@ -168,8 +176,14 @@ def hermes_send(telegram_target: str, message: str, timeout: int = 30) -> bool:
             )
             if result.returncode != 0:
                 all_ok = False
+                stderr_tail = result.stderr.decode("utf-8", errors="replace")[-300:] if result.stderr else "(sem stderr)"
+                _log.warning(f"hermes_send: chunk falhou (rc={result.returncode}): {stderr_tail}")
         return all_ok
-    except Exception:
+    except subprocess.TimeoutExpired:
+        _log.warning(f"hermes_send: timeout após {timeout}s — mensagem NÃO enviada")
+        return False
+    except Exception as e:
+        _log.warning(f"hermes_send: exceção inesperada: {e}")
         return False
 
 

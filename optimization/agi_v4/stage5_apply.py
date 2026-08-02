@@ -76,6 +76,10 @@ def run(ctx: dict) -> dict:
         summary += f", {len(reactivated)} reativado(s)"
     if deactivated:
         summary += f", {len(deactivated)} desativado(s)"
+    # Wave AGI-soberano (01/08): propaga decisões de entra/sai para o ctx,
+    # para o stage6 (report) incluir na notificação Telegram.
+    ctx["reactivated"] = reactivated
+    ctx["deactivated"] = deactivated
     return {"applied_changes": applied, "rejected": rejected,
             "reactivated": reactivated, "deactivated": deactivated,
             "summary": summary}

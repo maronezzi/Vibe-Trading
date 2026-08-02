@@ -63,12 +63,15 @@ echo "[$(date)] Snapshot: $SNAPSHOT" > "$LOG"
 # Os crons seguintes (loser_replay 17:30, rescan 19:00) não leem/escrevem o
 # config, então não há race condition — só sobreposição de CPU (aceitável).
 #
-# Wave 880.C4 (Bruno 19/07): --mode auto detecta horário. Cron 12:00 vira
-# exploration (busca candidatos); cron 17:10 vira conservative (max-iters=1,
-# só revalida — não propõe mudanças radicais a 1:35 do EOD do pregão atual).
+# Wave 880.C4/noturno-generoso (Bruno 01/08): --mode auto detecta horário.
+# AMBOS os crons (12:00 e 17:10) rodam o loop de convergência COMPLETO.
+# Bruno 01/08: "tempo não é problema" — deadline interno subiu para 8h
+# (VT_AGI_DEADLINE_MINS=480) e estagnação para 3 iterações. O AGI roda às
+# 17:10 com a madrugada toda para testar exaustivamente e gerar estratégias.
 {
-  echo "[$(date)] AGI v4 cron start | args: --days 7 --mode auto $DRY_RUN (max-iterations ilimitado, freios naturais)"
+  echo "[$(date)] AGI v4 cron start | args: --days 7 --mode auto $DRY_RUN (deadline 8h, estagnação 3 it, max-iterations 1000)"
   cd "$PROJECT_ROOT"
+  export PYTHONPATH="$PROJECT_ROOT"
   /home/bruno/Projects/Vibe-Trading/.venv/bin/python3 "$RUNNER" --days 7 --mode auto $DRY_RUN
   EXIT_CODE=$?
   echo "[$(date)] AGI v4 cron end | exit=$EXIT_CODE | snapshot=$SNAPSHOT"

@@ -151,7 +151,14 @@ def _shadow_today_summary() -> str | None:
 # ═══════════════════════════════════════════════════════════════════
 
 def _send_telegram(ctx: dict) -> bool:
-    """Envia resumo ao Telegram. Fail-safe: retorna False se falhar."""
+    """Envia resumo ao Telegram. Fail-safe: retorna False se falhar.
+
+    Wave noturno-generoso (Bruno 01/08): retry duplo com backoff. O cron roda
+    às 17:10 desassistido — se a primeira tentativa falha (rede, hermes
+    cold-start), retenta 2x com 10s de pausa. Antes, uma falha isolada
+    silenciava a notificação da noite inteira.
+    """
+    import time as _time
     try:
         from core.vt_hermes_helper import hermes_send
     except ImportError:
@@ -162,11 +169,22 @@ def _send_telegram(ctx: dict) -> bool:
     if not msg:
         return False
 
-    try:
-        return hermes_send(TELEGRAM_TARGET, msg, timeout=30)
-    except Exception as e:
-        log.warning(f"Telegram falhou (não crítico): {e}")
-        return False
+    # 3 tentativas com 10s de backoff (total ~20s de espera máxima).
+    for attempt in range(1, 4):
+        try:
+            ok = hermes_send(TELEGRAM_TARGET, msg, timeout=30)
+            if ok:
+                if attempt > 1:
+                    log.info(f"Telegram enviado na tentativa {attempt}")
+                return True
+            log.warning(f"Telegram tentativa {attempt}/3 falhou (hermes retornou False)")
+        except Exception as e:
+            log.warning(f"Telegram tentativa {attempt}/3 exceção: {e}")
+        if attempt < 3:
+            _time.sleep(10)
+
+    log.warning("Telegram: 3 tentativas falharam — notificação perdida (não crítico)")
+    return False
 
 
 def _build_telegram_message(ctx: dict) -> str:
@@ -178,6 +196,10 @@ def _build_telegram_message(ctx: dict) -> str:
     dry_run = ctx.get("dry_run", True)
     perf = ctx.get("performance", {})
     by_symbol = perf.get("by_symbol", {}) if isinstance(perf, dict) else {}
+
+    # Wave AGI-soberano (01/08): decisões de entra/sai do AGI.
+    reactivated = ctx.get("reactivated", [])
+    deactivated = ctx.get("deactivated", [])
 
     mode = "🔍 DRY-RUN" if dry_run else "⚡ APLICADO"
     icon = "✅" if converged else "🔄"
@@ -203,6 +225,17 @@ def _build_telegram_message(ctx: dict) -> str:
     shadow = _shadow_today_summary()
     if shadow:
         lines.append(f"• {shadow}")
+
+    # ── Decisões soberanas do AGI (entra/sai) ──
+    # Wave AGI-soberano (01/08): o AGI decide quais pares operam.
+    if reactivated:
+        pairs_str = ", ".join(reactivated[:6])
+        mais = f" (+{len(reactivated)-6})" if len(reactivated) > 6 else ""
+        lines.append(f"• 🔓 REATIVOU {len(reactivated)} par(es) lucrativo(s): {pairs_str}{mais}")
+    if deactivated:
+        pairs_str = ", ".join(deactivated[:6])
+        mais = f" (+{len(deactivated)-6})" if len(deactivated) > 6 else ""
+        lines.append(f"• 🔒 DESATIVOU {len(deactivated)} par(es) failing: {pairs_str}{mais}")
 
     # Mudanças
     if applied:

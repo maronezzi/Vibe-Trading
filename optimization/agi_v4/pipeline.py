@@ -144,11 +144,14 @@ def run(days: int = 7,
     # e o log mostrava "0 par(es) pendentes" enganoso. Agora reflete realidade.
     prev_failing_pairs = set(initial_failing)
     stagnation_counter = 0
-    # Wave 880.A3: deadline hard de 90min (5400s) — impede LLM travado prender
-    # o cron das 17:10 até de madrugada. Comentário do run_agi_v4_cron.sh já
-    # mencionava "90 min" mas era aspiracional; agora é enforced.
+    # Wave 880.A3: deadline hard — impede LLM travado prender o cron.
+    # Wave noturno-generoso (Bruno 01/08): "tempo não é problema para o AGI".
+    # O AGI roda às 17:10 (pós-close) e tem a madrugada toda. Deadline subiu
+    # de 90min para 8h (configurável via VT_AGI_DEADLINE_MINS). 8h cobre até
+    # ~1h10 da manhã com folga — antes do pre-flight das 8:55.
+    import os as _os
     _deadline_t0 = time.time()
-    _DEADLINE_SECS = 5400
+    _DEADLINE_SECS = int(_os.environ.get("VT_AGI_DEADLINE_MINS", "480")) * 60
 
     for it in range(1, max_iterations + 1):
         ctx["current_iteration"] = it
@@ -218,7 +221,11 @@ def run(days: int = 7,
         # O LLM pode estar gerando a mesma estratégia; o grid já foi varrido.
         # Parar e reportar — a próxima execução do cron retoma com dados
         # de mercado frescos (30d rolam) e novas ideias web/LLM.
-        if stagnation_counter >= 2:
+        # Wave noturno-generoso (Bruno 01/08): estagnação 2→3 (configurável).
+        # Dá uma chance extra ao Stage 4 gerar estratégia nova. "Tempo não é
+        # problema" — o AGI tem a madrugada toda para tentar exaustivamente.
+        _MAX_STAGNATION = int(os.environ.get("VT_AGI_MAX_STAGNATION", "3"))
+        if stagnation_counter >= _MAX_STAGNATION:
             log.warning(f"[{TAG}] ⚠️ ESTAGNAÇÃO detectada ({stagnation_counter} iterações "
                         f"sem progresso). Espaço de busca esgotado nesta execução. "
                         f"{len(current_failing)} par(es) ainda negativos. "
@@ -226,9 +233,10 @@ def run(days: int = 7,
             ctx["stagnated"] = True
             break
 
-        # Wave 880.A3: deadline check — se passou de 90min, para com warning.
-        # Não conta como estagnação (que restringiria próximos crons); é só
-        # uma proteção de tempo para o LLM travado. Próxima execução do cron
+        # Wave 880.A3/noturno-generoso: deadline hard (90min→8h configurável).
+        # Bruno 01/08: "tempo não é problema para o AGI". O AGI roda às 17:10 e
+        # tem a madrugada. Não conta como estagnação; é proteção contra LLM
+        # travado. Próxima execução do cron
         # retoma com janelas de mercado roladas (30d).
         if time.time() - _deadline_t0 > _DEADLINE_SECS:
             log.warning(f"[{TAG}] ⏰ DEADLINE 90min atingido ({(time.time()-_deadline_t0)/60:.0f}min) "
