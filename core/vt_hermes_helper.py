@@ -255,6 +255,14 @@ _ASK_LLM_PROVIDERS = [
     {"provider": "xiaomi",        "model": "mimo-v2.5-pro", "timeout": 60},   # fallback 2
 ]
 
+# Wave 881 (03/08/2026): mínimo de chars para considerar uma resposta válida.
+# Respostas abaixo deste tamanho são tratadas como erro de provider (provável
+# crédito esgotado / auth inválida) e disparam o fallback do próximo provider.
+# Alinhado com stage4_generate.py:499 (que já rejeita <50 chars como código).
+# Respostas válidas dos callers atuais: JSON de hipóteses (centenas) e código
+# Python (milhares) — sempre bem acima deste limiar.
+MIN_VALID_RESPONSE_CHARS = 50
+
 
 def ask_llm(
     prompt: str,
@@ -334,6 +342,27 @@ def ask_llm(
         elapsed = time.time() - t0
         if result.returncode == 0 and result.stdout and result.stdout.strip():
             resp = result.stdout.strip()
+            # Wave 881 (03/08/2026): gate anti-resposta-erro. Alguns providers
+            # devolvem uma string curta de erro (ex.: crédito esgotado, auth
+            # inválida) com returncode=0 e stdout não-vazio — o que antes era
+            # aceito como "sucesso", marcando o provider como "usado" e
+            # BLOQUEANDO o fallback (MiniMax/xiaomi nunca disparava). Hoje
+            # (03/08 17:10) a Qwen sem crédito devolveu 25 chars em 15 chamadas
+            # seguidas → Stage 4 gerou 0 estratégias.
+            #
+            # Critério: resposta < MIN_VALID_RESPONSE_CHARS é suspeita. Para os
+            # dois callers atuais (JSON de hipóteses do Stage 2 / código Python
+            # do Stage 4), respostas válidas sempre passam de centenas de chars
+            # (logs: 1721-6412 chars quando o Qwen tinha crédito). O Stage 4
+            # também rejeita <50 chars (stage4_generate.py:499); alinhar aqui
+            # faz o fallback disparar ANTES do descarte downstream.
+            if len(resp) < MIN_VALID_RESPONSE_CHARS:
+                ask_log.warning(
+                    f"ask_llm: {label} resposta suspeita ({len(resp)} chars < "
+                    f"{MIN_VALID_RESPONSE_CHARS}) — provável erro de crédito/auth "
+                    f"do provider. Tentando próximo fallback. Conteúdo: {resp!r}"
+                )
+                continue  # cai para próximo provider (fallback MiniMax/xiaomi)
             ask_log.debug(
                 f"ask_llm: {label} OK ({elapsed:.1f}s, {len(resp)} chars)"
             )
