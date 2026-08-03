@@ -237,7 +237,7 @@ def _get_ask_llm_logger() -> logging.Logger:
 
 # Provedores LLM — mesma cadeia de fallback de core/vt_order_validator_v2.py
 # Wave qwen-primário (Bruno 30/07): o PRIMÁRIO agora é o default do hermes
-# (qwen3.8-max-preview / alibaba-token-plan) — NÃO passamos -m/--provider,
+# (qwen3.8-max / alibaba-token-plan) — NÃO passamos -m/--provider,
 # deixando o hermes usar o modelo configurado. Antes a cadeia forçava MiniMax-M3
 # com timeout 10s, mas o MiniMax leva ~15s de cold-start → toda chamada do Stage
 # 4 do AGI timeout antes de completar (168 chamadas, 0 sucessos em 30/07).
@@ -306,7 +306,7 @@ def ask_llm(
         label = prov["model"] or "hermes-default(qwen)"
 
         args = [hermes_bin, "-z", prompt]
-        # model=None → usa o default do hermes (qwen3.8-max-preview). Não
+        # model=None → usa o default do hermes (qwen3.8-max). Não
         # passamos -m/--provider, deixando o hermes usar o que está configurado
         # (robusto: se o Bruno trocar o modelo no hermes, o AGI segue automático).
         if prov["model"] is not None and prov["provider"] is not None:

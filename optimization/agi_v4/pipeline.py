@@ -123,9 +123,12 @@ def run(days: int = 7,
     initial_failing = _normalize_failing(ctx.get("failing_pairs", []))
     if not initial_failing:
         log.info(f"[{TAG}] ✅ Nenhum par perdedor identificado no stage1 — "
-                 f"nada a otimizar. Pulando stages 2-5, indo direto ao report.")
+                 f"sem failing pairs. Otimizando lucrativos antes do report.")
         ctx["converged"] = True
         ctx["failing_pairs"] = []
+        # Wave 881: mesmo sem failing pairs, roda otimização dos lucrativos
+        # (busca estratégias/params melhores que a baseline atual).
+        _optimize_profitable_pairs(ctx)
         _safe_run_stage(ctx, 6, "report", "stage6_report")
         ctx["ended_at"] = datetime.now().isoformat()
         ctx["duration_s"] = time.time() - start_ts
@@ -250,6 +253,17 @@ def run(days: int = 7,
         prev_failing_count = len(current_failing)
         log.info(f"[{TAG}] {len(current_failing)} par(es) ainda negativos — próxima iteração")
 
+    # ── Wave 881: Otimização dos pares lucrativos ──
+    # Antes o AGI só consertava pares perdedores (gate pnl<=0); pares lucrativos
+    # ficavam congelados no estado em que estavam — nenhuma otimização contínua.
+    # Agora, após encerrar o loop de failing (por convergência, estagnação ou
+    # deadline), varre os pares lucrativos buscando estratégias/params melhores.
+    # Reusa Stage 3 (busca) + Stage 5 (apply). O Stage 5 já tem o gate
+    # better_baseline_exists: só aplica se cand_score > base_score — estratégia
+    # lucrativa nunca é trocada por pior. Guardrails (default-deny) protegem
+    # kill switches/metadata.
+    _optimize_profitable_pairs(ctx)
+
     # ── Stage 6: Relatório (sempre roda) ──
     _safe_run_stage(ctx, 6, "report", "stage6_report")
 
@@ -295,6 +309,57 @@ def _normalize_failing(failing) -> list[str]:
         if pair:
             pairs.append(pair)
     return pairs
+
+
+def _optimize_profitable_pairs(ctx: dict) -> None:
+    """Wave 881: varre pares lucrativos buscando estratégias/params melhores.
+
+    Antes desta wave o AGI só atuava sobre pares perdedores (failing_pairs),
+    cuja convergência é definida por ``pnl <= 0`` em
+    ``_check_convergence_simulated``. Pares lucrativos ficavam congelados no
+    estado em que estavam — nenhuma otimização contínua, mesmo que existisse
+    uma estratégia/params nitidamente melhores.
+
+    Esta fase roda Stage 3 (busca exaustiva) + Stage 5 (apply) sobre os pares
+    identificados como lucrativos pelo stage1 (``ctx["profitable_pairs"]``).
+    O Stage 5 já tem o gate ``better_baseline_exists`` (só aplica se
+    ``cand_score > base_score``), então uma estratégia lucrativa só é trocada
+    por outra cuja simulação 30d (+ bônus hoje, hoje-conta-mais) supere a
+    baseline atual. Em dry-run nada é escrito.
+
+    O custo adicional por execução é ~40-110s por par lucrativo (fetch MT5 +
+    grid de combos). Com ~13 lucrativos, são ~15-25 min a mais por cron —
+    cobertos pelo deadline de 8h (``VT_AGI_DEADLINE_MINS``).
+    """
+    profitable = ctx.get("profitable_pairs", []) or []
+    if not profitable:
+        return  # stage1 não populou lucrativos — nada a otimizar
+
+    log.info(f"[{TAG}] ── Otimização de {len(profitable)} par(es) lucrativo(s) ── "
+             f"(busca estratégias/params melhores que a baseline atual)")
+
+    # Stage 3 lê ctx["failing_pairs"] como pares-alvo. Salvamos o estado
+    # atual (pares ainda failing, se houver) e apontamos temporariamente para
+    # os lucrativos. O stage3 nunca escreve no config — só popula
+    # ctx["search_results"]. Restauramos ctx["failing_pairs"] ao final para
+    # preservar o histórico do loop de convergência (usado no stage6 report).
+    saved_failing = ctx.get("failing_pairs", [])
+    saved_search_results = ctx.get("search_results", [])
+
+    ctx["failing_pairs"] = profitable
+    ctx["search_results"] = []  # reset: resultados são da otimização lucrativa
+
+    _safe_run_stage(ctx, 3, "search_profitable", "stage3_exhaustive")
+    _safe_run_stage(ctx, 5, "apply_profitable", "stage5_apply")
+
+    # Registra as otimizações aplicadas (separadas das mudanças do loop failing)
+    ctx["profit_optimizations"] = list(ctx.get("applied_changes", []) or [])
+
+    # Restaura estado para o report final refletir o loop de failing
+    ctx["failing_pairs"] = saved_failing
+    n_opt = len(ctx["profit_optimizations"])
+    log.info(f"[{TAG}] Otimização de lucrativos concluída — "
+             f"{n_opt} melhoria(s) aplicada(s)")
 
 
 def _safe_run_stage(ctx: dict, stage_num: int, stage_name: str, module_name: str) -> None:

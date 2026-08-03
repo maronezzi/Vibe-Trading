@@ -96,6 +96,16 @@ ALLOWED_WRITERS = (
     # scripts/unblock_win_buy_20260708.py: libera win.buy_enabled=true
     # (decisão humana 2026-07-08 ter). Rodar com autotrader pausado.
     "scripts/unblock_win_buy_20260708.py",
+    # scripts/w881_reenable_wdom15_20260803.py: reabilita WDO_M15 (Wave 881 —
+    # stand-in LLM). EMA_PULLBACK validado por TODOS os gates do AGI v4 (PF
+    # 1.49, WR 76.9%, 26t, Sharpe 2.12, walk-forward 2/3). Autorizado Bruno
+    # 2026-08-03. save_full_config atômico → seguro durante runtime.
+    "scripts/w881_reenable_wdom15_20260803.py",
+    # scripts/w881_apply_optimization_20260803.py: aplica 6 otimizações de
+    # estratégia/params (Wave 881) validadas por sweep do Stage 3 do AGI v4 em
+    # 13 pares lucrativos. Todas WF≥75%. Mescla params preservando chaves de
+    # risco ao vivo. Autorizado Bruno 2026-08-03.
+    "scripts/w881_apply_optimization_20260803.py",
     # scripts/w874_13h_trader_ia_pause_losing.py: trader-IA sessão 13h W874
     # pausa BIT_M5/BIT_M30/WIN_M15 (Lei 5: WR<35% E PnL<0 E n>=15) + ajusta
     # breakeven/cooldown/max_daily em WIN/WDO/WSP para reduzir overtrading.

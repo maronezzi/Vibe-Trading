@@ -59,8 +59,14 @@ def run(ctx: dict) -> dict:
         reactivated = _reactivate_profitable_pairs(ctx)
         deactivated = _deactivate_failing_pairs(ctx)
     else:
-        profitable = ctx.get("profitable_pairs", [])
-        failing = ctx.get("failing_pairs", [])
+        # Wave 881: normaliza profitable/failing para str. ctx["failing_pairs"]
+        # pode vir como list[dict] ({"pair":..., "pnl":...}) do
+        # _check_convergence_simulated, e list[str] do stage1. Antes a
+        # list-comprehension abaixo fazia `p not in disabled` com p=dict,
+        # levantando TypeError: unhashable type: 'dict' em dry-run (regressão
+        # pós-commit 59cd6b31 que só corrigiu _deactivate_failing_pairs).
+        profitable = _normalize_pairs(ctx.get("profitable_pairs", []))
+        failing = _normalize_pairs(ctx.get("failing_pairs", []))
         disabled = config.get("disabled_timeframes", []) or []
         dti = config.get("day_trade_intent", {}) or {}
         would_reactivate = [p for p in profitable if p in disabled]
@@ -445,3 +451,26 @@ def _maybe_promote_generated(strategy_name: str, cand: dict, dry_run: bool) -> s
 def _reject(cand, gate, reason):
     log.info(f"REJEITADO {cand.get('pair','')} {cand.get('strategy','')}: {gate} {reason[:80]}")
     return {"applied": False, "candidate": cand, "gate": gate, "reason": reason}
+
+
+def _normalize_pairs(pairs) -> list[str]:
+    """Normaliza lista de pares (list[str] ou list[dict]) para list[str].
+
+    ctx["failing_pairs"] e ctx["profitable_pairs"] podem vir em dois formatos:
+      - list[str] (do stage1): ["WIN_H1", "BIT_H1"]
+      - list[dict] (do _check_convergence_simulated): [{"pair": "WIN_H1", "pnl": ...}]
+    Este helper extrai sempre o nome do par (str) para operações de set/list
+    que exigem pares hashable (ex.: ``p in disabled_timeframes``).
+    Wave 881 (03/08/2026): corrige TypeError unhashable type: 'dict' que
+    quebrava o Stage 5 em dry-run quando failing_pairs vinha como dicts.
+    """
+    result = []
+    for p in pairs or []:
+        if isinstance(p, str):
+            if p:
+                result.append(p)
+        elif isinstance(p, dict):
+            name = p.get("pair", "")
+            if name:
+                result.append(name)
+    return result
