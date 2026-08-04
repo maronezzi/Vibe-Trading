@@ -16,12 +16,24 @@ Lei 2: nunca desabilita símbolo/TF. Se candidato falha, mantém o atual.
 """
 from __future__ import annotations
 
-import copy
 import logging
+import os
 
 from .gates import load_thresholds
 
 log = logging.getLogger("agi_v4.stage5")
+
+# Wave 882 (Bruno 04/08): o AGI NÃO desabilita um par failing na primeira
+# iteração — só depois de tentar otimizar pelo menos N vezes. Antes, o
+# _deactivate_failing_pairs rodava a cada chamada do Stage 5 (inclusive na
+# iteração 1), desabilitando 13 pares às 12h42 baseado num PnL≤0 instantâneo
+# que flutuava entre lucrativo/failing conforme o momento da simulação.
+# Agora o AGI itera (Stage 3 busca exaustiva + Stage 4 geração) pelo menos
+# MIN_ITERS_BEFORE_DEACTIVATE vezes antes de considerar desativar um par.
+# Configurável via env (default 5, pedido Bruno 04/08: "tentar no mínimo 5").
+MIN_ITERS_BEFORE_DEACTIVATE = int(
+    os.environ.get("VT_AGI_MIN_ITERS_BEFORE_DEACTIVATE", "5")
+)
 
 
 def run(ctx: dict) -> dict:
@@ -56,8 +68,32 @@ def run(ctx: dict) -> dict:
     reactivated = []
     deactivated = []
     if not dry_run:
+        # Reativação (lado entrada): sempre permitida desde a iteração 1.
+        # Um par lucrativo não deve ficar bloqueado.
         reactivated = _reactivate_profitable_pairs(ctx)
-        deactivated = _deactivate_failing_pairs(ctx)
+
+        # Desativação (lado saída) — Wave 882 (Bruno 04/08): SÓ após o AGI
+        # ter tentado otimizar pelo menos MIN_ITERS_BEFORE_DEACTIVATE vezes.
+        # Antes deste gate, o AGI desabilitava pares failing já na iteração 1,
+        # baseado num PnL≤0 instantâneo instável — matando pares que eram
+        # lucrativos em re-simulação (incidente 12h42 de 04/08: 13 pares off).
+        # Agora o AGI continua otimizando (busca + geração) antes de desativar.
+        # O pipeline também seta ctx["_loop_exhausted"]=True quando o loop
+        # termina (convergência/estagnação/deadline) — nesse momento a
+        # desativação é permitida independentemente da contagem de iterações.
+        current_iter = ctx.get("current_iteration", 1)
+        loop_exhausted = ctx.get("_loop_exhausted", False)
+        if current_iter >= MIN_ITERS_BEFORE_DEACTIVATE or loop_exhausted:
+            deactivated = _deactivate_failing_pairs(ctx)
+        else:
+            n_failing = len(_normalize_pairs(ctx.get("failing_pairs", [])))
+            if n_failing:
+                log.info(
+                    f"⏳ Desativação suprimida (iter {current_iter} < "
+                    f"{MIN_ITERS_BEFORE_DEACTIVATE}): AGI ainda tentando "
+                    f"otimizar {n_failing} par(es) failing. Reativação "
+                    f"permanece ativa."
+                )
     else:
         # Wave 881: normaliza profitable/failing para str. ctx["failing_pairs"]
         # pode vir como list[dict] ({"pair":..., "pnl":...}) do

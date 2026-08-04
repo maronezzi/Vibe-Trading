@@ -53,6 +53,20 @@ SNAPSHOT="${CONFIG}.snapshot_pre_cron_${TS}"
 cp "$CONFIG" "$SNAPSHOT"
 echo "[$(date)] Snapshot: $SNAPSHOT" > "$LOG"
 
+# Wave 882 (Bruno 04/08): cron das 12h roda durante o pregão (mercado aberto
+# 09h-18h). O autotrader + MT5 + watchdog precisam de CPU headroom. Limita
+# workers a 1 (vs 2 do noturno) e encurta o deadline para 2h (vs 8h do 17h10)
+# — o cron do meio-dia não tem a madrugada e não pode monopolizar a CPU.
+# O cron das 17h10 (pós-close, 16:45) roda sem essas restrições.
+HOUR=$(date +%H)
+if [ "$HOUR" -ge 11 ] && [ "$HOUR" -le 14 ]; then
+  export VT_MAX_WORKERS=1
+  export VT_AGI_DEADLINE_MINS=120
+  echo "[$(date)] Cron diurno (hora=$HOUR): VT_MAX_WORKERS=1, deadline=120min (CPU limitada p/ não atrapalhar pregão)" >> "$LOG"
+else
+  echo "[$(date)] Cron noturno (hora=$HOUR): sem limite de CPU (pós-close, deadline=480min)" >> "$LOG"
+fi
+
 # Run async
 #
 # Wave LLM-AGI (Bruno 17/07): removido o cap --max-iterations 2. O AGI agora

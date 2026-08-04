@@ -126,6 +126,7 @@ def run(days: int = 7,
                  f"sem failing pairs. Otimizando lucrativos antes do report.")
         ctx["converged"] = True
         ctx["failing_pairs"] = []
+        ctx["_loop_exhausted"] = True  # Wave 882: sem failing, nada a desativar
         # Wave 881: mesmo sem failing pairs, roda otimização dos lucrativos
         # (busca estratégias/params melhores que a baseline atual).
         _optimize_profitable_pairs(ctx)
@@ -262,6 +263,12 @@ def run(days: int = 7,
     # better_baseline_exists: só aplica se cand_score > base_score — estratégia
     # lucrativa nunca é trocada por pior. Guardrails (default-deny) protegem
     # kill switches/metadata.
+    #
+    # Wave 882 (Bruno 04/08): marca que o loop esgotou as tentativas de
+    # otimização. O Stage 5 usa este flag para PERMITIR a desativação de pares
+    # ainda failing — agora que o AGI tentou de tudo (busca + geração nas N
+    # iterações do loop), faz sentido desativar o que persiste negativo.
+    ctx["_loop_exhausted"] = True
     _optimize_profitable_pairs(ctx)
 
     # ── Stage 6: Relatório (sempre roda) ──

@@ -98,10 +98,19 @@ O AGI decide autônomo, a cada iteração:
 
 | Condição (sim 30d) | Decisão do AGI |
 |---|---|
-| Par lucrativo (PnL > 0) E bloqueado | 🔓 **REATIVA**: remove `disabled_timeframes`, liga `day_trade_intent` |
-| Par failing (PnL ≤ 0) E ativo | 🔒 **DESATIVA**: adiciona `disabled_timeframes`, desliga `day_trade_intent` |
+| Par lucrativo (PnL > 0) E bloqueado | 🔓 **REATIVA**: remove `disabled_timeframes`, liga `day_trade_intent` (sempre, desde a iteração 1) |
+| Par failing (PnL ≤ 0) E ativo E **≥5 tentativas esgotadas** | 🔒 **DESATIVA**: adiciona `disabled_timeframes`, desliga `day_trade_intent` |
+| Par failing (PnL ≤ 0) E ativo E **<5 tentativas** | ⏳ **MANTÉM ATIVO**: AGI continua otimizando (busca + geração) |
 | Par lucrativo E já ativo | mantém (nada a fazer) |
 | Par failing E já bloqueado | mantém (nada a fazer) |
+
+> **Wave 882 (Bruno 04/08):** a desativação só ocorre após o AGI tentar
+> otimizar pelo menos `VT_AGI_MIN_ITERS_BEFORE_DEACTIVATE` (default 5) vezes,
+> OU quando o loop de convergência se esgota (`ctx["_loop_exhausted"]=True`).
+> Antes deste gate, o AGI desabilitava pares failing já na iteração 1 com
+> base num PnL≤0 instantâneo instável — incidente 12h42 de 04/08 desabilitou
+> 13 pares que eram lucrativos em re-simulação. A reativação (lado entrada)
+> permanece sem gate: um par lucrativo nunca deve ficar bloqueado.
 
 **Implementação** (não regredir):
 - `stage1_collect._identify_failing_simulated` popula `ctx["profitable_pairs"]`
@@ -134,17 +143,28 @@ Ordem dos stages no loop de convergência (`optimization/agi_v4/pipeline.py`):
   problema". O AGI roda às 17:10 com a madrugada toda.
 - `VT_AGI_MAX_STAGNATION` (default 3) — iterações sem progresso antes de parar.
 - `VT_AGI_MAX_ATTEMPTS` (default 600) — combos por par no Stage 3.
+- `VT_AGI_MIN_ITERS_BEFORE_DEACTIVATE` (default 5) — Wave 882 (Bruno 04/08):
+  mínimo de iterações de otimização antes de o AGI poder desativar um par
+  failing. Antes disto, pares failing permanecem ativos enquanto o AGI tenta
+  otimizar. Ver seção 4.
 
 **NÃO retorne estes para os valores antigos** (90min/2/300) — cortavam o AGI
 antes de testar as 43 estratégias e gerar código.
 
 ---
 
-## 6. Cron 17:10 (referência)
+## 6. Cron 12:00 + 17:10 (referência)
 
 - Wrapper: `scripts/run_agi_v4_cron.sh` — snapshot do config + run async (nohup).
 - Crontab: `10 17 * * 1-5` e `00 12 * * 1-5` (12:00 e 17:10, seg–sex).
 - Usa `.venv/bin/python3` (tem pandas etc.) + `export PYTHONPATH`.
+- **Wave 882 (Bruno 04/08):** ambos fazem a MESMA lógica (iterar, otimizar,
+  reativar/desativar). A única diferença é operacional — o wrapper detecta
+  o horário:
+  - **12h** (pregão aberto): `VT_MAX_WORKERS=1`, `VT_AGI_DEADLINE_MINS=120`
+    (CPU limitada para não atrapalhar o autotrader ao vivo).
+  - **17h10** (pós-close 16:45): sem limite de workers, deadline 8h
+    (madrugada toda para testar exaustivamente).
 - Args: `--days 7 --mode auto` (max-iterations default 1000, freios naturais).
 - Logs: `/tmp/vt_agi_v4_<TS>.log` + symlink `/tmp/vt_agi_v4_latest.log`.
 - Lock anti-colisão: `/tmp/vt_agi_v4.lock` (fcntl no runner) + `.pid` no wrapper.

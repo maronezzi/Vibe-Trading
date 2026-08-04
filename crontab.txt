@@ -66,6 +66,13 @@
 #       - Stage 5 auto-aplica candidatos que passam regra1 (cand > baseline)
 #         → exatamente o comportamento que o cron já tinha, agora com args certos
 #     Reinstalar com: crontab crontab.txt
+#
+#     Wave 882 (Bruno 04/08): ambos fazem a MESMA lógica (iterar, otimizar,
+#     reativar lucrativos, desativar failing só após ≥5 tentativas). A única
+#     diferença é OPERACIONAL — o wrapper detecta o horário:
+#       - 12h (pregão aberto): VT_MAX_WORKERS=1, deadline 2h (CPU limitada
+#         para não atrapalhar o autotrader ao vivo).
+#       - 17h10 (pós-close): sem limite, deadline 8h (madrugada toda).
 00 12 * * 1-5 /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/run_agi_v4_cron.sh >> /tmp/vt_agi_v4_cron.log 2>&1
 10 17 * * 1-5 /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/run_agi_v4_cron.sh >> /tmp/vt_agi_v4_cron.log 2>&1
 
