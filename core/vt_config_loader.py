@@ -141,6 +141,14 @@ ALLOWED_WRITERS = (
     # == block.strategy, então é inócuo. Limpeza pura, zero efeito
     # comportamental. Mantém BITM26 intacto. Rodar com autotrader PAUSADO.
     "scripts/w_cleanup_time_blocks_orphan_20260726.py",
+    # scripts/apply_wsp_m5_optimization.py (Bruno 2026-08-04, ter):
+    # aplica WSP_M5 BOLLINGER→EMA_CROSSOVER (ema_fast=8, ema_slow=20,
+    # sl_atr_mult=1.8, cooldown=60). Candidato aprovado em TODOS os gates do
+    # AGI v4 (PF=2.22, WR=81%, 31t, Sharpe=3.86, walk-forward aprovado) por
+    # busca exaustiva de 600 combos (47 estratégias × grid). Antes BOLLINGER
+    # estava R$-72 (PF=0.96). Autorizado pelo Bruno na sessão 04/08 19h.
+    # Rodar com autotrader PAUSADO.
+    "scripts/apply_wsp_m5_optimization.py",
     "backtest/apply_optimization.py",
     # monitoring/vt_pre_flight.py roda 8h55 ANTES do autotrader (pre-flight
     # gate) — é seguro persistir resolved_symbols nessa janela.

@@ -1,7 +1,7 @@
 {
-  "_version": 1171,
-  "_updated_at": "2026-08-03T19:57:15.206853",
-  "_updated_by": "bruno_wave_881_max_daily_loss_500",
+  "_version": 1174,
+  "_updated_at": "2026-08-04T19:20:43.018792",
+  "_updated_by": "bruno_wsp_m5_ema_crossover",
   "_notes": "auto-resolve vencimento: WDO: WDOU26 → WDOQ26",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
@@ -119,7 +119,7 @@
     "BIT_M15": "BOLLINGER",
     "BIT_M30": "BOLLINGER",
     "BIT_H1": "ADX_TREND",
-    "WSP_M5": "BOLLINGER",
+    "WSP_M5": "EMA_CROSSOVER",
     "WSP_M15": "BOLLINGER",
     "WSP_M30": "EMA_PULLBACK",
     "WSP_H1": "EMA_PULLBACK",
@@ -234,7 +234,8 @@
   "disabled_timeframes": [
     "WDO_H1",
     "WIN_H1",
-    "BIT_H1"
+    "BIT_H1",
+    "WDO_M15"
   ],
   "max_daily_loss": -500,
   "global_max_daily_trades": 999,
@@ -313,21 +314,15 @@
       "halt_duration_minutes": 60
     },
     "WSP_M5": {
-      "sl_atr_mult": 1.0,
+      "sl_atr_mult": 1.8,
       "cooldown_seconds": 60,
       "max_daily_trades": 8,
-      "rsi_period": 7,
-      "rsi_overbought": 72,
-      "rsi_oversold": 20,
-      "bb_period": 14,
-      "bb_std": 2.5,
-      "adx_period": 10,
-      "adx_threshold": 20,
       "trail_activate": 1.0,
-      "min_confluence_score": 1,
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
-      "halt_duration_minutes": 60
+      "halt_duration_minutes": 60,
+      "ema_fast": 8,
+      "ema_slow": 20
     },
     "WSP_M15": {
       "sl_atr_mult": 1.2,
@@ -589,7 +584,7 @@
     "WSP_M30": true,
     "WSP_H1": true,
     "WDO_M5": true,
-    "WDO_M15": true,
+    "WDO_M15": false,
     "WDO_M30": true
   },
   "loss_cooldown": {

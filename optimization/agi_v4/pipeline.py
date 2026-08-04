@@ -268,7 +268,12 @@ def run(days: int = 7,
     # otimização. O Stage 5 usa este flag para PERMITIR a desativação de pares
     # ainda failing — agora que o AGI tentou de tudo (busca + geração nas N
     # iterações do loop), faz sentido desativar o que persiste negativo.
+    # Rodamos uma chamada final do Stage 5 aqui (com failing_pairs reais e
+    # _loop_exhausted=True) para desativar os pares que o AGI não conseguiu
+    # tornar lucrativos. Em seguida, _optimize_profitable_pairs reseta o flag
+    # internamente para não desativar os lucrativos que ela está otimizando.
     ctx["_loop_exhausted"] = True
+    _safe_run_stage(ctx, 5, "apply_final_deactivation", "stage5_apply")
     _optimize_profitable_pairs(ctx)
 
     # ── Stage 6: Relatório (sempre roda) ──
@@ -356,8 +361,21 @@ def _optimize_profitable_pairs(ctx: dict) -> None:
     ctx["failing_pairs"] = profitable
     ctx["search_results"] = []  # reset: resultados são da otimização lucrativa
 
+    # Wave 882 (Bruno 04/08): durante a otimização de lucrativos, ctx["failing_pairs"]
+    # é temporariamente sobrescrito com os pares LUCRATIVOS (acima). Se
+    # _loop_exhausted=True estiver setado, o Stage 5 os veria como "failing" e
+    # tentaria DESATIVÁ-LOS — exatamente o oposto do desejado. Resetamos o flag
+    # aqui para que o Stage 5 não desative nada durante esta fase; a desativação
+    # real dos failing já aconteceu no loop acima (se aplicável). Restauramos
+    # ao final para preservar o estado para o report.
+    saved_loop_exhausted = ctx.get("_loop_exhausted", False)
+    ctx["_loop_exhausted"] = False
+
     _safe_run_stage(ctx, 3, "search_profitable", "stage3_exhaustive")
     _safe_run_stage(ctx, 5, "apply_profitable", "stage5_apply")
+
+    # Restaura _loop_exhausted (para o report/stage6 saber que o loop esgotou)
+    ctx["_loop_exhausted"] = saved_loop_exhausted
 
     # Registra as otimizações aplicadas (separadas das mudanças do loop failing)
     ctx["profit_optimizations"] = list(ctx.get("applied_changes", []) or [])
