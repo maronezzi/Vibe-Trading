@@ -30,14 +30,20 @@ ALERT_LOG = Path("/tmp/vt_order_alerts_v2.log")
 _llm_cache: dict = {}
 CACHE_TTL_MINUTES = 5
 
-# Limites de SL (em pontos EXECUTOR)
+# Limites de SL (em pontos EXECUTOR). Wave 880.B5 fix (Bruno 2026-08-05): os
+# valores de `max` foram alinhados com _calc_sl (core/vt_autotrader.py:2117-2123)
+# — max_native * point_mult — para o validator NUNCA inflar o SL acima do que o
+# _calc_sl permite. Antes, BIT max=500000 (5000 nativos) era 10× o max_native=500
+# do _calc_sl; o clamp "pré-envio" pegava uma sugestão de SL_ATR_EXCESSIVO e
+# inflava 50.000 → 141.857 pts (1.418 nativos = 2,8× o máximo), invertendo a
+# proteção. Agora max = max_native * point_mult de cada símbolo.
 SL_LIMITS = {
-    "WDO": {"min": 3000, "max": 300000, "atr_multiplier_max": 5.0},
-    "WIN": {"min": 200, "max": 3000, "atr_multiplier_max": 5.0},
-    "BIT": {"min": 3000, "max": 500000, "atr_multiplier_max": 3.0},
-    "DOL": {"min": 3000, "max": 300000, "atr_multiplier_max": 5.0},
-    "IND": {"min": 200, "max": 3000, "atr_multiplier_max": 5.0},
-    "WSP": {"min": 500, "max": 30000, "atr_multiplier_max": 5.0},
+    "WDO": {"min": 3000, "max": 12000,  "atr_multiplier_max": 5.0},   # 12 nativos × 1000
+    "WIN": {"min": 200,  "max": 800,    "atr_multiplier_max": 5.0},    # 800 nativos × 1
+    "BIT": {"min": 3000, "max": 50000,  "atr_multiplier_max": 3.0},    # 500 nativos × 100
+    "DOL": {"min": 3000, "max": 200000, "atr_multiplier_max": 5.0},    # 200 nativos × 1000
+    "IND": {"min": 200,  "max": 350,    "atr_multiplier_max": 5.0},    # 350 nativos × 1
+    "WSP": {"min": 500,  "max": 20000,  "atr_multiplier_max": 5.0},    # 200 nativos × 100
 }
 
 # Thresholds de contexto
@@ -609,6 +615,13 @@ def validate_pre_send(order_data: dict) -> dict:
                  f"[{a['severity']}/{a['type']}] {a['detail']}")
 
     # ── Extrair sugestão de SL dos alerts ──
+    # Wave 880.B5 fix (Bruno 2026-08-05): o clamp só pode APERTAR o SL (reduzir
+    # distância), nunca INFLAR (aumentar). Antes, uma sugestão de alerta era
+    # aplicada cegamente mesmo que aumentasse o SL — no BIT isto inflou
+    # 50.000 → 141.857 pts (2,8× o max_native), invertendo a proteção. Agora:
+    # só aplica adjusted_sl se ele for MENOR que o sl_pts atual (aperta) ou se
+    # o SL atual está claramente fora do range (abaixo do min → sobe pro min,
+    # que é legítimo; acima do max → desce pro max). Nunca infla dentro do range.
     for a in local_alerts:
         suggestion = a.get("suggestion", "")
         match = _re.search(r"(\d+)\s*pts", suggestion)
@@ -616,12 +629,21 @@ def validate_pre_send(order_data: dict) -> dict:
             suggested = int(match.group(1))
             limits = SL_LIMITS.get(base, {"min": 200, "max": 50000})
             suggested = max(limits["min"], min(limits["max"], suggested))
-            if suggested != order_data.get("sl_pts", 0):
-                result["adjusted_sl"] = suggested
+            current_sl = order_data.get("sl_pts", 0)
+            # Só ajusta se: (a) SL atual abaixo do mínimo (sobe pro min, legítimo),
+            # ou (b) sugestão APERTA o SL (suggested < current). Nunca infla.
+            if current_sl < limits["min"]:
+                result["adjusted_sl"] = limits["min"]
                 _log(f"[PRE-SEND] ADJUST {symbol} {direction} {tf}: "
-                     f"SL {order_data.get('sl_pts', 0)} → {suggested} "
+                     f"SL {current_sl} abaixo do mínimo → {limits['min']} "
                      f"([{a['type']}] {a['detail']})")
                 break
+            elif suggested < current_sl:
+                result["adjusted_sl"] = suggested
+                _log(f"[PRE-SEND] ADJUST {symbol} {direction} {tf}: "
+                     f"SL {current_sl} → {suggested} (apertar, [{a['type']}] {a['detail']})")
+                break
+            # suggested >= current e current >= min → não infla, mantém atual.
 
     return result
 

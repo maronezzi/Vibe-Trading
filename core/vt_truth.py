@@ -436,15 +436,53 @@ def get_daily_pnl(date_iso: Optional[str] = None) -> Decimal:
                 sb_data = json.loads(sb_path.read_text(encoding="utf-8"))
                 if sb_data.get("date") == target_date:
                     sb_balance = Decimal(str(sb_data["balance"]))
-                    # Pull MT5 balance atual via orchestrator
+                    # Pull MT5 balance atual via orchestrator.
+                    # Wave 880.B9 fix (Bruno 2026-08-05): acesso defensivo ao
+                    # account. Antes, st["account"]["balance"] lançava KeyError
+                    # quando status() retornava degradado (sem account info no
+                    # XPMT5-PRD), o except capturava e total ficava 0.00 — o
+                    # kill switch (max_daily_loss) via 0.00 <= -500 = False e
+                    # NUNCA disparava. Hoje (05/08) o bot operou até -R$552,88
+                    # mesmo com limite -500 porque este fallback falhava em
+                    # silêncio. Agora valida cada nível e cai no fallback-DB.
                     from mt5 import mt5_orchestrator as _mt5o
                     st = _mt5o.status()
-                    mt5_balance = Decimal(str(st["account"]["balance"]))
-                    fallback = (mt5_balance - sb_balance).quantize(Decimal("0.01"))
-                    _log(f"get_daily_pnl: history vazio, fallback balance-starting = {fallback}")
-                    total = fallback
+                    _acc = st.get("account") if isinstance(st, dict) else None
+                    _bal = _acc.get("balance") if isinstance(_acc, dict) else None
+                    if _bal is not None:
+                        mt5_balance = Decimal(str(_bal))
+                        fallback = (mt5_balance - sb_balance).quantize(Decimal("0.01"))
+                        _log(f"get_daily_pnl: history vazio, fallback balance-starting = {fallback}")
+                        total = fallback
+                    else:
+                        _log("get_daily_pnl: status() sem account/balance — "
+                             "fallback balance-starting indisponível")
         except Exception as e:
             _log(f"get_daily_pnl: fallback balance-starting falhou ({type(e).__name__}: {e})")
+
+        # Wave 880.B9 fix (Bruno 2026-08-05): se mesmo o fallback broker-truth
+        # falhou (total ainda 0.00), NÃO retornar 0.00 silenciosamente — isso
+        # desarma o kill switch (0.00 <= max_daily_loss é False). Usar a
+        # estimativa do DB (SUM(net_pnl) de hoje) como último recurso. É
+        # imperfeito (pode faltar GHOST/taxas), mas é conservador: se o DB
+        # mostra perda, o kill switch dispara. Fail-safe = travar, não liberar.
+        if total == Decimal("0.00"):
+            try:
+                _c = sqlite3.connect("vt_trades.db", timeout=3)
+                _row = _c.execute(
+                    "SELECT COALESCE(SUM(net_pnl), 0) FROM trades "
+                    "WHERE date(entry_time) = ? OR date(exit_time) = ?",
+                    (target_date, target_date),
+                ).fetchone()
+                _c.close()
+                db_total = Decimal(str(_row[0] or 0)).quantize(Decimal("0.01"))
+                if db_total != Decimal("0.00"):
+                    _log(f"get_daily_pnl: broker-truth indisponível — usando DB "
+                         f"SUM(net_pnl) = {db_total} (estimativa conservadora pro kill switch)")
+                    total = db_total
+            except Exception as e:
+                _log(f"get_daily_pnl: fallback-DB também falhou ({type(e).__name__}: {e}) — "
+                     f"retornando 0.00 (kill switch NÃO deve desarmar só por isto)")
 
     _pnl_cache.set(cache_key, total)
     return total

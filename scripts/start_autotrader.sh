@@ -9,6 +9,15 @@ PROJECT="/home/bruno/Projects/Vibe-Trading"
 LOG="/tmp/vt_autotrader.log"
 HERMES_BIN="$HOME/.local/bin/hermes"
 
+# Wave 880.B6 fix (Bruno 2026-08-05): garantir que hermes (e demais binários
+# user-local) estejam no PATH do daemon. O cron roda com PATH=/usr/bin:/bin,
+# então subprocess.run(["hermes", ...]) no mt5_error_recovery.py falhava com
+# "[Errno 2] No such file or directory: 'hermes'" (53x no dia 05/08),
+# desativando o fallback LLM de recovery de SL. O validator v2 já usava
+# find_hermes() (robusto); agora o recovery também usa, e este export garante
+# que qualquer outro subprocess também encontre binários user-local.
+export PATH="$HOME/.local/bin:$PATH"
+
 ts() { date "+%Y-%m-%d %H:%M:%S"; }
 log_line() { echo "[$(ts)] $1" | tee -a "$LOG"; }
 

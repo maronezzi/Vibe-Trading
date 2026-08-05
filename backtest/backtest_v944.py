@@ -50,15 +50,21 @@ FETCH_SCRIPT = ROOT / "backtest" / "mt5_fetch.py"
 #   WSP (Micro S&P 500): cada ponto = USD 2.50 (~R$13.50 a 5.4), tick 0.25pt.
 #     Fonte: B3 oficial "Micro S&P 500 Futures Contract" — USD 2.50/point.
 #     ANTES mult=0.01 (cópia do BIT, erro 1350x): 10pts move = R$0.10 → PF=0.
-# slip_r = 2 ticks de slippage (conservador, alinhado ao WIN que usa 1 tick).
-# Câmbio USD→BRL embutido no mult do WSP: 2.50 × 5.4 = R$13.50/pt.
+# Wave 880.B-AGI (Bruno 2026-08-05): mult alinhado com vt_config.json
+# contract_specs (a config real é a verdade). Antes o backtest usava WIN
+# mult=1.0 mas a real é mult=0.2 — superestimava o PnL do WIN em 5×, o ativo
+# que mais operou (18/22 trades em 05/08). O AGI via "lucro" onde a real perdia.
+# fee_r (R$) = custo total por trade (corretagem + emolumento + B3). Calibrado
+# pelo gap real de 05/08: -R$400 (DB) vs -R$552,88 (broker) em 22 trades ≈
+# R$7/trade de custo não-itemizado. Antes era hardcoded 1.20 (subestimado).
+# slip_r mantido (2 ticks conservador).
 CONTRACT_SPECS = {
-    "WIN$": {"mult": 1.0, "tick": 5, "slip_r": 5.0},       # WIN: R$1/pt, 1 tick=R$5
-    "WDO$": {"mult": 10.0, "tick": 0.5, "slip_r": 10.0},    # WDO: R$10/pt, 1 tick=R$5, slip=2 ticks
-    "BIT$": {"mult": 0.01, "tick": 0.01, "slip_r": 0.0002}, # BIT: R$0.01/pt
-    "WSP$": {"mult": 13.5, "tick": 0.25, "slip_r": 6.75},   # WSP: R$13.50/pt (USD2.50×5.4), slip=2 ticks
-    "DOL$": {"mult": 0.0018, "tick": 0.5, "slip_r": 0.0018},
-    "IND$": {"mult": 1.0, "tick": 5, "slip_r": 5.0},
+    "WIN$": {"mult": 0.2,  "tick": 5,    "slip_r": 5.0,    "fee_r": 7.0},
+    "WDO$": {"mult": 10.0, "tick": 0.5,  "slip_r": 10.0,   "fee_r": 7.0},
+    "BIT$": {"mult": 0.01, "tick": 0.01, "slip_r": 0.0002, "fee_r": 7.0},
+    "WSP$": {"mult": 0.01, "tick": 0.01, "slip_r": 0.0002, "fee_r": 7.0},
+    "DOL$": {"mult": 1.0,  "tick": 0.5,  "slip_r": 0.0018, "fee_r": 7.0},
+    "IND$": {"mult": 1.0,  "tick": 5,    "slip_r": 5.0,    "fee_r": 7.0},
 }
 
 # ─── Cópia local das calculate_* (mesmo comportamento que core/vt_autotrader) ─
@@ -246,9 +252,21 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
     spec = CONTRACT_SPECS[symbol]
     mult = spec["mult"]
     slip_r = spec["slip_r"]
+    # Wave 880.B-AGI: fee_r (R$ de custo por trade). Default 1.20 (histórico)
+    # se ausente; calibrado para 7.0 no CONTRACT_SPECS acima (gap real 05/08).
+    fee_r = spec.get("fee_r", 1.20)
     is_wdo = sym_root == "WDO"
     is_win = sym_root == "WIN"
     is_bit = sym_root == "BIT"
+    # Wave 880.B-AGI-PARIDADE: stop_level simulado (pontos de preço) para o
+    # backtest respeitar o mesmo constraint da conta real. Antes, o backtest
+    # aceitava SLs a 1 tick do entry (breakeven/profit-lock), que a real
+    # rejeita ("Invalid stops" ×255 em 05/08). Agora, se um SL apertado cai
+    # dentro do stop_level, o backtest NÃO o aplica (mantém SL anterior) —
+    # fiel ao comportamento real. Valores da literatura/XP (confirmar c/ XP).
+    _STOP_LEVEL = {"WIN": 300.0, "WDO": 200.0, "BIT": 500.0, "WSP": 200.0,
+                   "IND": 300.0, "DOL": 200.0}
+    sim_stops_level = _STOP_LEVEL.get(sym_root, 0.0)
 
     # Escala para SL min
     sl_min = 100 if is_win else (200 if is_wdo else (50000 if is_bit else 100))
@@ -331,9 +349,9 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
         # após TP1/TP2). Se remaining < 1.0, parte já foi realizada como
         # trade separado no bloco TP1/TP2 acima.
         if pos == 1:
-            pnl = ((price - ep) * mult - slip_r - 1.2) * remaining
+            pnl = ((price - ep) * mult - slip_r - fee_r) * remaining
         else:
-            pnl = ((ep - price) * mult - slip_r - 1.2) * remaining
+            pnl = ((ep - price) * mult - slip_r - fee_r) * remaining
         trades.append({
             "side": "BUY" if pos == 1 else "SELL",
             "entry_dt": e_dt,
@@ -439,7 +457,7 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
             if not tp1_done and e_atr > 0 and profit_pts >= tp1_r * e_atr and remaining > 0 and 0 < tp1_pct < 1:
                 close_frac = min(tp1_pct, remaining)
                 # Registra PnL parcial (fechado a mercado no melhor preço)
-                partial_pnl = close_frac * profit_pts * mult - slip_r * close_frac - 1.2 * close_frac
+                partial_pnl = close_frac * profit_pts * mult - slip_r * close_frac - fee_r * close_frac
                 trades.append({
                     "side": "BUY" if pos == 1 else "SELL",
                     "entry_dt": e_dt, "exit_dt": dt,
@@ -456,7 +474,7 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
                     trail_distance = params.get("atr_trail_mult", trail_distance)
             if tp1_done and not tp2_done and e_atr > 0 and profit_pts >= tp2_r * e_atr and remaining > 0 and 0 < tp2_pct < 1:
                 close_frac = min(tp2_pct, remaining)
-                partial_pnl = close_frac * profit_pts * mult - slip_r * close_frac - 1.2 * close_frac
+                partial_pnl = close_frac * profit_pts * mult - slip_r * close_frac - fee_r * close_frac
                 trades.append({
                     "side": "BUY" if pos == 1 else "SELL",
                     "entry_dt": e_dt, "exit_dt": dt,
@@ -478,24 +496,34 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
             # entry + 1 tick (zero-loss). Usa sl_pts inicial (distância absoluta)
             # como 1R. be_done evita re-disparar; BE temporal abaixo também
             # reusa be_done (mutuamente exclusivos — quem disparar primeiro sela).
+            # Wave 880.B-AGI-PARIDADE: respeita stop_level do broker. Se o SL
+            # apertado (entry+1tick) cai dentro do stop_level, NÃO aplica (mantém
+            # SL anterior) — fiel à real que rejeita "Invalid stops".
             if not trail_on and not be_done and profit_lock_r > 0 and e_atr > 0 and sl_pts > 0:
                 if profit_pts >= profit_lock_r * sl_pts:
-                    be_done = True
-                    sl_price = ep + tick_size if pos == 1 else ep - tick_size
+                    _lock_sl = ep + tick_size if pos == 1 else ep - tick_size
+                    _lock_dist = abs(ep - _lock_sl)
+                    if sim_stops_level <= 0 or _lock_dist >= sim_stops_level:
+                        be_done = True
+                        sl_price = _lock_sl
 
             # Breakeven (temporal — dispara só se profit-lock ainda não selou)
+            # Wave 880.B-AGI-PARIDADE: mesmo gate de stop_level.
             if not trail_on and not be_done and breakeven_min > 0 and pos_min >= breakeven_min and e_atr > 0:
-                be_done = True
-                if pos == 1:
-                    sl_price = ep + tick_size
-                else:
-                    sl_price = ep - tick_size
+                _be_sl = ep + tick_size if pos == 1 else ep - tick_size
+                _be_dist = abs(ep - _be_sl)
+                if sim_stops_level <= 0 or _be_dist >= sim_stops_level:
+                    be_done = True
+                    sl_price = _be_sl
 
             # Time-trail
             if not trail_on and time_trail_min > 0 and pos_min >= time_trail_min and profit_pts > 0:
                 trail_on = True
 
             # Trailing stop update
+            # Wave 880.B-AGI-PARIDADE: trailing também respeita stop_level.
+            # Se o new_sl apertado fica dentro do stop_level do preço atual, não
+            # aplica (mantém sl_price anterior) — fiel à real.
             if trail_on and e_atr > 0:
                 if pos_min >= max_pos_min:
                     dist = 0.3 * e_atr
@@ -503,11 +531,13 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
                     dist = trail_distance * e_atr
                 if pos == 1:
                     new_sl = best - dist
-                    if new_sl > sl_price:
+                    _trail_dist = price - new_sl  # dist do SL ao preço atual
+                    if new_sl > sl_price and (sim_stops_level <= 0 or _trail_dist >= sim_stops_level):
                         sl_price = new_sl
                 else:
                     new_sl = best + dist
-                    if new_sl < sl_price:
+                    _trail_dist = new_sl - price
+                    if new_sl < sl_price and (sim_stops_level <= 0 or _trail_dist >= sim_stops_level):
                         sl_price = new_sl
 
             # Hard exit

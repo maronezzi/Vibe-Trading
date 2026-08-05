@@ -514,6 +514,14 @@ def load_effective_config(force: bool = False) -> dict:
         cfg["disabled_symbols"] = list(overrides["disabled_symbols"])
     if "disabled_timeframes" in overrides:
         cfg["disabled_timeframes"] = list(overrides["disabled_timeframes"])
+    # Wave 880.B2-PARIDADE (Bruno 2026-08-05): overlay do stop_level simulado
+    # para paridade demo-real. A DEMO retorna trade_stops_level≈0 (aceita SLs a
+    # poucos pts); a REAL rejeita. Este override faz o autotrader simular o
+    # stop_level da real na demo, rejeitando os mesmos SLs. Schema:
+    # {"simulated_stop_level": {"WIN": 300, "WDO": 200, "BIT": 500, "WSP": 200}}
+    # Valores em pontos nativos. Estimativas conservadoras (confirmar c/ XP).
+    if "simulated_stop_level" in overrides:
+        cfg["simulated_stop_level"] = dict(overrides["simulated_stop_level"])
 
     return cfg
 

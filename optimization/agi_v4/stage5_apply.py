@@ -239,6 +239,23 @@ def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: d
     params = cand.get("params", {})
     cand_pnl = cand.get("full", {}).get("total_pnl", 0)
 
+    # ── Wave 880.B-AGI (Bruno 2026-08-05): sinal de "dia inválido / não
+    # otimizar". Quando a execução real esteve corrompida (bugs de gestão,
+    # stop level, etc.), os dados do dia NÃO são amostra válida de estratégia.
+    # O AGI simula em backtest 30d (não usa trades reais direto), mas mesmo
+    # assim, se o backtest ainda não replica a execução real fielmente, otimizar
+    # é prematuro. Este guard lê /tmp/vt_invalid_day.flag (criado manualmente ou
+    # por um detector de execução corrompida). Se presente, NENHUMA mudança é
+    # aplicada — o AGI só observa. Remove o risco de "aprender" de um dia ruim.
+    try:
+        import os as _os
+        if _os.path.exists("/tmp/vt_invalid_day.flag"):
+            return _reject(cand, "invalid_day",
+                           "Flag /tmp/vt_invalid_day.flag ativo — execução considerada "
+                           "inválida/corrompida, AGI não aplica mudanças hoje")
+    except Exception:
+        pass
+
     # ── REGRA ABSOLUTA (2026-07-04): a função da AGI é SEMPRE achar
     # estratégia + params que deem LUCRO (PnL > 0) e WR alto. Nunca aceitar
     # negativo. Um candidato negativo nunca é aplicado, mesmo que seja "menos
@@ -311,12 +328,27 @@ def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: d
                 config.update(load_config(force=True))
             except Exception:
                 pass
-            log.info(f"APLICADO {pair}: {strategy} (cand R${cand_pnl:.2f} > base R${baseline_pnl:.2f})")
+            # Wave 880.B7 fix (Bruno 2026-08-05): log auditável. Antes imprimia
+            # só os PnL brutos ("cand R$2479 > base R$2507"), mas a decisão usa
+            # score blended (cand_pnl + today_weight × today_pnl), que pode
+            # inverter a ordem — gerando log contraditório (2479 < 2507 mas
+            # "aplicado"). Agora mostra o score real com decomposição 30d+hoje.
+            _cand_today = cand.get("full", {}).get("today_pnl", 0)
+            _base_today = baseline.get("today_pnl", 0)
+            _cand_tn = cand.get("full", {}).get("today_n_trades", 0)
+            _base_tn = baseline.get("today_n_trades", 0)
+            log.info(
+                f"APLICADO {pair}: {strategy} "
+                f"(score cand R${cand_score:.2f} = 30d R${cand_pnl:.2f}"
+                f"{f' + hoje {today_weight}×R${_cand_today:.2f}({_cand_tn}t)' if _cand_tn >= today_min else ' (hoje<%d não conta)' % today_min} "
+                f"> score base R${base_score:.2f} = 30d R${baseline_pnl:.2f}"
+                f"{f' + hoje {today_weight}×R${_base_today:.2f}({_base_tn}t)' if _base_tn >= today_min else ''})"
+            )
         except Exception as e:
             return _reject(cand, "write_error", str(e))
     else:
         change["written"] = False
-        log.info(f"[DRY-RUN] {pair}: aplicaria {strategy} (cand R${cand_pnl:.2f} > base R${baseline_pnl:.2f})")
+        log.info(f"[DRY-RUN] {pair}: aplicaria {strategy} (score cand R${cand_score:.2f} > score base R${base_score:.2f})")
 
     return {"applied": True, "candidate": cand, "change": change,
             "gates_passed": ["profitability", "walk_forward", "regra1_simulated"]}

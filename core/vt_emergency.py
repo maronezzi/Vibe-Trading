@@ -85,14 +85,22 @@ def notify_silent(msg: str) -> None:
 # ────────────────────────────────────────────────────────────────────
 
 def _get_current_pnl(symbol: str, ticket, direction: str,
-                       entry_price: float) -> float:
+                       entry_price: float):
     """
-    Retorna PnL atual estimado em R$ para a posição.
+    Retorna PnL atual estimado em R$ para a posição, ou None se indisponível.
 
     Usa status() do MT5 para pegar profit real. Fallback: estimar
     via tick() se status falhar.
 
-    Posição "contra" = PnL < 0.
+    Wave 880.B6 fix (Bruno 2026-08-05): antes retornava 0.0 em qualquer falha
+    de leitura. Como _is_position_against_us tratava pnl <= 0 como "contra",
+    um 0.0 de falha era ambíguo (0 <= 0 = True, mas era falha, não pnl real).
+    Agora retorna None quando não consegue ler — o caller decide, mas o
+    safety-first (fechar em incerteza) é preservado com logging claro.
+
+    Retorna:
+        float: PnL em R$ (positivo = lucro, negativo = perda).
+        None: não foi possível ler o PnL (MT5 down, posição não encontrada).
     """
     try:
         from mt5.mt5_orchestrator import status as mt5_status
@@ -104,6 +112,9 @@ def _get_current_pnl(symbol: str, ticket, direction: str,
                 if profit is None:
                     profit = 0
                 return float(profit)
+        # Posição não encontrada no MT5 (já fechada?) — None, não 0.0
+        _logger.warning("_get_current_pnl: posição %s não encontrada no MT5", ticket)
+        return None
     except Exception as e:
         _logger.warning("falha ao ler PnL de %s ticket=%s: %s", symbol, ticket, e)
 
@@ -115,7 +126,7 @@ def _get_current_pnl(symbol: str, ticket, direction: str,
         pv = _get_point_val(symbol)
         tk = mt5_tick(symbol)
         if not tk or not tk.get("bid"):
-            return 0.0
+            return None  # falha de leitura, não 0.0
         # Multiplicador aproximado (R$/ponto). Casa com vt_trade_log.get_multiplier
         from core.vt_trade_log import get_multiplier
         mult = get_multiplier(symbol)
@@ -131,20 +142,32 @@ def _get_current_pnl(symbol: str, ticket, direction: str,
         return executor_pts * mult
     except Exception as e:
         _logger.warning("fallback PnL estimate falhou: %s", e)
-        return 0.0
+        return None  # falha, não 0.0
 
 
 def _is_position_against_us(symbol: str, ticket, direction: str,
-                              entry_price: float, current_pnl: float) -> bool:
+                              entry_price: float, current_pnl) -> bool:
     """
     Decide se a posição está indo contra o trader.
 
-    Conservador: se PnL < 0 → contra.
-    Se PnL == 0 → ainda considera contra (incerteza é perigosa em safety-first).
+    Conservador (safety-first):
+    - PnL < 0 → contra (fechar).
+    - PnL == 0 (exatamente) → contra (incerteza é perigosa).
+    - PnL is None (falha de leitura) → contra (não dá pra afirmar que está a
+      favor; fechar é mais seguro que deixar sem SL funcional).
+    - PnL > 0 → a favor (não fechar).
+
+    Wave 880.B6 fix (Bruno 2026-08-05): agora distingue None (falha) de 0.0
+    (pnl real zero). Ambos resultam em "contra" (safety-first preservado), mas
+    o logging é claro sobre qual caso é, para auditoria.
 
     NÃO tenta heurísticas complexas de price-vs-entry aqui — o PnL do MT5 é
     a fonte da verdade (já inclui fees e swap).
     """
+    if current_pnl is None:
+        _logger.warning("_is_position_against_us %s ticket=%s: PnL indisponível "
+                        "(None) — tratando como CONTRA (safety-first, fechar)", symbol, ticket)
+        return True
     return current_pnl <= 0
 
 
@@ -197,7 +220,8 @@ def _emergency_close_position(symbol: str, ticket, trade_log_id: Optional[int],
                 exit_reason="EMERGENCY_CLOSE_SL_FAILED",
                 exit_ticket=str(ticket),
                 notes=f"Emergency close: {attempts} modify_sl attempts falharam. "
-                      f"Último erro: {last_error}. PnL estimado: R$ {pnl:+.2f}.",
+                      f"Último erro: {last_error}. PnL estimado: "
+                      f"{('R$ ' + format(pnl, '+.2f')) if pnl is not None else 'indisponível'}.",
                 close_source="EMERGENCY_CLOSE",
             )
         except Exception as e:
@@ -211,10 +235,12 @@ def _emergency_close_position(symbol: str, ticket, trade_log_id: Optional[int],
 
 
 def _notify_critical_emergency(symbol: str, ticket, attempts: int,
-                                pnl: float, last_error: str,
+                                pnl, last_error: str,
                                 exit_price: Optional[float]) -> None:
     """Envia notificação CRÍTICA Telegram com detalhes do emergency close."""
-    pnl_str = f"{pnl:+,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    # Wave 880.B6: pnl pode ser None (falha de leitura do MT5).
+    pnl_str = (f"{pnl:+,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+               if pnl is not None else "indisponível")
     exit_str = f"{exit_price:.2f}" if exit_price else "?"
 
     msg = (
@@ -304,11 +330,13 @@ def safe_modify_sl_with_emergency_close(
     pnl = _get_current_pnl(symbol, ticket, direction, entry_price)
     attempts = result.get("attempts", MAX_SL_MODIFY_ATTEMPTS) if isinstance(result, dict) else MAX_SL_MODIFY_ATTEMPTS
     last_error = result.get("error", "unknown") if isinstance(result, dict) else "unknown"
+    # Wave 880.B6: pnl pode ser None (falha de leitura). Formatação None-safe.
+    _pnl_str = f"R${pnl:+.2f}" if pnl is not None else "indisponível"
 
     if not _is_position_against_us(symbol, ticket, direction, entry_price, pnl):
         # Posição a favor — NÃO fecha, apenas loga
         _notify_silent(
-            f"[EMERGENCY] modify_sl falhou mas PnL=R${pnl:+.2f} (a favor) — "
+            f"[EMERGENCY] modify_sl falhou mas PnL={_pnl_str} (a favor) — "
             f"{symbol} ticket={ticket} mantida. Erro: {last_error}"
         )
         return {
@@ -320,8 +348,8 @@ def safe_modify_sl_with_emergency_close(
 
     # 4. Posição contra → EMERGENCY CLOSE
     _logger.warning(
-        "🚨 EMERGENCY CLOSE: %s ticket=%s | attempts=%d | pnl=R$%.2f | erro=%s",
-        symbol, ticket, attempts, pnl, last_error,
+        "🚨 EMERGENCY CLOSE: %s ticket=%s | attempts=%d | pnl=%s | erro=%s",
+        symbol, ticket, attempts, _pnl_str, last_error,
     )
 
     close_result = _emergency_close_position(

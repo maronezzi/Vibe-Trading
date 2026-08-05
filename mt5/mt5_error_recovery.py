@@ -64,9 +64,24 @@ def _ask_llm(prompt: str, timeout: int = None) -> dict:
     if timeout is None:
         timeout = LLM_TIMEOUT
     try:
+        # Wave 880.B6 fix (Bruno 2026-08-05): o recovery chamava a string nua
+        # "hermes", que só funciona se ~/.local/bin estiver no PATH. Em ambiente
+        # cron (start_autotrader.sh), o PATH é mínimo e hermes não é encontrado
+        # → "[Errno 2] No such file or directory: 'hermes'" ×53 no dia 05/08,
+        # desativando o fallback LLM e deixando só o fix padrão (que infla SL).
+        # Agora usa find_hermes() (mesmo helper robusto do validator v2), que
+        # procura em ~/.local/bin, ~/.hermes/.../venv/bin e shutil.which.
+        try:
+            from core.vt_hermes_helper import find_hermes
+            hermes_bin = find_hermes()
+        except Exception:
+            hermes_bin = None
+        if not hermes_bin:
+            _log("LLM abortou modify: hermes não encontrado (find_hermes=None)")
+            return {"error": "hermes não encontrado (find_hermes=None)"}
         # Provider: minimax-oauth (ativo no Hermes), fallback automático
         result = subprocess.run(
-            ["hermes", "-z", prompt, "-m", "MiniMax-M3", "--provider", "minimax-oauth"],
+            [hermes_bin, "-z", prompt, "-m", "MiniMax-M3", "--provider", "minimax-oauth"],
             capture_output=True, text=True, timeout=timeout,
             env={**__import__('os').environ, "WINEDEBUG": "-all"}
         )
@@ -156,18 +171,27 @@ Responda APENAS com JSON (sem markdown):
 def _fix_invalid_stops(symbol: str, side: str, sl_pts: int, point_val: float, tick_data: dict) -> int:
     from mt5_orchestrator import info
     info_data = info(symbol)
+    # Wave 880.B5 fix (Bruno 2026-08-05): NUNCA inflar SL como fallback cego.
+    # Antes, se info() falhasse, retornava int(sl_pts*1.5) — inflando o SL
+    # arbitrariamente. Agora, se não consegue ler o stop_level, MANTÉM o SL
+    # atual (não protege menos). Inflar um SL que falhou = remover proteção.
     if not info_data or "error" in info_data:
-        return int(sl_pts * 1.5)
+        _log(f"_fix_invalid_stops: info() falhou p/ {symbol} — mantendo SL={sl_pts} (não infla)")
+        return sl_pts
     stops_level = info_data.get("trade_stops_level", 0)
     spread = info_data.get("spread", 0)
     # Converter stops_level e spread para executor units (sl_pts já está em executor units)
     _pv = point_val if point_val and point_val > 0 else 1.0
     min_distance_pts = max(stops_level / _pv, (spread + 5) / _pv)
     if sl_pts < min_distance_pts:
+        # SL curto demais → ajusta pro mínimo seguro (stops_level + spread).
+        # Isto é legítimo: o SL atual seria rejeitado de qualquer forma.
         new_sl = int(min_distance_pts * 1.5)
-        _log(f"SL curto ({sl_pts}pts < {min_distance_pts:.0f}pts). Aumentando para {new_sl}pts")
+        _log(f"SL curto ({sl_pts}pts < {min_distance_pts:.0f}pts). Ajustando para {new_sl}pts (stop_level)")
         return new_sl
-    return int(sl_pts * 1.5)
+    # SL já é válido (dentro ou acima do stop_level) → mantém. Não infla.
+    _log(f"_fix_invalid_stops: SL={sl_pts}pts >= min {min_distance_pts:.0f}pts — mantém (não infla)")
+    return sl_pts
 
 
 # Tabela point_mult (executor pts → 1 unidade de preço em R$) por símbolo.
@@ -537,6 +561,38 @@ def safe_modify_sl(symbol: str, ticket, sl_pts: int, entry_price: float = None,
     fix_attempts = 0          # quantas vezes _fix_invalid_stops_modify foi chamado
     MAX_FIX_ATTEMPTS = 3      # máximo de fix por invocação de safe_modify_sl
     prev_sl_pts = None        # valor anterior do fix (pra detecção de convergência)
+
+    # Wave 880.B2 fix (Bruno 2026-08-05): gate PRÉ-ENVIO contra stop_level do
+    # broker. Se o SL proposto está dentro do trade_stops_level (+buffer), o MT5
+    # vai rejeitar com "Invalid stops" de qualquer forma. Antes, isto gerava a
+    # rajada de 255 rejects do dia 05/08 (3 retries × LLM × fix padrão que infla
+    # SL). Agora SKIP upfront: retorna "skipped" sem disparar o storm. O caller
+    # (autotrader) já faz este gate também; isto é defesa em profundidade para
+    # qualquer outro caller direto do safe_modify_sl.
+    if entry_price and direction and sl_pts:
+        try:
+            from mt5_orchestrator import info as _mt5_info_chk
+            _info_chk = _mt5_info_chk(symbol)
+            if _info_chk and "error" not in _info_chk:
+                stops_lvl = float(_info_chk.get("trade_stops_level", 0) or 0)
+                if stops_lvl > 0:
+                    _pv_chk = _get_point_val(symbol)
+                    # distância do SL ao entry em preço; sl_pts signed (neg=profit lock)
+                    sl_dist_price = abs(sl_pts) * _pv_chk
+                    # buffer de 2 ticks (em preço) pra tolerância entre cálculo e envio
+                    min_dist_price = stops_lvl + 2.0 * _pv_chk
+                    if sl_dist_price < min_dist_price:
+                        _log(f"MODIFY {symbol} ticket={ticket} SKIP: SL={sl_pts}pts "
+                             f"(dist {sl_dist_price:.2f}) dentro do stop_level "
+                             f"({stops_lvl:.0f} + buffer) — não enviado")
+                        return {
+                            "status": "skipped",
+                            "error": "within_stop_level",
+                            "sl_pts": sl_pts,
+                        }
+        except Exception as _e_gate:
+            # Gate é best-effort: se info() falhar, segue pro modify normal.
+            _log(f"MODIFY {symbol}: gate stop_level indisponível ({_e_gate}) — segue p/ modify")
 
     for attempt in range(MAX_RETRIES):
         result = modify_sl(symbol, ticket, sl_pts)

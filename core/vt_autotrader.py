@@ -579,7 +579,25 @@ class SessionState:
             # (trail desligado, sem bar progress, sem link com DB).
             try:
                 state_key = f"{p.symbol}_M5"
+                # Wave 880.B1 fix (Bruno 2026-08-05): o XPMT5-PRD pode retornar
+                # price_open=0 (documentado em ~L2304). Antes isto gravava
+                # entry_price=0.0 no state, e manage_position calculava
+                # profit_pts = best - 0 = preço absoluto, armeando toda a gestão
+                # falsa (trailing/TP1/profit-lock). Agora, se price_open é 0/None,
+                # usa price_current como fallback razoável (a posição existe com
+                # algum preço; current é melhor estimativa que 0) e loga WARN.
+                # manage_position também tem um guard defensivo (L2687) que pula
+                # a gestão se entry_price ainda vier <= 0.
                 _entry_price = float(p.price_open or 0.0)
+                if _entry_price <= 0:
+                    _fallback = float(getattr(p, "price_current", 0.0) or 0.0)
+                    if _fallback > 0:
+                        print(
+                            f"[STATE-REBUILD] {p.symbol} price_open=0 — usando "
+                            f"price_current={_fallback} como entry_price (fallback)",
+                            flush=True,
+                        )
+                        _entry_price = _fallback
                 _current = float(p.price_current or _entry_price)
                 _direction = "BUY" if p.direction in ("BUY", 0, "0") else "SELL"
                 # best_price: do lado a favor (BUY=max, SELL=min)
@@ -2118,6 +2136,129 @@ def _calc_sl(symbol: str, atr: float, params: dict = None) -> int:
     return ((sl_pts + 4) // 5) * 5
 
 
+# Wave 880.B3 (Bruno 2026-08-05): cache curto de volume_step por símbolo.
+# Evita chamar info() (Wine RPC) a cada TP1/TP2. TTL 60s é suficiente porque
+# volume_step é estático por contrato (só muda em troca de vencimento).
+_VOLUME_STEP_CACHE: dict = {}  # {symbol: (step, expires_at)}
+
+
+def _get_volume_step(symbol: str) -> float:
+    """Retorna o volume_step do contrato (múltiplo mínimo da B3).
+
+    Consulta info(symbol) via orchestrator; fallback 1.0 (B3 índices = 1 contrato).
+    Usado pelo TP1/TP2 pra garantir volume inteiro (Invalid volume ×98 no dia
+    05/08: original=1.0 × tp1_pct=0.5 = 0.5 contrato, rejeitado pela B3).
+    """
+    import time as _t
+    now = _t.time()
+    cached = _VOLUME_STEP_CACHE.get(symbol)
+    if cached and cached[1] > now:
+        return cached[0]
+    step = 1.0  # fallback conservador (B3 WIN/WDO/BIT = 1 contrato)
+    try:
+        from mt5.mt5_orchestrator import info as _mt5_info
+        _info = _mt5_info(symbol)
+        if _info and "error" not in _info:
+            vs = _info.get("volume_step")
+            if vs and float(vs) > 0:
+                step = float(vs)
+    except Exception:
+        pass
+    _VOLUME_STEP_CACHE[symbol] = (step, now + 60.0)
+    return step
+
+
+def _normalize_partial_volume(close_volume: float, volume_step: float) -> float:
+    """Arredonda close_volume para o múltiplo de volume_step mais próximo.
+
+    Retorna o volume normalizado, ou 0.0 se for menor que 1 step (fracionário
+    inválido). Chamador deve tratar 0.0 como "skip TP parcial".
+    """
+    if volume_step <= 0:
+        volume_step = 1.0
+    rounded = round(close_volume / volume_step) * volume_step
+    # Arredondar casas decimais pra evitar float dust (ex: 0.9999999)
+    rounded = round(rounded, 6)
+    return rounded if rounded >= volume_step else 0.0
+
+
+# Wave 880.B2 fix (Bruno 2026-08-05): cache curto de trade_stops_level por
+# símbolo. Evita chamar info() (Wine RPC) a cada modify de SL. TTL 30s — o
+# stop_level é estático por contrato, mas TTL curto tolera troca de sessão.
+_STOP_LEVEL_CACHE: dict = {}  # {symbol: (stops_level, expires_at)}
+
+
+def _get_stops_level(symbol: str) -> float:
+    """Retorna o trade_stops_level do símbolo em pontos nativos (preço).
+
+    Consulta info(symbol) via orchestrator; fallback 0.0 (não sabe → não
+    bloqueia, mas o caller decide). Cache 30s.
+
+    Wave 880.B2-PARIDADE (Bruno 2026-08-05): quando o broker retorna 0 (conta
+    DEMO, que aceita SLs a poucos pts), mas há um override
+    config["simulated_stop_level"] ativo, usa o valor simulado. Isto faz a DEMO
+    rejeitar os mesmos SLs que a REAL rejeitaria → paridade demo-real. As
+    estimativas (WIN~300, WDO~200, BIT~500, WSP~200 pts nativos) vêm da
+    literatura/XP e devem ser confirmadas com a corretora (Q1 do doc matriz).
+    Sem override, comportamento original (stops=0 na demo = não bloqueia).
+    """
+    import time as _t
+    now = _t.time()
+    cached = _STOP_LEVEL_CACHE.get(symbol)
+    if cached and cached[1] > now:
+        return cached[0]
+    stops = 0.0
+    try:
+        from mt5.mt5_orchestrator import info as _mt5_info
+        _info = _mt5_info(symbol)
+        if _info and "error" not in _info:
+            stops = float(_info.get("trade_stops_level", 0) or 0)
+    except Exception:
+        pass
+    # Paridade demo-real: se broker retornou 0 (DEMO) e há override, usa-o.
+    if stops <= 0:
+        _sim = CONFIG.get("simulated_stop_level") if isinstance(CONFIG, dict) else None
+        if isinstance(_sim, dict):
+            for _prefix, _val in _sim.items():
+                if _prefix in symbol and _val > 0:
+                    stops = float(_val)
+                    break
+    _STOP_LEVEL_CACHE[symbol] = (stops, now + 30.0)
+    return stops
+
+
+def _within_stop_level(symbol: str, sl_pts: int, entry_price: float,
+                       direction: str, point_val: float,
+                       buffer_ticks: float = 2.0) -> bool:
+    """Verifica se um SL proposto está DENTRO do stop level do broker (inválido).
+
+    O stop_level (stops_level) do broker define a distância MÍNIMA entre o SL e
+    o preço atual. SLs mais próximos que isso são rejeitados ("Invalid stops").
+
+    Wave 880.B2 fix (Bruno 2026-08-05): no dia 05/08, breakeven/profit-lock/
+    trailing enviavam SLs a ~5pts do preço e a conta REAL rejeitava ×255
+    (stop_level real; a DEMO aceitava por ter stop_level ≈ 0). Esta função é o
+    gate PRÉ-ENVIO: se o SL proposto está dentro do stop_level (+buffer), o
+    caller deve SKIPAR o modify e manter o SL anterior (que é válido).
+
+    sl_pts é SIGNED (positivo=abaixo entry/loss, negativo=acima entry/profit
+    lock), mesma convenção do cmd_modify. point_val é o valor do point em R$.
+
+    Retorna True se o SL está DENTRO do stop_level (modify seria rejeitado).
+    """
+    if not entry_price or entry_price <= 0 or not sl_pts:
+        return False  # não dá pra avaliar; deixa passar (caller pode ter outro guard)
+    stops_level = _get_stops_level(symbol)
+    if stops_level <= 0:
+        return False  # broker não reporta stop_level (DEMO) → não bloqueia
+    # Distância mínima exigida em pontos de preço (+ buffer de ticks).
+    # stops_level já vem em pontos nativos (unidade de preço); point_val é R$/pt.
+    min_distance_price = stops_level + buffer_ticks
+    # Distância do SL ao entry em preço: |sl_pts| * point_val
+    sl_distance_price = abs(sl_pts) * point_val
+    return sl_distance_price < min_distance_price
+
+
 def _defenses_ok(symbol: str, tf: str, direction: str, bar_ts) -> bool:
     """Verifica defesas anti-duplicação.
 
@@ -2685,6 +2826,21 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     key = f"{symbol}_{tf}"
     direction = pos["direction"]
     entry_price = pos["entry_price"]
+    # Wave 880.B1 fix (Bruno 2026-08-05): guard contra entry_price inválido.
+    # O state rebuild (L582) e recover_open_positions (L3510/L3529) podem gravar
+    # entry_price=0.0 quando o XPMT5-PRD retorna price_open=0. Com entry=0,
+    # profit_pts = best - 0 = preço absoluto (ex: 179375 pts = "670x ATR"),
+    # armeando trailing/TP1/profit-lock/BREAKEVEN imediatamente — o vetor do
+    # colapso do dia 05/08 (todas as gestões disparavam falsas). Se entry_price
+    # é 0/None, PULA toda a gestão (TP1/trailing/BE/profit-lock) até o
+    # broker-truth estar disponível. A posição continua protegida pelo SL de
+    # entrada (já no MT5); apenas não tenta apertá-lo com base em lucro falso.
+    if not entry_price or entry_price <= 0:
+        log(
+            f"[GESTÃO-SKIP] {symbol} {tf} entry_price={entry_price} (inválido) — "
+            f"pulando TP1/trailing/BE/profit-lock até broker-truth disponível"
+        )
+        return
     atr = pos["atr"]
     sl_pts = pos["sl_pts"]
     best = pos["best_price"]
@@ -2739,8 +2895,19 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         close_volume = original * tp1_pct
         # Não fechar MAIS do que o que está aberto.
         actual_close = min(close_volume, pos.get("remaining_volume", pos["volume"]))
+        # Wave 880.B3 fix (Bruno 2026-08-05): normalizar pro volume_step da B3.
+        # Antes, original=1.0 × tp1_pct=0.5 = 0.5 contrato → "Invalid volume"
+        # ×98 (B3 exige múltiplo de volume_step=1.0). Agora arredonda pro step;
+        # se fracionário (< 1 step), skip TP1 idempotente (não tenta de novo).
+        _vs = _get_volume_step(symbol)
+        actual_close = _normalize_partial_volume(actual_close, _vs)
         if actual_close <= 0:
-            pos["tp1_done"] = True  # idempotente — nada a fechar
+            pos["tp1_done"] = True  # idempotente — volume fracionário, sem TP1 possível
+            log(
+                f"[TP1-SKIP] {symbol} {direction} volume fracionário "
+                f"(original={original} × tp1_pct={tp1_pct} = {close_volume:.2f} "
+                f"< step {_vs}) — sem TP parcial possível neste sizing"
+            )
         else:
             try:
                 from mt5.mt5_error_recovery import safe_partial_close
@@ -2803,8 +2970,16 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         current_remaining = pos.get("remaining_volume", pos["volume"])
         close_volume = current_remaining * tp2_pct
         actual_close = min(close_volume, current_remaining)
+        # Wave 880.B3 fix: normalizar pro volume_step (mesmo bug do TP1).
+        _vs = _get_volume_step(symbol)
+        actual_close = _normalize_partial_volume(actual_close, _vs)
         if actual_close <= 0:
-            pos["tp2_done"] = True  # idempotente
+            pos["tp2_done"] = True  # idempotente — volume fracionário
+            log(
+                f"[TP2-SKIP] {symbol} {direction} volume fracionário "
+                f"(remaining={current_remaining} × tp2_pct={tp2_pct} = "
+                f"{close_volume:.2f} < step {_vs}) — sem TP2 parcial possível"
+            )
         else:
             try:
                 from mt5.mt5_error_recovery import safe_partial_close
@@ -2955,25 +3130,37 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             # sl_pts NEGATIVO sinaliza profit-lock (cmd_modify é sign-aware):
             # BUY SL = entry - lock_pts*point_val → lock_pts negativo = SL acima.
             lock_pts = -_min_lock_pts
-            # Marca ANTES do modify para não re-disparar em caso de falha.
-            pos["profit_lock_attempted"] = True
-            result = safe_modify_sl_with_emergency_close(
-                symbol, pos["entry_ticket"], lock_pts, entry_price, direction
-            )
-            if result.get("status") == "ok":
-                pos["sl_pts"] = lock_pts
-                sl_pts = lock_pts  # refresh local: trailing/BREAKEVEN não afrouxam
-                be_applied = True
+            # Wave 880.B2 fix: gate PRÉ-ENVIO contra stop_level do broker. Mesmo
+            # com _min_lock_pts derivado do stops_level, a leitura pode voltar
+            # degradada (stops_level=0) e o modify seria rejeitado (Invalid stops
+            # ×255 no dia 05/08). Se está dentro do stop_level, SKIP (mantém SL
+            # anterior válido) em vez de mandar modify que vai falhar.
+            if _within_stop_level(symbol, lock_pts, entry_price, direction, point_val):
+                pos["profit_lock_attempted"] = True
                 log(
-                    f"[PROFIT_LOCK] {symbol} {direction} | profit {profit_pts:.0f}pts "
-                    f">= {profit_lock_r}×{_one_r_pts}pts (1R) | SL → entry+{_min_lock_pts}pts (lock)"
+                    f"[PROFIT_LOCK-SKIP] {symbol} {direction} | lock_pts={lock_pts} "
+                    f"dentro do stop_level do broker — modify pulado, SL anterior mantido"
                 )
             else:
-                log(
-                    f"[PROFIT_LOCK] {symbol} {direction} | profit {profit_pts:.0f}pts "
-                    f"| falhou modify (lock_pts={lock_pts}): {result.get('error', '?')} — "
-                    f"não retenta até próxima posição"
+                # Marca ANTES do modify para não re-disparar em caso de falha.
+                pos["profit_lock_attempted"] = True
+                result = safe_modify_sl_with_emergency_close(
+                    symbol, pos["entry_ticket"], lock_pts, entry_price, direction
                 )
+                if result.get("status") == "ok":
+                    pos["sl_pts"] = lock_pts
+                    sl_pts = lock_pts  # refresh local: trailing/BREAKEVEN não afrouxam
+                    be_applied = True
+                    log(
+                        f"[PROFIT_LOCK] {symbol} {direction} | profit {profit_pts:.0f}pts "
+                        f">= {profit_lock_r}×{_one_r_pts}pts (1R) | SL → entry+{_min_lock_pts}pts (lock)"
+                    )
+                else:
+                    log(
+                        f"[PROFIT_LOCK] {symbol} {direction} | profit {profit_pts:.0f}pts "
+                        f"| falhou modify (lock_pts={lock_pts}): {result.get('error', '?')} — "
+                        f"não retenta até próxima posição"
+                    )
 
     # ===== PROTEÇÃO 1: BREAKEVEN =====
     # Após X minutos sem trailing, move SL pra entry + custo mínimo
@@ -2981,7 +3168,18 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     # (be_applied já inicializado no bloco PROFIT_LOCK acima — mutuamente exclusivos.)
     if not trail_on and not be_applied and pos_minutes >= breakeven_min and atr > 0:
         cost_pts = int(5 / point_val)  # custo aprox (comissão + slippage) em pontos
-        if direction == "BUY":
+        # Wave 880.B2 fix: gate PRÉ-ENVIO contra stop_level do broker. O
+        # breakeven usa cost_pts (ex: 5pts p/ WIN), que fica DENTRO do stop_level
+        # real e era rejeitado ("Invalid stops" ×255 no dia 05/08). Se dentro do
+        # stop_level, SKIP (mantém SL de entrada, mais largo, que é válido).
+        _be_sl_pts_candidate = cost_pts
+        if _within_stop_level(symbol, _be_sl_pts_candidate, entry_price, direction, point_val):
+            log(
+                f"[BREAKEVEN-SKIP] {symbol} {direction} após {pos_minutes:.0f}min | "
+                f"be_sl_pts={_be_sl_pts_candidate} dentro do stop_level do broker "
+                f"— modify pulado, SL anterior mantido"
+            )
+        elif direction == "BUY":
             # BUY: breakeven = SL no entry + custo (SL = entry + custo*point)
             be_sl_pts = cost_pts  # positivo → SL = entry - cost_pts*point_val (abaixo de entry mas perto)
             if be_sl_pts < abs(sl_pts):  # menor distância = SL mais apertado = melhor
@@ -3082,7 +3280,12 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     # sl_pts pode ser NEGATIVO (profit-lock). cmd_modify já suporta:
     #   BUY: SL = entry - pts*point (pts<0 → SL acima entry ✓)
     #   SELL: SL = entry + pts*point (pts<0 → SL abaixo entry ✓)
-    if new_sl_pts is not None and new_sl_pts != 0 and new_sl_pts != sl_pts:
+    # Wave 880.B2 fix: gate PRÉ-ENVIO contra stop_level do broker. O trailing
+    # gera new_sl_pts apertados (próximos do best_price) que ficam dentro do
+    # stop_level real → "Invalid stops" ×255 no dia 05/08. Se dentro do
+    # stop_level, SKIP o modify (mantém SL anterior válido, que é mais largo).
+    if (new_sl_pts is not None and new_sl_pts != 0 and new_sl_pts != sl_pts
+            and not _within_stop_level(symbol, new_sl_pts, entry_price, direction, point_val)):
         try:
             result = safe_modify_sl_with_emergency_close(symbol, pos["entry_ticket"], new_sl_pts, entry_price, direction)
             if result.get("status") == "ok":
@@ -3532,13 +3735,20 @@ def recover_open_positions():
             atr = calculate_atr(bars, params.get("atr_period", 14)) if bars else 200
             sl_pts = _calc_sl(symbol, atr, params)
 
+        # Wave 880.B1 fix (Bruno 2026-08-05): entry_price pode vir 0/None do DB
+        # ou do MT5 (XPMT5-PRD price_open=0). Fallback p/ price_current; se ainda
+        # <= 0, manage_position tem guard defensivo (L2687) que pula a gestão.
+        _cur_for_fb = p.get("price_current", 0.0) or 0.0
+        if not entry_price or float(entry_price) <= 0:
+            entry_price = float(_cur_for_fb) if _cur_for_fb else entry_price
+
         current_price = p.get("price_current", entry_price)
         if direction == "BUY":
-            profit_pts = current_price - entry_price
-            best = max(entry_price, p.get("high_price", current_price))
+            profit_pts = current_price - entry_price if entry_price else 0
+            best = max(entry_price, p.get("high_price", current_price)) if entry_price else current_price
         else:
-            profit_pts = entry_price - current_price
-            best = min(entry_price, p.get("low_price", current_price))
+            profit_pts = entry_price - current_price if entry_price else 0
+            best = min(entry_price, p.get("low_price", current_price)) if entry_price else current_price
 
         trail_on = atr > 0 and profit_pts >= params.get("trail_activate", 1.5) * atr
 
