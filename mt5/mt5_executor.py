@@ -245,12 +245,26 @@ def _try_send(symbol: str, side: str, volume: float, sl_pts: int, tp_pts, commen
             return {"error": "order_send retornou None", "mt5_error": last_err}
 
         if result.retcode == mt5.TRADE_RETCODE_DONE:
-            log(f"✅ {side} executado | ticket={result.order} @ {result.price}")
+            # Wave N+6A (2026-08-05): alguns servidores (ex.: XPMT5-PRD)
+            # retornam result.price=0.0 no order_send de ordem a mercado.
+            # entry_price=0 quebra trailing/breakeven/TP1 e polui o DB.
+            # Fallback broker-truth: ler price_open da posição recém-aberta.
+            fill_price = result.price
+            if not fill_price:
+                try:
+                    _pos = mt5.positions_get(ticket=result.order)
+                    if _pos:
+                        fill_price = float(_pos[0].price_open or 0.0)
+                except Exception:
+                    fill_price = 0.0
+            if not fill_price:
+                fill_price = price  # último tick usado no request (fallback)
+            log(f"✅ {side} executado | ticket={result.order} @ {fill_price}")
             return {
                 "retcode": result.retcode,
                 "comment": result.comment,
                 "ticket": result.order,
-                "price": result.price,
+                "price": fill_price,
                 "volume": result.volume,
                 "sl": sl_price,
                 "tp": tp_price,
@@ -348,13 +362,21 @@ def cmd_close(symbol):
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
             log(f"✅ Fechou {pos.symbol} ticket={pos.ticket} | PnL: R${pos.profit:+.2f}")
             closed += 1
+            # Wave N+6A: mesmo fallback do _try_send — XPMT5-PRD pode retornar
+            # result.price=0.0; usar price_open/price_current (broker-truth)
+            # ou o último tick usado no request.
+            close_fill = result.price
+            if not close_fill:
+                close_fill = float(pos.price_current or 0.0)
+            if not close_fill:
+                close_fill = price
             results.append({
                 "ticket": pos.ticket,
                 "symbol": pos.symbol,
                 "type": "BUY" if pos.type == 0 else "SELL",
                 "volume": pos.volume,
                 "entry_price": pos.price_open,
-                "close_price": result.price,
+                "close_price": close_fill,
                 "profit": pos.profit,
                 "swap": pos.swap,
                 "magic": pos.magic,
@@ -451,16 +473,22 @@ def cmd_partial_close(symbol: str, ticket: str, close_volume: str):
         return False
 
     remaining = pos.volume - close_vol
+    # Wave N+6A: mesmo fallback — XPMT5-PRD pode retornar result.price=0.0
+    close_fill = result.price
+    if not close_fill:
+        close_fill = float(pos.price_current or 0.0)
+    if not close_fill:
+        close_fill = price
     log(
         f"✅ TP1 fechou {close_vol} de {pos.symbol} ticket={ticket_int} "
-        f"@ {result.price} → resta {remaining}"
+        f"@ {close_fill} → resta {remaining}"
     )
     print(json.dumps({
         "status": "ok",
         "ticket": ticket_int,
         "closed_volume": close_vol,
         "remaining_volume": remaining,
-        "exit_price": result.price,
+        "exit_price": close_fill,
         "profit": pos.profit * (close_vol / pos.volume),
         "comment": "VibeTrading-TP1",
     }))

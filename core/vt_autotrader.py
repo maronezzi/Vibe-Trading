@@ -2301,7 +2301,11 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
 
     if result.get("status") == "FILLED":
         ticket = result.get("ticket", "?")
-        exec_price = result.get("price", price)
+        # Wave N+6A (2026-08-05): servidor XPMT5-PRD retorna price=0.0 no
+        # order_send. Executor agora faz fallback broker-truth (positions_get),
+        # mas defesa em profundidade: se ainda vier 0/None, usa o preço do
+        # sinal (tick) — nunca deixar entry_price=0 (quebra trailing/TP1/DB).
+        exec_price = result.get("price") or price
 
         # ===== Fase 3 — Lei 4: valida ticket confirmado pelo MT5 =====
         # Antes o código aceitava ticket="?" como válido. Agora exigimos int > 0.
