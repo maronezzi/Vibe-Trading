@@ -1,7 +1,7 @@
 {
-  "_version": 1187,
-  "_updated_at": "2026-08-05T17:49:09.583766",
-  "_updated_by": "agi_v4_stage5",
+  "_version": 1191,
+  "_updated_at": "2026-08-06T11:36:18.178838",
+  "_updated_by": "hermes_agi_apply_changes_wave_per_tf",
   "_notes": "auto-resolve vencimento: WDO: WDOU26 → WDOQ26",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
@@ -234,7 +234,9 @@
   "disabled_timeframes": [
     "WDO_H1",
     "WIN_H1",
-    "BIT_H1"
+    "BIT_H1",
+    "WIN_M15",
+    "WIN_M30"
   ],
   "max_daily_loss": -500,
   "global_max_daily_trades": 999,
