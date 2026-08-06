@@ -60,6 +60,12 @@ from core.vt_starting_balance import (
     get_today_starting_balance as _get_starting_balance,
     set_today_starting_balance as _set_starting_balance,
 )
+
+# GUARD DE CONTA (Bruno 05/08): ÚNICAS contas em que o autotrader pode operar.
+# A conta real 2257579 (XPMT5-PRD) foi REMOVIDA da operação — NÃO adicioná-la
+# de volta sem autorização explícita do Bruno. Para restaurar: relogar a conta
+# no MT5 (senha no portal XP) e incluir o login nesta tupla.
+ALLOWED_ACCOUNT_LOGINS = (52257579,)
 # Fase 2.5 (architecture_proposal_2026_07_01.md, secao 3.2): centraliza acesso
 # MT5 + truth layer. validate_order_pre_send() daqui e re-export da fonte
 # autoritativa em core.vt_truth (toda chamada MT5 sensivel passa por la).
@@ -961,6 +967,7 @@ def get_truth_from_mt5(timeout: int = 8) -> dict:
             "n_positions": len(positions),
             "pnl_flutuante": round(sum(float(p.get("profit", 0) or 0) for p in positions), 2),
             "positions_open": positions,
+            "account_login": int(acc.get("login", 0) or 0),
             "ok": True,
         })
     except Exception as e:
@@ -2251,9 +2258,15 @@ def _within_stop_level(symbol: str, sl_pts: int, entry_price: float,
     stops_level = _get_stops_level(symbol)
     if stops_level <= 0:
         return False  # broker não reporta stop_level (DEMO) → não bloqueia
-    # Distância mínima exigida em pontos de preço (+ buffer de ticks).
-    # stops_level já vem em pontos nativos (unidade de preço); point_val é R$/pt.
-    min_distance_price = stops_level + buffer_ticks
+    # Distância mínima exigida em unidades de PREÇO.
+    # Wave 880.E fix (Bruno 06/08): stops_level vem em PONTOS NATIVOS
+    # (ex.: WIN=300 pontos → 300.0 de preço; WSP=200 pontos → 2.00 de preço,
+    # porque WSP point=0.01). ANTES este código comparava stops_level cru
+    # (pontos) contra sl_distance_price (preço), inflando o stop level em
+    # 1/point_val (WSP/WDO 100-1000x, BIT 100x) → TODO trailing/breakeven/
+    # profit-lock do WSP/WDO/BIT era silenciosamente pulado. WIN (point=1.0)
+    # não era afetado. Converter pontos → preço via point_val.
+    min_distance_price = (stops_level + buffer_ticks) * point_val
     # Distância do SL ao entry em preço: |sl_pts| * point_val
     sl_distance_price = abs(sl_pts) * point_val
     return sl_distance_price < min_distance_price
@@ -5040,6 +5053,18 @@ def run_daemon():
                     # Re-sincroniza state com truth (positions, equity)
                     if hasattr(state, "update_from_truth"):
                         state.update_from_truth(_truth)
+
+                # GUARD DE CONTA (Bruno 05/08): só opera na conta permitida.
+                # Se o MT5 estiver logado numa conta fora da lista (ex: PRD
+                # 2257579 relogada manualmente), BLOQUEIA novas operações.
+                _login_ativo = _truth.get("account_login") or 0
+                if ALLOWED_ACCOUNT_LOGINS and _login_ativo and _login_ativo not in ALLOWED_ACCOUNT_LOGINS:
+                    log(
+                        f"[GUARD-CONTA] 🚫 Login {_login_ativo} NÃO permitido "
+                        f"(permitidos: {ALLOWED_ACCOUNT_LOGINS}). Operação bloqueada."
+                    )
+                    time.sleep(30)
+                    continue
             except Exception as _e_sync:
                 log(f"[MT5_SYNC] falha: {_e_sync}")
 
