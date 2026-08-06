@@ -14,6 +14,7 @@ Melhorias sobre v1:
 Mantém compatibilidade com a função `validate_and_fix()` do v1 (interface estável).
 """
 import json
+import os
 import sqlite3
 import subprocess
 import time
@@ -93,22 +94,111 @@ def _cache_put(key: str, response: str):
 
 # Provedores LLM em ordem de prioridade: primário → fallback.
 # Nomes de provider conforme ~/.hermes/config.yaml e `hermes fallback list`.
-#   - minimax-oauth → MiniMax-M3  (primário; OAuth via api.minimax.io/anthropic)
-#   - xiaomi        → mimo-v2.5-pro (fallback; token-plan-sgp.xiaomimimo.com)
-# Nota: o hermes também tem fallback chain interno, mas o subprocess timeout
-# abaixo é o que realmente limita cada provedor (gateway_timeout interno = 7200s).
+# Wave 880.D (Bruno 06/08): alinhado com a MESMA chain do Hermes principal:
+#   alibaba-token-plan/qwen3.8-max → alibaba-token-plan/qwen3.7-max
+#   → zenmux/deepseek/deepseek-v4-flash
+# A chain anterior (MiniMax-M3 → xiaomi mimo-v2.5-pro) ficou stale: a key
+# xiaomi morreu e foi removida da config do hermes em 05/08 (fallback sempre
+# falhava em 9s), e o MiniMax tinha cold-start >25s na abertura do pregão —
+# em 06/08 todos os trades validaram "Sem análise LLM (timeout/falha)".
+# Latências medidas 06/08: qwen3.8-max ~12s (warm), zenmux flash ~10s.
 _LLM_PROVIDERS = [
-    {"provider": "minimax-oauth", "model": "MiniMax-M3",   "timeout": 25},   # Wave 875 (Bruno 10/07): OAuth cold-start 8-10s + margem
-    {"provider": "xiaomi",        "model": "mimo-v2.5-pro", "timeout": 25},   # mais budget pro fallback (provou funcionar)
+    {"provider": "alibaba-token-plan", "model": "qwen3.8-max",                "timeout": 20},
+    {"provider": "alibaba-token-plan", "model": "qwen3.7-max",                "timeout": 15},
+    {"provider": "zenmux",             "model": "deepseek/deepseek-v4-flash", "timeout": 15},
 ]
-MAX_TOTAL_LLM_TIMEOUT = 53  # hard cap: 25+25=50 + margem
+MAX_TOTAL_LLM_TIMEOUT = 52  # hard cap: 20+15+15=50 + margem
 
-def _ask_llm_provider(prompt: str, provider: str, model: str, timeout: int) -> Optional[str]:
-    """
-    Tenta um único provedor LLM via hermes CLI. Retorna resposta ou None.
+# Wave 880.D (Bruno 06/08): transporte HTTP direto (OpenAI-compatible) como
+# caminho primário. Medido 06/08: CLI hermes = 46-54s (overhead de sessão),
+# HTTP direto = 3.5-13s. Mesmos endpoints/keys do ~/.hermes/config.yaml
+# (providers chat_completions). CLI hermes vira fallback se o HTTP falhar.
+_PROVIDER_ENDPOINTS = {
+    "alibaba-token-plan": (
+        "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "ALIBABA_TOKEN_PLAN_API_KEY",
+    ),
+    "zenmux": (
+        "https://zenmux.ai/api/v1/chat/completions",
+        "ZENMUX_API_KEY",
+    ),
+}
 
-    Logs de timing para diagnóstico de qual provedor respondeu.
+_hermes_env_cache: Optional[dict] = None
+
+
+def _load_hermes_env() -> dict:
+    """Parse simples de ~/.hermes/.env (KEY=VALUE). Cache em memória."""
+    global _hermes_env_cache
+    if _hermes_env_cache is not None:
+        return _hermes_env_cache
+    env: dict = {}
+    try:
+        env_path = Path.home() / ".hermes" / ".env"
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                env[k.strip()] = v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    _hermes_env_cache = env
+    return env
+
+
+def _ask_llm_http(prompt: str, provider: str, model: str, timeout: int) -> Optional[str]:
+    """Chamada HTTP direta ao endpoint OpenAI-compatible do provider.
+
+    Retorna resposta ou None. Usa urllib (stdlib, zero deps — o daemon roda
+    no python3 do sistema). enable_thinking=False pra modelos de raciocínio
+    (qwen3.8-max) não gastarem tempo com chain-of-thought.
     """
+    import urllib.request
+
+    ep = _PROVIDER_ENDPOINTS.get(provider)
+    if not ep:
+        return None
+    url, key_env = ep
+    api_key = _load_hermes_env().get(key_env) or os.environ.get(key_env)
+    if not api_key:
+        _log(f"[LLM] {model}: API key {key_env} não encontrada (~/.hermes/.env)")
+        return None
+
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 300,
+        "enable_thinking": False,
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        elapsed = time.time() - t0
+        content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        if content.strip():
+            _log(f"[LLM] {model} OK http ({elapsed:.1f}s, {len(content)} chars)")
+            return content.strip()
+        _log(f"[LLM] {model} http resposta vazia em {elapsed:.1f}s")
+        return None
+    except Exception as e:
+        _log(f"[LLM] {model} http falhou em {time.time()-t0:.1f}s: {str(e)[:150]}")
+        return None
+
+
+def _ask_llm_cli(prompt: str, provider: str, model: str, timeout: int) -> Optional[str]:
+    """Fallback: hermes CLI -z (transporte antigo). Mais lento (~10s overhead)."""
     from core.vt_hermes_helper import find_hermes
     hermes_bin = find_hermes()
     if not hermes_bin:
@@ -124,24 +214,44 @@ def _ask_llm_provider(prompt: str, provider: str, model: str, timeout: int) -> O
         elapsed = time.time() - t0
         if result.returncode == 0 and result.stdout.strip():
             resp = result.stdout.strip()
-            _log(f"[LLM] {model} OK ({elapsed:.1f}s, {len(resp)} chars)")
+            _log(f"[LLM] {model} OK cli ({elapsed:.1f}s, {len(resp)} chars)")
             return resp
-        _log(f"[LLM] {model} falhou em {elapsed:.1f}s rc={result.returncode} "
+        _log(f"[LLM] {model} cli falhou em {elapsed:.1f}s rc={result.returncode} "
              f"stderr={result.stderr[:200]}")
         return None
     except subprocess.TimeoutExpired:
-        _log(f"[LLM] {model} timeout após {timeout}s")
+        _log(f"[LLM] {model} cli timeout após {timeout}s")
         return None
     except Exception as e:
-        _log(f"[LLM] {model} erro: {e}")
+        _log(f"[LLM] {model} cli erro: {e}")
         return None
 
 
-def _ask_llm_with_fallback(prompt: str, timeout: int = 35) -> Optional[str]:
-    """Tenta MiniMax-M3; se falhar/timeout, tenta MiMo v2.5 pro.
+def _ask_llm_provider(prompt: str, provider: str, model: str, timeout: int) -> Optional[str]:
+    """
+    Tenta um único provedor LLM. Retorna resposta ou None.
 
-    Timeout total limitado a MAX_TOTAL_LLM_TIMEOUT (40s). Cada provedor tem seu
-    próprio timeout (20s primário, 15s fallback); o deadline global garante que
+    Wave 880.D: HTTP direto primeiro (3.5-13s medidos); se falhar, hermes CLI.
+    O budget total por provider é `timeout` (NÃO dobra): HTTP consome até
+    `timeout`; se falhar antes do limite, o restante vai pro CLI. Se o HTTP
+    já estourou o budget, o CLI é pulado. Logs de timing pra diagnóstico.
+    """
+    t0 = time.time()
+    resp = _ask_llm_http(prompt, provider, model, timeout)
+    if resp:
+        return resp
+    # Fallback CLI só se sobrar budget (HTTP falhou rápido: sem key, DNS, 4xx).
+    remaining = timeout - (time.time() - t0)
+    if remaining < 5:  # CLI tem ~10s de overhead; menos de 5s é inútil
+        return None
+    return _ask_llm_cli(prompt, provider, model, int(remaining))
+
+
+def _ask_llm_with_fallback(prompt: str, timeout: int = 52) -> Optional[str]:
+    """Tenta qwen3.8-max; se falhar/timeout, qwen3.7-max; por fim zenmux flash.
+
+    Timeout total limitado a MAX_TOTAL_LLM_TIMEOUT (52s). Cada provedor tem seu
+    próprio timeout (20s primário, 15s fallbacks); o deadline global garante que
     a soma nunca ultrapasse o limite aceitável para validação de trade.
     """
     from core.vt_hermes_helper import find_hermes
@@ -171,8 +281,8 @@ def _ask_llm_with_fallback(prompt: str, timeout: int = 35) -> Optional[str]:
     return None
 
 
-def _ask_llm(prompt: str, timeout: int = 35) -> Optional[str]:
-    """Consulta LLM com fallback entre provedores (MiniMax-M3 → MiMo v2.5 pro)."""
+def _ask_llm(prompt: str, timeout: int = 52) -> Optional[str]:
+    """Consulta LLM com fallback entre provedores (qwen3.8 → qwen3.7 → zenmux)."""
     return _ask_llm_with_fallback(prompt, timeout=timeout)
 
 
@@ -503,6 +613,7 @@ Limites executor: [{limits['min']} - {limits['max']}]
 3. Em drawdown (PnL diário < -R$1000) ou 3+ losses seguidas, NÃO AUMENTE SL (evitar aumentar exposição)
 4. Se o histórico do setup é positivo (WR>50%, PnL médio>0), pode sugerir ajuste mais agressivo
 5. SEMPRE retorne JSON válido
+6. Seja conciso: NÃO mostre raciocínio passo a passo; responda em no máximo 100 tokens.
 
 Retorne APENAS JSON:
 {{
