@@ -1,7 +1,7 @@
 {
-  "_version": 1191,
-  "_updated_at": "2026-08-06T11:36:18.178838",
-  "_updated_by": "hermes_agi_apply_changes_wave_per_tf",
+  "_version": 1203,
+  "_updated_at": "2026-08-07T11:01:58.040144",
+  "_updated_by": "agi_meio_dia_11h",
   "_notes": "auto-resolve vencimento: WDO: WDOU26 → WDOQ26",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
@@ -113,7 +113,7 @@
   "strategy_by_tf": {
     "WIN_M5": "EMA_CROSSOVER",
     "WIN_M15": "HTF_BIAS_LTF_ENTRY",
-    "WIN_M30": "HTF_BIAS_LTF_ENTRY",
+    "WIN_M30": "ADX_TREND",
     "WIN_H1": "ENHANCED_RSI_REVERSION",
     "BIT_M5": "BOLLINGER",
     "BIT_M15": "DIVERGENCE_RSI",
@@ -123,7 +123,7 @@
     "WSP_M15": "EMA_PULLBACK",
     "WSP_M30": "EMA_PULLBACK",
     "WSP_H1": "EMA_PULLBACK",
-    "WDO_M5": "DONCHIAN_BREAKOUT",
+    "WDO_M5": "EMA_CROSSOVER",
     "WDO_M15": "EMA_PULLBACK",
     "WDO_M30": "ADX_TREND",
     "WDO_H1": "RSI_REVERSION"
@@ -235,17 +235,19 @@
     "WDO_H1",
     "WIN_H1",
     "BIT_H1",
-    "WIN_M15",
-    "WIN_M30"
+    "WSP_M5",
+    "WSP_M15",
+    "WSP_M30",
+    "WSP_H1"
   ],
   "max_daily_loss": -500,
   "global_max_daily_trades": 999,
   "params_by_tf": {
     "WIN_M5": {
-      "cooldown_seconds": 60,
+      "cooldown_seconds": 180,
       "bb_period": 30,
       "bb_std": 3.0,
-      "sl_atr_mult": 1.8,
+      "sl_atr_mult": 2.5,
       "ema_fast": 12,
       "ema_slow": 26
     },
@@ -258,20 +260,23 @@
       "adx_min": 22
     },
     "WIN_M30": {
-      "cooldown_seconds": 900
+      "cooldown_seconds": 450,
+      "adx_period": 14,
+      "adx_threshold": 25,
+      "sl_atr_mult": 1.5
     },
     "WIN_H1": {
       "rsi_oversold": 20
     },
     "BIT_M5": {
-      "cooldown_seconds": 180,
+      "cooldown_seconds": 120,
       "halt_duration_minutes": 180,
       "macd_fast": 14,
       "macd_signal": 7,
       "macd_slow": 30,
       "max_consecutive_losses": 6,
       "profit_lock_r": 0.5,
-      "sl_atr_mult": 3.0,
+      "sl_atr_mult": 1.5,
       "rsi_overbought": 85,
       "rsi_oversold": 35,
       "rsi_period": 7,
@@ -280,8 +285,10 @@
       "lookback": 20,
       "atr_period": 14,
       "multiplier": 3.5,
-      "bb_period": 30,
-      "bb_std": 3.0
+      "bb_period": 10,
+      "bb_std": 2.5,
+      "ema_fast": 5,
+      "ema_slow": 26
     },
     "BIT_M15": {
       "rsi_overbought": 65,
@@ -293,10 +300,10 @@
       "rsi_period": 7
     },
     "BIT_M30": {
-      "bb_std": 1.5,
+      "bb_std": 2.0,
       "rsi_oversold": 15,
-      "bb_period": 10,
-      "cooldown_seconds": 60,
+      "bb_period": 18,
+      "cooldown_seconds": 180,
       "sl_atr_mult": 1.2
     },
     "BIT_H1": {
@@ -387,15 +394,15 @@
       "halt_duration_minutes": 60
     },
     "WDO_M5": {
-      "sl_atr_mult": 1.0,
+      "sl_atr_mult": 0.8,
       "cooldown_seconds": 60,
       "max_daily_trades": 12,
       "rsi_period": 14,
       "rsi_overbought": 70,
       "rsi_oversold": 25,
       "macd_fast": 8,
-      "ema_fast": 8,
-      "ema_slow": 30,
+      "ema_fast": 5,
+      "ema_slow": 15,
       "macd_signal": 9,
       "macd_slow": 26,
       "trail_activate": 1.0,
@@ -591,10 +598,10 @@
     "WIN_H1": false,
     "BIT_M30": true,
     "BIT_H1": false,
-    "WSP_M5": true,
-    "WSP_M15": true,
-    "WSP_M30": true,
-    "WSP_H1": true,
+    "WSP_M5": false,
+    "WSP_M15": false,
+    "WSP_M30": false,
+    "WSP_H1": false,
     "WDO_M5": true,
     "WDO_M15": true,
     "WDO_M30": true
