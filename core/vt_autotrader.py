@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "mt5"))  # para imports 'from mt5_orchestrator' em mt5_error_recovery
 
 from core.vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, get_daily_summary, get_events_daily_summary, sync_fees_from_mt5
-from mt5.mt5_orchestrator import status, tick, history, _run_wine, EXECUTOR_WIN
+from mt5.mt5_orchestrator import status, tick, history, _run_wine, EXECUTOR_WIN, close_all
 from mt5.mt5_error_recovery import safe_buy, safe_sell, safe_close
 from core.vt_emergency import safe_modify_sl_with_emergency_close
 from core.vt_config_loader import load_config, load_effective_config
@@ -1641,6 +1641,24 @@ def check_and_trade():
     except Exception as _e_pl:
         log(f"[PROFIT-LOCK] gate falhou (não-crash): {_e_pl}")
 
+    # Trailing Profit Lock gate (Wave 1111 — Bruno 2026-08-11): se o trailing
+    # engajou hoje (PnL >= 50% do target), NÃO abre novas entradas — o ratchet
+    # protege o lucro acumulado e uma entrada nova é vetor de risco que pode
+    # derrubar o PnL abaixo do floor (BREACH fecha TUDO). Posições abertas
+    # seguem gerenciadas por manage_position() abaixo (mesma semântica do
+    # profit lock full: só bloqueia ENTRADAS).
+    try:
+        from core.vt_trailing_profit_lock import is_active as _tpl_is_active
+        if _tpl_is_active():
+            from core.vt_trailing_profit_lock import get_trailing_state as _tpl_state
+            _tpl_st = _tpl_state()
+            log(f"🔒 TRAILING PROFIT LOCK ativo desde {(_tpl_st.get('activated_at','?')[:16])} "
+                f"(pico R$ {_tpl_st.get('peak',0):.2f}, floor R$ {_tpl_st.get('floor',0):.2f}) "
+                f"— novas entradas bloqueadas (proteção de lucro)")
+            return
+    except Exception as _e_tpl_gate:
+        log(f"[TRAILING-PL] gate falhou (não-crash): {_e_tpl_gate}")
+
     # Safety: avoid first/last 15 min of session
     if not _is_safe_time_window():
         return
@@ -2490,6 +2508,22 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             # A verdade final continua sendo o MT5 (reconcile_positions_with_mt5).
             print(f"[TRACKER] aviso: falha ao registrar ticket={_ticket_int}: "
                   f"{_tracker_err} (não bloqueia ordem)")
+
+        # Wave 1111 (Bruno 2026-08-11): notifica abertura de posição no Telegram.
+        # Antes a abertura só logava [SINAL]/[TRACKER] — Bruno não via a ordem
+        # abrir (ex: WDOU26 abriu 2x em 11/08 sem nenhuma notificação).
+        try:
+            _open_emoji = "🟢" if direction == "BUY" else "🔴"
+            _notify_msg = (
+                f"{_open_emoji} *{direction} {symbol}* {tf}\n"
+                f"💵 Preço: {exec_price:.2f}\n"
+                f"🛡️ SL: {sl_pts}pts\n"
+                f"🎫 Ticket: {_ticket_int} | Vol: {_vol}\n"
+                f"📊 {strategy}"
+            )
+            notify_telegram(_notify_msg)
+        except Exception as _notify_err:
+            log(f"[NOTIFY] falha notificando abertura: {_notify_err}")
 
         # ===== VALIDAÇÃO PÓS-ENVIO =====
         try:
@@ -3517,6 +3551,57 @@ def close_all_and_report(close_source: str = "EOD_CLOSE", exit_reason: str = "EO
                 state.consecutive_losses[symbol] = state.consecutive_losses.get(symbol, 0) + 1
 
     time.sleep(2)
+
+    # ── Sweep broker-truth (Wave 10/08, Bruno 2026-08-10) ──────────────
+    # O loop acima fecha apenas posições que o bot CONHECE (state.positions).
+    # Se uma posição existe no MT5 mas o bot perdeu o tracking (ex: state
+    # reconstruído vazio — incidente do 1º dia REAL 05/08, C2 do lesson
+    # learning), ela ficaria aberta após o EOD. close_all() do orchestrator
+    # enumera TODAS as posições via positions_get() e fecha — independente
+    # do state. Rede de segurança: qualquer coisa que sobrou, fecha.
+    try:
+        _sweep = close_all()
+        _sweep_closed = 0
+        if isinstance(_sweep, dict):
+            _sweep_closed = int(_sweep.get("closed", 0) or 0)
+        if _sweep_closed > 0:
+            log(f"[EOD-SWEEP] close_all() fechou {_sweep_closed} posição(ões) "
+                f"remanescente(s) não rastreadas pelo state (ghost/orphan)")
+        else:
+            log(f"[EOD-SWEEP] close_all() OK — nenhuma posição remanescente no MT5")
+    except Exception as _e_sweep:
+        log(f"[EOD-SWEEP] close_all() falhou (não-crash): {_e_sweep}")
+
+    # ── Double-check broker-truth (Wave 10/08, Bruno 2026-08-10) ────────
+    # "Manda o comando, aguarda um pouco, analisa e manda de novo."
+    # Não confiar em UMA única chamada de close: o MT5 pode ter rejeitado
+    # silenciosamente ou a posição pode ter sido reaberta no intervalo.
+    # Padrão: fechar → aguardar → status() (analisar) → se sobrou, fechar de novo.
+    _max_double_check = 3
+    for _dc in range(_max_double_check):
+        try:
+            _dc_st = status()
+            _dc_positions = _dc_st.get("positions", []) or []
+        except Exception as _e_dc:
+            log(f"[EOD-DOUBLE-CHECK] status() falhou (tentativa {_dc+1}): {_e_dc}")
+            break
+        if not _dc_positions:
+            log("[EOD-DOUBLE-CHECK] MT5 flat confirmado (0 posições abertas)")
+            break
+        _n_open = len(_dc_positions)
+        _sym_list = ", ".join(
+            str(p.get("symbol", "?")) for p in _dc_positions[:5]
+        )
+        log(f"[EOD-DOUBLE-CHECK] ⚠️ {_n_open} posição(ões) AINDA aberta(s) "
+            f"({_sym_list}) — tentativa {_dc+1}/{_max_double_check}, fechando de novo")
+        try:
+            _dc_close = close_all()
+            _dc_closed = int(_dc_close.get("closed", 0) or 0) if isinstance(_dc_close, dict) else 0
+            log(f"[EOD-DOUBLE-CHECK] close_all() #2 fechou {_dc_closed} posição(ões)")
+        except Exception as _e_dc2:
+            log(f"[EOD-DOUBLE-CHECK] close_all() #2 falhou (não-crash): {_e_dc2}")
+        time.sleep(5)  # aguardar o MT5 processar antes de re-analisar
+
     # Importar deals reais do MT5 e sincronizar taxas.
     # Wave 880.I (2026-07-20): iterar por ticket via history(position=) — o
     # caminho bulk history() (sem args) retorna [] no Wine MT5 (bug documentado).
@@ -4908,6 +4993,9 @@ def run_daemon():
                         _tpl_per_lot = float(CONFIG.get("trailing_target_per_lot", 250.0))
                         _tpl_target = _tpl_per_lot * _tpl_vol_base
                         _tpl_pnl = _pl_for_trail.get_intraday_pnl_total()
+                        # Wave 1111: detecta a transição inativo→ativo ANTES do
+                        # update (o state é persistido dentro do update_trailing).
+                        _tpl_was_active = bool(_tpl.get_trailing_state().get("activated"))
                         _tpl_decision = _tpl.update_trailing(_tpl_pnl, _tpl_target, CONFIG)
 
                         if _tpl_decision.action == _tpl.TrailingAction.BREACH:
@@ -4938,6 +5026,19 @@ def run_daemon():
                             log(f"📈 TRAILING TIGHTEN: pico R$ {_tpl_decision.peak:.2f} → "
                                 f"floor R$ {_tpl_decision.floor:.2f} "
                                 f"(progress {_tpl_decision.progress:.0%}, factor {_tpl_decision.trail_factor:.2f})")
+                            # Wave 1111 (Bruno 2026-08-11): notifica a PRIMEIRA
+                            # ativação do dia no Telegram (antes só log local —
+                            # Bruno não recebia nada quando o trailing engajava).
+                            if not _tpl_was_active:
+                                notify_telegram(
+                                    f"🔒 *Trailing Profit Lock ATIVADO*\n"
+                                    f"📈 PnL R$ {_tpl_decision.pnl:.2f} ≥ 50% do target "
+                                    f"R$ {_tpl_decision.target:.2f}\n"
+                                    f"🧱 Floor garantido: R$ {_tpl_decision.floor:.2f} "
+                                    f"(pico R$ {_tpl_decision.peak:.2f})\n"
+                                    f"⏸️ Novas entradas bloqueadas até target/breach\n"
+                                    f"⚡ Fast-check 5s engajado"
+                                )
 
                         # Wave 1110.B: fast-check mode — ativa quando trailing
                         # está engajado (TIGHTEN ou HOLD com activated), desliga

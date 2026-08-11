@@ -14,6 +14,13 @@ Se o trailing fecha tudo, o profit lock full nunca dispara (PnL já realizado).
 Se o PnL sobe até o target sem cair abaixo do floor, o profit lock full
 assume (fecha tudo + bloqueia novas entradas).
 
+Wave 1111 (Bruno 2026-08-11): com o trailing ATIVO (PnL >= 50% do target),
+o daemon NÃO abre novas entradas (gate em check_and_trade via is_active()) —
+uma entrada nova é vetor de risco que pode derrubar o PnL abaixo do floor
+(virando BREACH e fechando tudo, inclusive o lucro acumulado). Posições
+abertas seguem gerenciadas; o bloqueio é só de ENTRADAS, mesma semântica do
+profit lock full.
+
 State persistente em /tmp/vt_trailing_profit_lock.json (sobrevive restart).
 Day-rollover via campo "date".
 
@@ -109,6 +116,18 @@ def get_trailing_state() -> dict:
     if state.get("date") != _today_str():
         return {}
     return state
+
+
+def is_active() -> bool:
+    """True se o trailing profit lock está engajado HOJE (activated).
+
+    Wave 1111 (Bruno 2026-08-11): o daemon usa isso como gate de novas
+    entradas — com o trailing ativo (PnL >= 50% do target), não abre
+    posição nova porque uma entrada é vetor de risco que pode derrubar o
+    PnL abaixo do floor (BREACH fecha tudo). Day-rollover via "date".
+    """
+    st = get_trailing_state()
+    return bool(st.get("activated"))
 
 
 def reset_trailing() -> None:
