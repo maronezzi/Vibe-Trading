@@ -176,8 +176,14 @@ def get_multiplier(symbol: str) -> float:
     = +2500 pts, PnL broker-truth R$ 25,00 → R$ 0,01/pt.
     """
     # Fallback hardcoded CORRETO (validado via PnLs reais do MT5).
-    # Wave 880.K: BIT/WSP corrigidos de 1.0 → 0.01 (antes inflava PnL 100x).
-    _mults = {"WIN": 0.20, "WDO": 10.00, "DOL": 1.00, "IND": 1.0, "BIT": 0.01, "WSP": 0.01}
+    # Wave 880.K: BIT corrigido de 1.0 → 0.01 (antes inflava PnL 100x).
+    # Wave WSP-fix (Bruno 11/08/2026): WSP corrigido de 0.01 → 2.5. Antes era
+    # uma CÓPIA do BIT (assumiram "preço similar → mult similar"), mas WSP é
+    # Micro S&P 500 (R$2.50/pt) e BIT é Bitcoin (R$0.01/pt) — contratos
+    # totalmente distintos. Broker-truth MT5 WSPU26: tick_value 0.625 /
+    # tick_size 0.25 = 2.5 R$/pt. O erro de 250× fazia o report de PnL WSP
+    # subestimar em 250× (e o backtest dar PF=0 — ver backtest_v944).
+    _mults = {"WIN": 0.20, "WDO": 10.00, "DOL": 1.00, "IND": 1.0, "BIT": 0.01, "WSP": 2.5}
     fallback_mult = 1.0
     fallback_root = None
     for root, mult in _mults.items():

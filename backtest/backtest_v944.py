@@ -47,9 +47,15 @@ FETCH_SCRIPT = ROOT / "backtest" / "mt5_fetch.py"
 #   WDO (Mini Dólar): cada ponto = R$10.00, tick 0.5pt, 1 tick = R$5.00.
 #     Fonte: B3/Bora Investir/CM Capital — "cada ponto vale R$10".
 #     ANTES mult=0.0015 (erro 6667x): 8pts move = R$0.012, custo R$1.20 → PF=0.
-#   WSP (Micro S&P 500): cada ponto = USD 2.50 (~R$13.50 a 5.4), tick 0.25pt.
-#     Fonte: B3 oficial "Micro S&P 500 Futures Contract" — USD 2.50/point.
-#     ANTES mult=0.01 (cópia do BIT, erro 1350x): 10pts move = R$0.10 → PF=0.
+#   WSP (Micro S&P 500): mult=2.5 R$/ponto (NÃO é R$13.50 nem R$0.01).
+#     Fonte: broker-truth MT5 symbol_info WSPU26 (Bruno 11/08/2026) —
+#     trade_tick_value=0.625 BRL / trade_tick_size=0.25 = 2.5 R$/ponto.
+#     (WSP$ perpétuo bate no mesmo 2.5: tick_value=0.025/tick_size=0.01.)
+#     ANTES mult=0.01 (cópia do BIT, erro 250x): break-even exigia 700pts
+#     favoráveis só p/ cobrar fee R$7 → toda trade WSP dava PF=0 no backtest,
+#     o AGI nunca aprovava estratégia WSP (8 pares failing perpetuamente).
+#     O palpite anterior "USD 2.50/pt ≈ R$13.50" tb estava errado — na real
+#     é ~USD 0.50/pt (Micro, não full S&P). Valor confirmado, não hardcode.
 # Wave 880.B-AGI (Bruno 2026-08-05): mult alinhado com vt_config.json
 # contract_specs (a config real é a verdade). Antes o backtest usava WIN
 # mult=1.0 mas a real é mult=0.2 — superestimava o PnL do WIN em 5×, o ativo
@@ -62,7 +68,7 @@ CONTRACT_SPECS = {
     "WIN$": {"mult": 0.2,  "tick": 5,    "slip_r": 5.0,    "fee_r": 7.0},
     "WDO$": {"mult": 10.0, "tick": 0.5,  "slip_r": 10.0,   "fee_r": 7.0},
     "BIT$": {"mult": 0.01, "tick": 0.01, "slip_r": 0.0002, "fee_r": 7.0},
-    "WSP$": {"mult": 0.01, "tick": 0.01, "slip_r": 0.0002, "fee_r": 7.0},
+    "WSP$": {"mult": 2.5,  "tick": 0.01, "slip_r": 1.25,  "fee_r": 7.0},
     "DOL$": {"mult": 1.0,  "tick": 0.5,  "slip_r": 0.0018, "fee_r": 7.0},
     "IND$": {"mult": 1.0,  "tick": 5,    "slip_r": 5.0,    "fee_r": 7.0},
 }

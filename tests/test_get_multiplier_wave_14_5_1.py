@@ -28,7 +28,7 @@ class TestGetMultiplierDivergingConfig(unittest.TestCase):
                 "WIN$": {"mult": 1.0},   # ERRADO (real 0.20)
                 "BIT$": {"mult": 0.01},  # ERRADO (real 1.00)
                 "WDO$": {"mult": 0.0015},  # ERRADO (real 10.00)
-                "WSP$": {"mult": 0.01},   # CORRETO
+                "WSP$": {"mult": 2.5},    # CORRETO (Micro S&P, broker-truth MT5)
             }
         }
 
@@ -56,13 +56,17 @@ class TestGetMultiplierDivergingConfig(unittest.TestCase):
             mult = get_multiplier("WDON26")
         self.assertEqual(mult, 10.0, f"Esperado 10.00, recebi {mult}")
 
-    def test_wsp_u26_returns_0_01_correct_in_config(self):
-        """WSPU26 retorna 0.01 (correto em config E fallback)."""
+    def test_wsp_u26_returns_2_5_correct_in_config(self):
+        """WSPU26 retorna 2.5 (Micro S&P, correto em config E fallback).
+
+        Wave WSP-fix (Bruno 11/08/2026): antes era 0.01 (cópia errada do BIT).
+        Broker-truth MT5 WSPU26 = 2.5 R$/pt (tick_value 0.625 / tick_size 0.25).
+        """
         from core.vt_trade_log import get_multiplier
         with patch("core.vt_config_loader.load_config",
                    return_value=self._fake_load_config_with_wrong_mults()):
             mult = get_multiplier("WSPU26")
-        self.assertEqual(mult, 0.01)
+        self.assertEqual(mult, 2.5)
 
     def test_logs_warning_on_diverging_config(self):
         """Quando config diverge do fallback, deve logar warning."""

@@ -51,12 +51,12 @@ _CONTRACT_SPECS = {
     "BIT$":  {"mult": 0.01, "margin": 5000, "slip": 1.0},
     "DOL$":  {"mult": 10.0, "margin": 3000, "slip": 5.0},
     "IND$":  {"mult": 0.20, "margin": 5000, "slip": 1.0},
-    "WSP$":  {"mult": 0.50, "margin": 3000, "slip": 0.5},
+    "WSP$":  {"mult": 2.5, "margin": 3000, "slip": 0.5},
     # Contratos REAIS (vigentes) — slippage mais conservador
     "WINQ26": {"mult": 0.20, "margin": 5000, "slip": 5.0},
     "WDOQ26": {"mult": 10.0, "margin": 3000, "slip": 10.0},
     "BITM26": {"mult": 0.01, "margin": 5000, "slip": 50.0},  # BIT tem slip alto
-    "WSPU26": {"mult": 0.50, "margin": 3000, "slip": 5.0},
+    "WSPU26": {"mult": 2.5, "margin": 3000, "slip": 0.5},
 }
 
 

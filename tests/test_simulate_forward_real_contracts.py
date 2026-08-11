@@ -10,7 +10,8 @@ PROBLEMA (diagnóstico executado via /tmp/diag_simulate_forward.py):
   fallback _CONTRACT_SPECS["WIN$"] com mult=0.2 slip=1.0 — QUE É O SINTÉTICO.
 
   Custo: BITM26 deveria ter mult=0.01 slip=50, está aplicando mult=0.2 slip=1.0.
-         WSPU26 deveria ter mult=0.5 slip=5, está aplicando mult=0.2 slip=1.0.
+         WSPU26 deveria ter mult=2.5 slip=0.5 (Micro S&P, broker-truth MT5 11/08),
+         está aplicando mult=0.2 slip=1.0.
          WDOQ26 deveria ter mult=10.0 slip=10, está aplicando mult=0.2 slip=1.0.
 
   E nas linhas 487, 499, 528 (cálculo de PnL):

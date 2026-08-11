@@ -10,7 +10,9 @@ Evidência empírica (trade #50, único com broker-truth hoje):
   pontos = 332120 - 329620 = +2500
   PnL broker = R$ 25,00  →  R$ 0,01/pt
 
-WSP segue mesmo padrão (preço similar ao BIT no backtest_v944).
+WSP NÃO segue o padrão do BIT: WSP é Micro S&P 500 (R$2.50/pt), BIT é
+Bitcoin (R$0.01/pt) — contratos distintos. O fix do WSP está em
+test_wsp_multiplier_broker_truth.py (Bruno 11/08/2026).
 """
 import sys
 from pathlib import Path
@@ -35,10 +37,16 @@ def test_bit_fallback_is_001_not_10():
     )
 
 
-def test_wsp_fallback_is_001():
-    """WSP também deve ser 0.01 (mesmo padrão do BIT)."""
+def test_wsp_fallback_is_2_5():
+    """WSP deve ser 2.5 (R$/pt do Micro S&P, NÃO 0.01 — não é BIT).
+
+    Wave WSP-fix (Bruno 11/08/2026): antes era uma cópia errada do BIT (0.01),
+    subestimando o PnL WSP em 250×. Broker-truth MT5 WSPU26 = 2.5 R$/pt.
+    """
     src = _read("core/vt_trade_log.py")
-    assert '"WSP": 0.01' in src or "'WSP': 0.01" in src
+    assert '"WSP": 2.5' in src or "'WSP': 2.5" in src, (
+        "fallback WSP deve ser 2.5 (Micro S&P, broker-truth) — antes era 0.01 (cópia do BIT)"
+    )
 
 
 def test_w14_7_script_uses_correct_bit():
@@ -73,7 +81,9 @@ def test_get_multiplier_returns_correct_values():
         assert get_multiplier("BITN26") == 0.01, (
             "BITN26 deve ser R$ 0.01/pt (evidência trade #50: 2500pts = R$ 25)"
         )
-        assert get_multiplier("WSPU26") == 0.01
+        assert get_multiplier("WSPU26") == 2.5, (
+            "WSPU26 deve ser R$ 2.5/pt (Micro S&P, broker-truth MT5) — não 0.01"
+        )
         assert get_multiplier("WINQ26") == 0.20
         assert get_multiplier("WDON26") == 10.00
     finally:
