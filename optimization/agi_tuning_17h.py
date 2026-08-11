@@ -1015,9 +1015,9 @@ def web_intel_for_symbol(symbol: str, strategy: str = None) -> dict:
 
 
 def ask_llm(prompt: str, timeout: int = 300) -> str | None:
-    """Consulta o MiniMax-M3 via Hermes CLI.
+    """Consulta o LLM via Hermes CLI (modelo global).
 
-    Modelo: minimax/minimax-m3 (OpenRouter)
+    Modelo: default global do hermes (alibaba-token-plan/deepseek-v4-flash-0731).
     Timeout 300s (5min) pois o prompt com web intel é grande (~5K tokens).
     1M context window do M3 comporta isso facilmente.
     """
@@ -1026,9 +1026,10 @@ def ask_llm(prompt: str, timeout: int = 300) -> str | None:
         log.warning("hermes CLI não encontrado no sistema")
         return None
     try:
-        # Provider: minimax-oauth (ativo no Hermes), fallback automático
+        # Wave 880.E (Bruno 07/08): puxa o modelo GLOBAL do hermes
+        # (alibaba-token-plan/deepseek-v4-flash-0731). Sem -m/--provider.
         result = subprocess.run(
-            [hermes_bin, "-z", prompt, "-m", "MiniMax-M3", "--provider", "minimax-oauth"],
+            [hermes_bin, "-z", prompt],
             capture_output=True, text=True, timeout=timeout,
             cwd=str(PROJECT_DIR),
         )

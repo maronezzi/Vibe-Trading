@@ -94,20 +94,20 @@ def _cache_put(key: str, response: str):
 
 # Provedores LLM em ordem de prioridade: primário → fallback.
 # Nomes de provider conforme ~/.hermes/config.yaml e `hermes fallback list`.
-# Wave 880.D (Bruno 06/08): alinhado com a MESMA chain do Hermes principal:
-#   alibaba-token-plan/qwen3.8-max → alibaba-token-plan/qwen3.7-max
-#   → zenmux/deepseek/deepseek-v4-flash
-# A chain anterior (MiniMax-M3 → xiaomi mimo-v2.5-pro) ficou stale: a key
-# xiaomi morreu e foi removida da config do hermes em 05/08 (fallback sempre
-# falhava em 9s), e o MiniMax tinha cold-start >25s na abertura do pregão —
-# em 06/08 todos os trades validaram "Sem análise LLM (timeout/falha)".
-# Latências medidas 06/08: qwen3.8-max ~12s (warm), zenmux flash ~10s.
+# Wave 880.E (Bruno 07/08): TODOS os callers devem puxar o modelo GLOBAL.
+# Wave 880.F (Bruno 07/08): nova ordem de uso LLM definida pelo Bruno:
+#   1º zenmux/deepseek-v4-flash-free → 2º zenmux/deepseek-v4-flash →
+#   3º alibaba/deepseek-v4-flash-0731 → 4º qwen3.8-max (último recurso).
+# (deepseek-v4-pro REMOVIDO da cadeia — Bruno 09/08.)
+# Transporte HTTP direto (medido: 3-13s vs 46-54s CLI) — mesmo endpoint/key
+# do config do hermes.
 _LLM_PROVIDERS = [
-    {"provider": "alibaba-token-plan", "model": "qwen3.8-max",                "timeout": 20},
-    {"provider": "alibaba-token-plan", "model": "qwen3.7-max",                "timeout": 15},
-    {"provider": "zenmux",             "model": "deepseek/deepseek-v4-flash", "timeout": 15},
+    {"provider": "zenmux",             "model": "deepseek/deepseek-v4-flash-free", "timeout": 12},
+    {"provider": "zenmux",             "model": "deepseek/deepseek-v4-flash",      "timeout": 12},
+    {"provider": "alibaba-token-plan", "model": "deepseek-v4-flash-0731",          "timeout": 15},
+    {"provider": "alibaba-token-plan", "model": "qwen3.8-max",                     "timeout": 15},
 ]
-MAX_TOTAL_LLM_TIMEOUT = 52  # hard cap: 20+15+15=50 + margem
+MAX_TOTAL_LLM_TIMEOUT = 60  # hard cap: 12+12+15+15=54 + margem
 
 # Wave 880.D (Bruno 06/08): transporte HTTP direto (OpenAI-compatible) como
 # caminho primário. Medido 06/08: CLI hermes = 46-54s (overhead de sessão),
@@ -153,7 +153,7 @@ def _ask_llm_http(prompt: str, provider: str, model: str, timeout: int) -> Optio
 
     Retorna resposta ou None. Usa urllib (stdlib, zero deps — o daemon roda
     no python3 do sistema). enable_thinking=False pra modelos de raciocínio
-    (qwen3.8-max) não gastarem tempo com chain-of-thought.
+    não gastarem tempo com chain-of-thought.
     """
     import urllib.request
 
@@ -247,12 +247,13 @@ def _ask_llm_provider(prompt: str, provider: str, model: str, timeout: int) -> O
     return _ask_llm_cli(prompt, provider, model, int(remaining))
 
 
-def _ask_llm_with_fallback(prompt: str, timeout: int = 52) -> Optional[str]:
-    """Tenta qwen3.8-max; se falhar/timeout, qwen3.7-max; por fim zenmux flash.
+def _ask_llm_with_fallback(prompt: str, timeout: int = 60) -> Optional[str]:
+    """Tenta providers em ordem: zenmux-free → zenmux-flash → alibaba-flash-0731
+    → qwen3.8-max.
 
-    Timeout total limitado a MAX_TOTAL_LLM_TIMEOUT (52s). Cada provedor tem seu
-    próprio timeout (20s primário, 15s fallbacks); o deadline global garante que
-    a soma nunca ultrapasse o limite aceitável para validação de trade.
+    Timeout total limitado a MAX_TOTAL_LLM_TIMEOUT (72s). Cada provedor tem seu
+    próprio timeout; o deadline global garante que a soma nunca ultrapasse o
+    limite aceitável para validação de trade.
     """
     from core.vt_hermes_helper import find_hermes
     if not find_hermes():
@@ -281,8 +282,8 @@ def _ask_llm_with_fallback(prompt: str, timeout: int = 52) -> Optional[str]:
     return None
 
 
-def _ask_llm(prompt: str, timeout: int = 52) -> Optional[str]:
-    """Consulta LLM com fallback entre provedores (qwen3.8 → qwen3.7 → zenmux)."""
+def _ask_llm(prompt: str, timeout: int = 60) -> Optional[str]:
+    """Consulta LLM com fallback entre provedores (zenmux-free → zenmux-flash → alibaba-flash-0731 → qwen3.8-max)."""
     return _ask_llm_with_fallback(prompt, timeout=timeout)
 
 

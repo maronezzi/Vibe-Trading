@@ -103,17 +103,18 @@ def test_ask_llm_returns_string_on_first_provider_success(monkeypatch):
     fake_hermes = "/fake/hermes"
     monkeypatch.setattr(mod, "find_hermes", lambda: fake_hermes)
     fake_completed = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="resposta-model-1", stderr=""
+        args=[], returncode=0, stdout="resposta-model-1 " + "x"*60, stderr=""
     )
     with mock.patch.object(subprocess, "run", return_value=fake_completed) as m:
         result = mod.ask_llm("p", timeout=30)
-    assert result == "resposta-model-1"
-    # Verifica que foi chamado com MiniMax-M3 (provider primário)
+    assert result == "resposta-model-1 " + "x"*60
+    # Primário (Wave 880.F) = zenmux/deepseek-v4-flash-free → passa -m/--provider
     args, _ = m.call_args
     cmd = args[0]
-    assert "MiniMax-M3" in cmd
+    assert "-m" in cmd
+    assert "deepseek/deepseek-v4-flash-free" in cmd
     assert "--provider" in cmd
-    assert "minimax-oauth" in cmd
+    assert "zenmux" in cmd
 
 
 def test_ask_llm_falls_back_to_second_provider(monkeypatch):
@@ -126,17 +127,18 @@ def test_ask_llm_falls_back_to_second_provider(monkeypatch):
         args=[], returncode=1, stdout="", stderr="err primary"
     )
     fallback_ok = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="resposta-fallback", stderr=""
+        args=[], returncode=0, stdout="resposta-fallback " + "x"*60, stderr=""
     )
     with mock.patch.object(
         subprocess, "run", side_effect=[primary_fail, fallback_ok]
     ) as m:
         result = mod.ask_llm("p", timeout=60)
-    assert result == "resposta-fallback"
+    assert result == "resposta-fallback " + "x"*60
     assert m.call_count == 2
-    # 2ª chamada deve usar MiMo
+    # 2ª chamada (fallback 1) deve usar zenmux/deepseek-v4-flash
     cmd2 = m.call_args_list[1].args[0]
-    assert "mimo-v2.5-pro" in cmd2
+    assert "deepseek/deepseek-v4-flash" in cmd2
+    assert "zenmux" in cmd2
 
 
 def test_ask_llm_returns_none_when_all_providers_fail(monkeypatch):
@@ -156,7 +158,7 @@ def test_ask_llm_handles_timeout(monkeypatch):
     mod = _import_helper()
     monkeypatch.setattr(mod, "find_hermes", lambda: "/fake/hermes")
     fallback_ok = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="ok-after-timeout", stderr=""
+        args=[], returncode=0, stdout="ok-after-timeout " + "x"*60, stderr=""
     )
     with mock.patch.object(
         subprocess, "run",
@@ -164,7 +166,7 @@ def test_ask_llm_handles_timeout(monkeypatch):
                      fallback_ok],
     ) as m:
         result = mod.ask_llm("p", timeout=60)
-    assert result == "ok-after-timeout"
+    assert result == "ok-after-timeout " + "x"*60
     assert m.call_count == 2
 
 
@@ -173,13 +175,13 @@ def test_ask_llm_handles_subprocess_exception(monkeypatch):
     mod = _import_helper()
     monkeypatch.setattr(mod, "find_hermes", lambda: "/fake/hermes")
     fallback_ok = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="ok-after-exc", stderr=""
+        args=[], returncode=0, stdout="ok-after-exc " + "x"*60, stderr=""
     )
     with mock.patch.object(
         subprocess, "run", side_effect=[OSError("fake"), fallback_ok]
     ):
         result = mod.ask_llm("p", timeout=60)
-    assert result == "ok-after-exc"
+    assert result == "ok-after-exc " + "x"*60
 
 
 def test_ask_llm_system_prompt_passed_as_flag(monkeypatch):

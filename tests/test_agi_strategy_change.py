@@ -107,8 +107,8 @@ def test_validate_mixed_strategy_and_numeric():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def test_apply_changes_updates_strategy_field(tmp_path):
-    """apply_changes deve aplicar mudança de strategy (não ignorar)."""
+def test_apply_changes_updates_strategy_field(tmp_path, monkeypatch):
+    """apply_changes deve aplicar mudança de strategy quando o guard passa."""
 
     cfg = {
         "wsp": {"strategy": "BOLLINGER", "sl_atr_mult": 0.6},
@@ -133,23 +133,84 @@ def test_apply_changes_updates_strategy_field(tmp_path):
         cfg[symbol].update(params)
         return True
     agi_tuning_17h.save_params = mock_save_params
+    # Simula que o símbolo PASSA no guard de evidência (WR saudável)
+    monkeypatch.setattr(
+        "optimization.agi_evidence_validator.validate_against_reality",
+        lambda *a, **k: (True, "ok"),
+    )
     try:
         applied = apply_changes(llm_result, cfg, dry_run=False)
     finally:
         agi_tuning_17h.save_params = original_save
 
-    # apply_changes() roda _optimize_dol_halt_grid internamente (lê config real do disco)
-    # e pode adicionar 1+ resultados. Verifica que a mudança de strategy está lá
-    # (independentemente de outros resultados de grid/halt).
+    # Verifica que a mudança de strategy foi aplicada (guard passou)
     assert len(applied) >= 1, f"Esperado >= 1 aplicação, achou {len(applied)}"
     strategy_applied = [a for a in applied if "params" in a and "strategy" in a.get("params", {})]
     assert len(strategy_applied) == 1, (
         f"Esperado exatamente 1 aplicação de strategy, achou {len(strategy_applied)}: {applied}"
     )
+    assert strategy_applied[0]["applied"] is True
     assert strategy_applied[0]["params"]["strategy"] == "EMA_PULLBACK"
     assert cfg["wsp"]["strategy"] == "EMA_PULLBACK"
     # Verifica que save_params foi chamado com strategy
     assert any("strategy" in params for sym, params in saved_calls)
+
+
+def test_apply_changes_blocked_by_evidence_gate(tmp_path, monkeypatch):
+    """apply_changes deve BLOQUEAR mudança quando o guard de evidência rejeita.
+
+    Wave TDD (Bruno): quando um símbolo é perdedor crônico (WR < 35% nos últimos
+    30d), o AGI NÃO pode trocar a estratégia dele — o guard de evidência real
+    bloqueia antes de chamar save_params. Este teste valida esse comportamento:
+    a mudança reporta applied=False e o config fica INTACTO.
+    """
+
+    cfg = {
+        "wsp": {"strategy": "BOLLINGER", "sl_atr_mult": 0.6},
+        "_version": 1,
+    }
+    llm_result = {
+        "changes": [
+            {
+                "symbol": "WSP",
+                "params": {"strategy": "EMA_PULLBACK"},
+                "reason": "BOLLINGER não lucrativo em WSP, trocar para EMA_PULLBACK"
+            }
+        ]
+    }
+
+    import agi_tuning_17h
+    original_save = agi_tuning_17h.save_params
+    saved_calls = []
+    def mock_save_params(symbol, params, updated_by=None):
+        saved_calls.append((symbol, params))
+        cfg[symbol].update(params)
+        return True
+    agi_tuning_17h.save_params = mock_save_params
+    # Simula o guard de evidência real rejeitando (WR=0.0% < 35%)
+    monkeypatch.setattr(
+        "optimization.agi_evidence_validator.validate_against_reality",
+        lambda *a, **k: (False, "WR=0.0% (0W/15L) < 35% em WSP nos últimos 30d. "
+                               "Bloqueado: setup perdedor crônico."),
+    )
+    try:
+        applied = apply_changes(llm_result, cfg, dry_run=False)
+    finally:
+        agi_tuning_17h.save_params = original_save
+
+    # A mudança deve estar presente no resultado, mas marcada como NÃO aplicada
+    assert len(applied) >= 1
+    strategy_applied = [a for a in applied if "params" in a and "strategy" in a.get("params", {})]
+    assert len(strategy_applied) == 1
+    assert strategy_applied[0]["applied"] is False, (
+        f"Guard de evidência deve bloquear, mas applied={strategy_applied[0]['applied']}"
+    )
+    # save_params NÃO deve ter sido chamado (guard bloqueia antes de salvar)
+    assert not any("strategy" in params for sym, params in saved_calls), (
+        "save_params não deveria ter sido chamado quando o guard bloqueia"
+    )
+    # Config deve permanecer INTACTO (BOLLINGER, não EMA_PULLBACK)
+    assert cfg["wsp"]["strategy"] == "BOLLINGER"
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

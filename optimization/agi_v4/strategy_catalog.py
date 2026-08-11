@@ -50,6 +50,12 @@ UNIVERSAL_TUNABLE_PARAMS = {
     "tp2_r": (float, 1.5, 4.0),
     "tp2_pct": (float, 0.1, 0.9),
     "atr_trail_mult": (float, 0.5, 5.0),  # tighter trail pós-TP1
+    # Wave 880.F (07/08): trailing por lucro — AGI deve tunar COMPORTAMENTO,
+    # não número fixo. trail_activate = múltiplo de ATR pra ATIVAR; trail_distance
+    # = distância do trailing. Range pequeno p/ symbols point<1.0 (WDO/WSP/BIT)
+    # onde 1 ATR em preço ~ R$8000+ (precisa de fração pequena de ATR).
+    "trail_activate": (float, 0.0005, 5.0),
+    "trail_distance": (float, 0.05, 5.0),
 }
 
 # Descrições PT-BR curtas das estratégias mais comuns. Para estratégias fora

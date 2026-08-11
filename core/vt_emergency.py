@@ -326,6 +326,26 @@ def safe_modify_sl_with_emergency_close(
             "underlying_result": result,
         }
 
+    # 2b. Wave 10/08 (Bruno 2026-08-10): status "skipped" / "already_applied"
+    # NÃO são falha de SL — significam que o SL ANTERIOR (válido) foi mantido
+    # (gate de stop_level bloqueou o aperto) ou que o SL pedido já está aplicado.
+    # A posição continua protegida → NÃO é emergência, NÃO fecha. Antes, um
+    # breakeven de 5pts (dentro do stop_level) gerava Invalid stops → fix
+    # reaplicava o SL real → "No changes" → LLM timeout → EMERGENCY CLOSE de
+    # posição protegida (2x em 10/08: -R$5 e -R$19 desnecessários).
+    if isinstance(result, dict) and result.get("status") in ("skipped", "already_applied"):
+        _logger.info(
+            "safe_modify_sl %s ticket=%s: %s — SL anterior mantido (posição "
+            "protegida), sem emergency close",
+            symbol, ticket, result.get("status"),
+        )
+        return {
+            "status": "ok",
+            "emergency_closed": False,
+            "sl_unchanged": True,
+            "underlying_result": result,
+        }
+
     # 3. Falhou — verifica PnL
     pnl = _get_current_pnl(symbol, ticket, direction, entry_price)
     attempts = result.get("attempts", MAX_SL_MODIFY_ATTEMPTS) if isinstance(result, dict) else MAX_SL_MODIFY_ATTEMPTS

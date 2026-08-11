@@ -235,24 +235,24 @@ def _get_ask_llm_logger() -> logging.Logger:
     return _ASK_LLM_LOGGER
 
 
-# Provedores LLM — mesma cadeia de fallback de core/vt_order_validator_v2.py
-# Wave qwen-primário (Bruno 30/07): o PRIMÁRIO agora é o default do hermes
-# (qwen3.8-max / alibaba-token-plan) — NÃO passamos -m/--provider,
-# deixando o hermes usar o modelo configurado. Antes a cadeia forçava MiniMax-M3
-# com timeout 10s, mas o MiniMax leva ~15s de cold-start → toda chamada do Stage
-# 4 do AGI timeout antes de completar (168 chamadas, 0 sucessos em 30/07).
-# model=None sinaliza "usar default do hermes" no loop abaixo.
+# Provedores LLM — mesma CADEIA de fallback de core/vt_order_validator_v2.py
+# Wave 880.F (Bruno 09/08): cadeia LLM unificada em TODOS os cron scripts
+# (hermes + openclaw), na ordem:
+#   1º zenmux/deepseek/deepseek-v4-flash-free
+#   2º zenmux/deepseek/deepseek-v4-flash
+#   3º alibaba-token-plan/deepseek-v4-flash-0731
+#   4º alibaba-token-plan/qwen3.8-max
+# (deepseek-v4-pro REMOVIDO da cadeia — Bruno 09/08.)
 #
-# Wave noturno-generoso (Bruno 01/08): o AGI roda às 17:10 (pós-close 16:45) e
-# tem a madrugada toda. O qwen leva ~40-60s para GERAR CÓDIGO (mais lento que
-# hipótese curta), e o timeout de 60s cortava no meio (3/3 gerações do Stage 4
-# morriam em 59s em 01/08). Subido p/ 180s. NOTA: validator_v2 (live, durante o
-# pregão) tem implementação PRÓPRIA (_ask_llm em vt_order_validator_v2.py) — não
-# usa esta lista, então este aumento NÃO afeta o path de ordens em horário real.
+# DIFERENÇA de timeout vs validator_v2: este ask_llm é usado pelo AGI (geração
+# de código noturna, pós-close), não por validação de ordem em tempo real. O
+# qwen leva ~40-60s para GERAR CÓDIGO (Wave noturno-generoso, Bruno 01/08), por
+# isso os timeouts aqui são maiores. A ORDEM dos modelos é a mesma da cadeia.
 _ASK_LLM_PROVIDERS = [
-    {"provider": None,           "model": None,             "timeout": 180},  # default hermes (qwen3.8) — geração de código noturna
-    {"provider": "minimax-oauth", "model": "MiniMax-M3",    "timeout": 60},   # fallback 1 (25s→60s: também noturno)
-    {"provider": "xiaomi",        "model": "mimo-v2.5-pro", "timeout": 60},   # fallback 2
+    {"provider": "zenmux",             "model": "deepseek/deepseek-v4-flash-free", "timeout": 180},
+    {"provider": "zenmux",             "model": "deepseek/deepseek-v4-flash",      "timeout": 180},
+    {"provider": "alibaba-token-plan", "model": "deepseek-v4-flash-0731",          "timeout": 180},
+    {"provider": "alibaba-token-plan", "model": "qwen3.8-max",                     "timeout": 180},
 ]
 
 # Wave 881 (03/08/2026): mínimo de chars para considerar uma resposta válida.
@@ -272,8 +272,8 @@ def ask_llm(
 ) -> str | None:
     """Provider LLM único para o AGI e futuros callers cross-module.
 
-    Tenta provedores em ordem: default do hermes (qwen3.8) → MiniMax-M3 →
-    MiMo v2.5 Pro. Retorna a primeira resposta não-vazia ou ``None`` em
+    Tenta provedores em ordem: default global do hermes (deepseek-v4-flash) →
+    qwen3.7-max → zenmux. Retorna a primeira resposta não-vazia ou ``None`` em
     qualquer falha — nunca levanta.
 
     Args:
@@ -314,7 +314,7 @@ def ask_llm(
         label = prov["model"] or "hermes-default(qwen)"
 
         args = [hermes_bin, "-z", prompt]
-        # model=None → usa o default do hermes (qwen3.8-max). Não
+        # model=None → default global do hermes (deepseek-v4-flash-0731). Não
         # passamos -m/--provider, deixando o hermes usar o que está configurado
         # (robusto: se o Bruno trocar o modelo no hermes, o AGI segue automático).
         if prov["model"] is not None and prov["provider"] is not None:

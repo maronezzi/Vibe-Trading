@@ -1,20 +1,27 @@
 """
 test_backtest_profit_lock.py
 ============================
-Testa que o backtest engine (backtest_v944.py) modela o profit-lock.
+Testa que o backtest engine (backtest_v944.py) modela o profit-lock por R.
 
 Cenário sintético (lucro seguido de reversão):
 - Candle de entry: BUY @ ~100000, SL fixo 200pts → sl_price = 98000.
 - Candle de lucro: best sobe +150pts (= 0.75R, > 0.5R threshold).
 - Candle de reversão: low cai abaixo do entry → SL dispara.
 
-Resultado esperado:
-- profit_lock_r=0.0 (off): SL fica em 98000 → exit @ 98003, perda cheia (-R$206).
-- profit_lock_r=0.5 (on): após +150pts >= 0.5×200=100, SL move para entry+tick
-  → exit @ 100008, zero-loss (-R$1.20 = só commission).
+Wave 880.F (07/08): corrigido para a PARIDADE de stop_level (Wave 880.B-AGI).
+O live (vt_autotrader.py PROFIT_LOCK) NÃO move o SL para 1 tick do entry —
+isso é sempre rejeitado pelo broker ("Invalid stops"). Ele move para a
+distância segura `stops_level×1.1+1` acima do entry. O backtest replicava
+1 tick (sempre bloqueado, então o profit-lock NUNCA funcionava no backtest
+para símbolos com stop_level>0). Agora espelha o live.
 
-Trailing/BE-temporal/time-trail são DESLIGADOS (valores 999/99999) para isolar
-o efeito do profit-lock.
+Resultado esperado (WIN, sim_stops_level=300 → lock em 331pts acima do entry):
+- profit_lock_r=0.0 (off): SL fica em 98000 → exit @ 99803, perda cheia (-R$52).
+- profit_lock_r=0.5 (on): após +150pts >= 0.5×200=100, SL move para entry+331
+  → exit @ 100334, lucro (+R$54).
+
+TP1/TP2/breakeven/time-trail/hard-exit são DESLIGADOS (999/99999) e
+max_daily_trades=1 para isolar 1 trade limpo do profit-lock.
 """
 import sys
 import os
@@ -92,6 +99,11 @@ class TestBacktestProfitLock(unittest.TestCase):
             "time_trail_minutes": 999,  # time-trail desligado
             "max_position_minutes": 999,
             "hard_exit_minutes": 999,
+            "tp1_r": 999.0,             # TP ladder desligado (isola profit-lock)
+            "tp1_pct": 0.5,
+            "tp2_r": 999.0,
+            "tp2_pct": 0.5,
+            "max_daily_trades": 1,      # 1 trade limpo (sem re-entry)
             "profit_lock_r": profit_lock_r,
         }
         with patch("backtest.backtest_v944.get_strategy_func",
@@ -100,19 +112,24 @@ class TestBacktestProfitLock(unittest.TestCase):
         return trades
 
     def test_profit_lock_off_loses_full_risk(self):
-        """Sem profit-lock, reversão atinge SL original → perda cheia (~-R$206)."""
+        """Sem profit-lock, reversão atinge SL original → perda cheia (< -R$40)."""
         trades = self._run_backtest(profit_lock_r=0.0)
         self.assertEqual(len(trades), 1, "Deve ter exatamente 1 trade")
-        self.assertLess(trades[0]["pnl"], -100,
-            f"Sem profit-lock, perda deveria ser cheia (< -R$100), "
+        self.assertEqual(trades[0]["reason"], "SL")
+        self.assertLess(trades[0]["pnl"], -40,
+            f"Sem profit-lock, perda deveria ser cheia (< -R$40), "
             f"got {trades[0]['pnl']:.2f}")
 
-    def test_profit_lock_on_locks_zero(self):
-        """Com profit_lock_r=0.5, SL move para entry após +0.5R → exit ~zero-loss."""
+    def test_profit_lock_on_locks_profit(self):
+        """Com profit_lock_r=0.5, SL move para entry+stops_level → lucro."""
         trades = self._run_backtest(profit_lock_r=0.5)
         self.assertEqual(len(trades), 1, "Deve ter exatamente 1 trade")
-        self.assertGreater(trades[0]["pnl"], -10,
-            f"Com profit-lock, exit deveria ser ~zero-loss (> -R$10), "
+        self.assertEqual(trades[0]["reason"], "SL")
+        # lock moveu SL para cima (xp > ep) e fechou com lucro
+        self.assertGreater(trades[0]["xp"], trades[0]["ep"],
+            "profit-lock deve mover SL acima do entry (xp > ep)")
+        self.assertGreater(trades[0]["pnl"], 0,
+            f"Com profit-lock, exit deveria ser lucro (> R$0), "
             f"got {trades[0]['pnl']:.2f}")
 
     def test_profit_lock_changes_pnl(self):

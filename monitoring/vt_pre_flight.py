@@ -253,16 +253,15 @@ def check_hermes() -> tuple[bool, str]:
 
 # ── 7. LLM ping (não-bloqueante) ─────────────────────────────
 def check_llm() -> tuple[bool, str]:
-    section("7. LLM PING (MiniMax-M3)")
+    section("7. LLM PING (global)")
     hermes_bin = find_hermes()
     if not hermes_bin:
         return False, "sem hermes"
     try:
-        # Ping rápido: pede "ok" em <100 tokens
-        # Provider: minimax-oauth (ativo no Hermes), fallback automático
+        # Wave 880.E (Bruno 07/08): puxa o modelo GLOBAL do hermes
+        # (alibaba-token-plan/deepseek-v4-flash-0731). Sem -m/--provider.
         r = subprocess.run(
-            [hermes_bin, "-z", "responda apenas: OK",
-             "-m", "MiniMax-M3", "--provider", "minimax-oauth"],
+            [hermes_bin, "-z", "responda apenas: OK"],
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode == 0 and "OK" in r.stdout.upper()[:50]:

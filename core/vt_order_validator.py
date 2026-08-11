@@ -47,9 +47,13 @@ def _log(msg: str, file=None):
 def _ask_llm(prompt: str, timeout: int = 60) -> Optional[str]:
     """Consulta LLM com cadeia de fallback.
 
-    Ordem de modelos:
-    1. MiniMax-M3 (minimax-oauth) — provider ativo do Hermes
-    2. glm-5.2 (zai) — fallback 1
+    Wave 880.F (Bruno 09/08): cadeia LLM unificada em TODOS os cron scripts
+    (hermes + openclaw), mesma ordem de core/vt_order_validator_v2.py:
+      1º zenmux/deepseek/deepseek-v4-flash-free
+      2º zenmux/deepseek/deepseek-v4-flash
+      3º alibaba-token-plan/deepseek-v4-flash-0731
+      4º alibaba-token-plan/qwen3.8-max (último recurso)
+    deepseek-v4-pro REMOVIDO. Antes forçava MiniMax-M3/glm-5.2 (mortos).
 
     Política:
     - Tenta cada modelo em sequência
@@ -64,8 +68,10 @@ def _ask_llm(prompt: str, timeout: int = 60) -> Optional[str]:
         return None
 
     models = [
-        ("MiniMax-M3", "minimax-oauth"),   # primário (provider ativo)
-        ("glm-5.2", "zai"),                # fallback 1
+        ("deepseek/deepseek-v4-flash-free", "zenmux"),             # primário
+        ("deepseek/deepseek-v4-flash", "zenmux"),                  # fallback 1
+        ("deepseek-v4-flash-0731", "alibaba-token-plan"),           # fallback 2
+        ("qwen3.8-max", "alibaba-token-plan"),                      # fallback 3 (último)
     ]
 
     for model, provider in models:

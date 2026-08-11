@@ -1,11 +1,15 @@
 """
-Testes do ask_llm com qwen3.8 primário (Wave qwen-primário, 30/07).
+Testes do ask_llm com a cadeia LLM unificada (Wave 880.F, Bruno 09/08).
 
-Cobre:
-- O PRIMÁRIO chama hermes SEM -m/--provider (usa o default qwen3.8 do hermes).
-- Se o primário (default) responde, retorna direto (não tenta fallbacks).
-- Se o primário timeout, cai pro MiniMax-M3 com timeout 25 (não mais 10).
-- Se todos falham, retorna None.
+Cadeia nova (mesma de core/vt_order_validator_v2.py), em TODOS os cron scripts
+(hermes + openclaw):
+  1º zenmux/deepseek/deepseek-v4-flash-free
+  2º zenmux/deepseek/deepseek-v4-flash
+  3º alibaba-token-plan/deepseek-v4-flash-0731
+  4º alibaba-token-plan/qwen3.8-max (último recurso)
+
+deepseek-v4-pro foi REMOVIDO. Todos os providers agora são explícitos
+(provider+model), cada um com timeout 180 (AGI gera código noturno).
 
 Mocka subprocess.run e find_hermes — não depende do hermes real/MT5.
 """
@@ -21,6 +25,14 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from core import vt_hermes_helper  # noqa: E402
 
+# Cadeia esperada (mesma do validator_v2)
+_EXPECTED_CHAIN = [
+    ("zenmux", "deepseek/deepseek-v4-flash-free"),
+    ("zenmux", "deepseek/deepseek-v4-flash"),
+    ("alibaba-token-plan", "deepseek-v4-flash-0731"),
+    ("alibaba-token-plan", "qwen3.8-max"),
+]
+
 
 class _FakeResult:
     def __init__(self, stdout="", stderr="", returncode=0):
@@ -35,73 +47,63 @@ def _mock_hermes(monkeypatch):
     monkeypatch.setattr(vt_hermes_helper, "find_hermes", lambda: "/fake/hermes")
 
 
-class TestAskLlmQwenDefault:
-    def test_primario_nao_passa_flags_de_modelo(self, monkeypatch):
-        """O primário (qwen3.8 default) chama hermes SEM -m/--provider."""
+class TestAskLlmChain:
+    def test_cadeia_tem_4_modelos_ordem_correta(self):
+        """_ASK_LLM_PROVIDERS deve ter exatamente os 4 modelos da cadeia nova."""
+        got = [(p["provider"], p["model"]) for p in vt_hermes_helper._ASK_LLM_PROVIDERS]
+        assert got == _EXPECTED_CHAIN, f"cadeia ≠ definida pelo Bruno. Got: {got}"
+
+    def test_deepseek_v4_pro_removido(self):
+        """deepseek-v4-pro NÃO pode estar na cadeia (removido 09/08)."""
+        models = [p["model"] for p in vt_hermes_helper._ASK_LLM_PROVIDERS]
+        assert "deepseek-v4-pro" not in models, "deepseek-v4-pro deveria estar removido"
+
+    def test_todos_providers_explicitos(self):
+        """Nenhum provider com model=None (todos usam -m/--provider explícito)."""
+        for p in vt_hermes_helper._ASK_LLM_PROVIDERS:
+            assert p["model"] is not None, f"model None não permitido: {p}"
+            assert p["provider"] is not None, f"provider None não permitido: {p}"
+
+    def test_primario_zenmux_free_passa_flags(self, monkeypatch):
+        """O primário (zenmux-free) chama hermes COM -m e --provider."""
         calls = []
 
         def _fake_run(args, **kwargs):
             calls.append(args)
-            return _FakeResult(stdout="def soma(a, b): return a + b")
+            return _FakeResult(stdout="code " + "x"*60)
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
-        resp = vt_hermes_helper.ask_llm("gere soma", timeout=60)
+        resp = vt_hermes_helper.ask_llm("gere soma", timeout=180)
 
-        assert resp == "def soma(a, b): return a + b"
+        assert resp is not None and resp.startswith("code ")
         assert len(calls) == 1, "primário respondeu → não deve tentar fallback"
         primario_args = calls[0]
-        assert "-m" not in primario_args, "primário NÃO deve passar -m (usa default)"
-        assert "--provider" not in primario_args, "primário NÃO deve passar --provider"
+        assert "-m" in primario_args
+        assert "--provider" in primario_args
+        assert primario_args[primario_args.index("-m") + 1] == "deepseek/deepseek-v4-flash-free"
+        assert primario_args[primario_args.index("--provider") + 1] == "zenmux"
 
-    def test_primario_responde_nao_tenta_fallbacks(self, monkeypatch):
-        """Se o default do hermes responde, MiniMax/mimo não são chamados."""
-        call_count = [0]
+    def test_timeout_180_para_geracao_codigo(self):
+        """Cada provider deve ter timeout 180 (AGI gera código noturno)."""
+        for p in vt_hermes_helper._ASK_LLM_PROVIDERS:
+            assert p["timeout"] == 180, f"{p['model']} timeout ≠ 180: {p['timeout']}"
 
-        def _fake_run(args, **kwargs):
-            call_count[0] += 1
-            return _FakeResult(stdout="resposta do qwen")
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-        vt_hermes_helper.ask_llm("teste", timeout=60)
-        assert call_count[0] == 1, "só o primário deveria rodar"
-
-    def test_fallback_minimax_timeout_e_25_nao_10(self, monkeypatch):
-        """Se o primário (qwen) timeout, cai pro MiniMax-M3 com timeout 25."""
-        seen_timeouts = []
+    def test_fallback_para_segundo_provider(self, monkeypatch):
+        """Se o primário (zenmux-free) falha, cai pro zenmux-flash."""
+        seen = []
 
         def _fake_run(args, **kwargs):
-            # primário (sem -m) → timeout; MiniMax → responde.
-            if "-m" not in args:
-                seen_timeouts.append(("primario", kwargs.get("timeout")))
-                raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout", 0))
-            seen_timeouts.append((args[args.index("-m") + 1] if "-m" in args else "?",
-                                  kwargs.get("timeout")))
-            return _FakeResult(stdout="resposta minimax")
+            if "-m" in args and args[args.index("-m") + 1] == "deepseek/deepseek-v4-flash-free":
+                seen.append("primario")
+                return _FakeResult(stdout="err", stderr="err primary", returncode=1)
+            seen.append("fallback")
+            return _FakeResult(stdout="resposta flash " + "x"*60)
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
-        resp = vt_hermes_helper.ask_llm("teste", timeout=120)
+        resp = vt_hermes_helper.ask_llm("teste", timeout=180)
 
-        assert resp == "resposta minimax"
-        assert len(seen_timeouts) == 2, "primário + 1 fallback"
-        # primário timeout 60, MiniMax timeout 25 (não 10).
-        assert seen_timeouts[0] == ("primario", 60)
-        assert seen_timeouts[1] == ("MiniMax-M3", 25), \
-            f"MiniMax deve ter timeout 25 (não 10), got {seen_timeouts[1]}"
-
-    def test_todos_falham_retorna_none(self, monkeypatch):
-        """Se primário + todos fallbacks falham/timeout, retorna None."""
-        def _fake_run(args, **kwargs):
-            raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout", 0))
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-        assert vt_hermes_helper.ask_llm("teste", timeout=120) is None
-
-    def test_cadeia_tem_qwen_como_primeiro(self):
-        """_ASK_LLM_PROVIDERS[0] deve ser o default do hermes (model=None)."""
-        primario = vt_hermes_helper._ASK_LLM_PROVIDERS[0]
-        assert primario["model"] is None, "primário deve usar default do hermes (model=None)"
-        assert primario["provider"] is None
-        assert primario["timeout"] >= 30, "primário precisa de budget p/ gerar código"
+        assert resp is not None and resp.startswith("resposta flash ")
+        assert seen == ["primario", "fallback"]
 
 
 if __name__ == "__main__":

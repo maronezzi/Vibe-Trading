@@ -1,8 +1,8 @@
 {
-  "_version": 1203,
-  "_updated_at": "2026-08-07T11:01:58.040144",
-  "_updated_by": "agi_meio_dia_11h",
-  "_notes": "auto-resolve vencimento: WDO: WDOU26 → WDOQ26",
+  "_version": 1244,
+  "_updated_at": "2026-08-11T17:46:01.415982",
+  "_updated_by": "agi_v4_stage5",
+  "_notes": "Wave 880.F (07/08) auto-resolve vencimento: WDO: WDOU26 → WDOQ26",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
   "start_minute": 5,
@@ -123,8 +123,8 @@
     "WSP_M15": "EMA_PULLBACK",
     "WSP_M30": "EMA_PULLBACK",
     "WSP_H1": "EMA_PULLBACK",
-    "WDO_M5": "EMA_CROSSOVER",
-    "WDO_M15": "EMA_PULLBACK",
+    "WDO_M5": "DONCHIAN_BREAKOUT",
+    "WDO_M15": "ADX_TREND",
     "WDO_M30": "ADX_TREND",
     "WDO_H1": "RSI_REVERSION"
   },
@@ -238,7 +238,8 @@
     "WSP_M5",
     "WSP_M15",
     "WSP_M30",
-    "WSP_H1"
+    "WSP_H1",
+    "WIN_M5"
   ],
   "max_daily_loss": -500,
   "global_max_daily_trades": 999,
@@ -249,7 +250,9 @@
       "bb_std": 3.0,
       "sl_atr_mult": 2.5,
       "ema_fast": 12,
-      "ema_slow": 26
+      "ema_slow": 26,
+      "trail_activate": 0.8,
+      "trail_distance": 0.4
     },
     "WIN_M15": {
       "cooldown_seconds": 1800,
@@ -257,16 +260,22 @@
       "max_consecutive_losses": 3,
       "profit_lock_r": 0.7,
       "sl_atr_mult": 2.0,
-      "adx_min": 22
+      "adx_min": 22,
+      "trail_activate": 0.8,
+      "trail_distance": 0.4
     },
     "WIN_M30": {
       "cooldown_seconds": 450,
-      "adx_period": 14,
-      "adx_threshold": 25,
-      "sl_atr_mult": 1.5
+      "adx_period": 10,
+      "adx_threshold": 18,
+      "sl_atr_mult": 1.5,
+      "trail_activate": 0.8,
+      "trail_distance": 0.4
     },
     "WIN_H1": {
-      "rsi_oversold": 20
+      "rsi_oversold": 20,
+      "trail_activate": 0.8,
+      "trail_distance": 0.4
     },
     "BIT_M5": {
       "cooldown_seconds": 120,
@@ -288,7 +297,9 @@
       "bb_period": 10,
       "bb_std": 2.5,
       "ema_fast": 5,
-      "ema_slow": 26
+      "ema_slow": 26,
+      "trail_activate": 0.07,
+      "trail_distance": 0.035
     },
     "BIT_M15": {
       "rsi_overbought": 65,
@@ -297,14 +308,18 @@
       "cooldown_seconds": 60,
       "sl_atr_mult": 0.8,
       "rsi_oversold": 15,
-      "rsi_period": 7
+      "rsi_period": 7,
+      "trail_activate": 0.07,
+      "trail_distance": 0.035
     },
     "BIT_M30": {
       "bb_std": 2.0,
       "rsi_oversold": 15,
       "bb_period": 18,
       "cooldown_seconds": 180,
-      "sl_atr_mult": 1.2
+      "sl_atr_mult": 1.2,
+      "trail_activate": 0.07,
+      "trail_distance": 0.035
     },
     "BIT_H1": {
       "sl_atr_mult": 1.0,
@@ -318,25 +333,27 @@
       "rsi_oversold": 30,
       "adx_period": 28,
       "adx_threshold": 15,
-      "trail_activate": 1.0,
+      "trail_activate": 0.07,
       "tp1_r": 1.0,
       "tp1_pct": 0.5,
       "atr_trail_mult": 2.0,
       "min_confluence_score": 1,
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
-      "halt_duration_minutes": 60
+      "halt_duration_minutes": 60,
+      "trail_distance": 0.035
     },
     "WSP_M5": {
       "sl_atr_mult": 1.8,
       "cooldown_seconds": 60,
       "max_daily_trades": 8,
-      "trail_activate": 1.0,
+      "trail_activate": 3.0,
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
       "halt_duration_minutes": 60,
       "ema_fast": 8,
-      "ema_slow": 20
+      "ema_slow": 20,
+      "trail_distance": 1.5
     },
     "WSP_M15": {
       "sl_atr_mult": 3.0,
@@ -348,7 +365,7 @@
       "rsi_period": 7,
       "rsi_overbought": 80,
       "rsi_oversold": 30,
-      "trail_activate": 1.0,
+      "trail_activate": 3.0,
       "min_confluence_score": 1,
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
@@ -357,7 +374,8 @@
       "bb_std": 1.5,
       "ema_fast": 5,
       "ema_slow": 26,
-      "pullback_pct": 0.1
+      "pullback_pct": 0.1,
+      "trail_distance": 1.5
     },
     "WSP_M30": {
       "sl_atr_mult": 1.8,
@@ -369,14 +387,15 @@
       "rsi_period": 22,
       "rsi_overbought": 74,
       "rsi_oversold": 35,
-      "trail_activate": 1.0,
+      "trail_activate": 3.0,
       "min_confluence_score": 1,
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
       "halt_duration_minutes": 60,
       "ema_fast": 5,
       "ema_slow": 15,
-      "pullback_pct": 0.15
+      "pullback_pct": 0.15,
+      "trail_distance": 1.5
     },
     "WSP_H1": {
       "sl_atr_mult": 1.0,
@@ -387,11 +406,12 @@
       "adx_threshold": 15,
       "cooldown_seconds": 120,
       "pivot_timeframe": "H1",
-      "trail_activate": 1.0,
+      "trail_activate": 3.0,
       "min_confluence_score": 1,
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
-      "halt_duration_minutes": 60
+      "halt_duration_minutes": 60,
+      "trail_distance": 1.5
     },
     "WDO_M5": {
       "sl_atr_mult": 0.8,
@@ -405,42 +425,45 @@
       "ema_slow": 15,
       "macd_signal": 9,
       "macd_slow": 26,
-      "trail_activate": 1.0,
+      "trail_activate": 0.001,
       "min_confluence_score": 1,
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
       "halt_duration_minutes": 60,
       "bb_period": 18,
       "bb_std": 3.0,
-      "exit_period": 5,
-      "period": 25
+      "exit_period": 14,
+      "period": 30,
+      "trail_distance": 0.0006
     },
     "WDO_M15": {
-      "sl_atr_mult": 3.0,
-      "cooldown_seconds": 60,
-      "adx_threshold": 35,
+      "sl_atr_mult": 1.0,
+      "cooldown_seconds": 180,
+      "adx_threshold": 15,
       "ema_fast": 5,
       "ema_slow": 35,
-      "trail_activate": 1.0,
-      "trail_distance": 0.4,
+      "trail_activate": 0.001,
+      "trail_distance": 0.0006,
       "max_daily_trades": 10,
       "min_confluence_score": 1,
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
       "halt_duration_minutes": 60,
-      "pullback_pct": 0.15
+      "pullback_pct": 0.15,
+      "adx_period": 20
     },
     "WDO_M30": {
       "touch_pct": 0.0015,
       "cooldown_seconds": 600,
       "rsi_overbought": 78,
       "rsi_oversold": 22,
-      "trail_activate": 1.0,
+      "trail_activate": 0.001,
       "sl_atr_mult": 1.0,
       "min_confluence_score": 1,
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
-      "halt_duration_minutes": 60
+      "halt_duration_minutes": 60,
+      "trail_distance": 0.0006
     },
     "WDO_H1": {
       "sl_atr_mult": 1.0,
@@ -454,11 +477,12 @@
       "rsi_overbought": 80,
       "rsi_oversold": 20,
       "rsi_period": 10,
-      "trail_activate": 1.0,
+      "trail_activate": 0.001,
       "min_confluence_score": 1,
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
-      "halt_duration_minutes": 60
+      "halt_duration_minutes": 60,
+      "trail_distance": 0.0006
     }
   },
   "max_daily_trades": 999,
@@ -590,7 +614,7 @@
     "check_interval_min": 15
   },
   "day_trade_intent": {
-    "WIN_M5": true,
+    "WIN_M5": false,
     "WIN_M15": true,
     "BIT_M5": true,
     "BIT_M15": true,
@@ -628,5 +652,11 @@
   "_note_trailing_profit_lock": "Wave 1110 (23/07): Trailing Profit Lock — ratchet progressivo. Ativa em trailing_activation_pct do target, floor sobe linearmente de trailing_floor_pct×pico até 1.0×pico no target. Breach → fecha tudo + arma profit lock. Config: trailing_profit_lock_enabled, trailing_activation_pct, trailing_floor_pct.",
   "trailing_target_per_lot": 250.0,
   "_note_trailing_target_per_lot": "Target do trailing profit lock = R$250 x volume total das posicoes abertas. Ativa em 50% (R$125/lot), floor sobe ate 100% no target. Bruno 27/07.",
-  "trailing_fast_interval": 5
+  "trailing_fast_interval": 5,
+  "simulated_stop_level": {
+    "WIN": 300,
+    "WDO": 200,
+    "BIT": 500,
+    "WSP": 200
+  }
 }

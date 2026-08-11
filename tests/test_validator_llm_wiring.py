@@ -61,24 +61,35 @@ class TestValidatorLLMWiring(unittest.TestCase):
                 f"de 'minimax-oauth'). Output: {output[:500]}"
             )
 
-    def test_first_provider_is_minimax_oauth_not_minimax(self):
-        """O provider primário do validator deve ser 'minimax-oauth' (o nome
-        real no config.yaml), não 'minimax' (que não existe)."""
-        primary = self.v2._LLM_PROVIDERS[0]["provider"]
+    def test_first_provider_is_zenmux_free(self):
+        """Wave 880.F (Bruno 07/08): primário do validator é o zenmux free
+        (deepseek/deepseek-v4-flash-free), 1º da cadeia de uso LLM definida
+        pelo Bruno. NÃO é mais o modelo global do config.yaml."""
+        primary = self.v2._LLM_PROVIDERS[0]
         self.assertEqual(
-            primary, "minimax-oauth",
-            f"Provider primário deve ser 'minimax-oauth' (nome real no config.yaml), "
-            f"não '{primary}'. Bug: hermes retorna 'no final response was produced'."
+            primary["provider"], "zenmux",
+            f"Provider primário do validator ({primary['provider']}) ≠ "
+            f"zenmux. Wave 880.F: cadeia definida pelo Bruno."
+        )
+        self.assertEqual(
+            primary["model"], "deepseek/deepseek-v4-flash-free",
+            f"Model primário do validator ({primary['model']}) ≠ "
+            f"deepseek/deepseek-v4-flash-free."
         )
 
-    def test_fallback_provider_is_xiaomi(self):
-        """Provider secundário deve ser 'xiaomi' (mimo-v2.5-pro)."""
-        fallback = self.v2._LLM_PROVIDERS[1]["provider"]
-        model = self.v2._LLM_PROVIDERS[1]["model"]
-        self.assertEqual(fallback, "xiaomi",
-                         f"Fallback provider deve ser 'xiaomi', não '{fallback}'.")
-        self.assertEqual(model, "mimo-v2.5-pro",
-                         f"Fallback model deve ser 'mimo-v2.5-pro', não '{model}'.")
+    def test_chain_order_is_bruno_defined(self):
+        """Wave 880.F (Bruno 07/08): cadeia LLM na ordem:
+        zenmux-free → zenmux-flash → alibaba-flash-0731 → qwen3.8-max.
+        (deepseek-v4-pro REMOVIDO — Bruno 09/08.)"""
+        expected = [
+            ("zenmux", "deepseek/deepseek-v4-flash-free"),
+            ("zenmux", "deepseek/deepseek-v4-flash"),
+            ("alibaba-token-plan", "deepseek-v4-flash-0731"),
+            ("alibaba-token-plan", "qwen3.8-max"),
+        ]
+        got = [(p["provider"], p["model"]) for p in self.v2._LLM_PROVIDERS]
+        self.assertEqual(got, expected,
+                         f"Cadeia LLM ≠ ordem definida pelo Bruno. Got: {got}")
 
 
 if __name__ == "__main__":

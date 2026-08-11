@@ -79,9 +79,11 @@ def _ask_llm(prompt: str, timeout: int = None) -> dict:
         if not hermes_bin:
             _log("LLM abortou modify: hermes não encontrado (find_hermes=None)")
             return {"error": "hermes não encontrado (find_hermes=None)"}
-        # Provider: minimax-oauth (ativo no Hermes), fallback automático
+        # Wave 880.E (Bruno 07/08): puxa o modelo GLOBAL do hermes
+        # (alibaba-token-plan/deepseek-v4-flash-0731). Sem -m/--provider:
+        # o hermes usa o default configurado. Antes forçava minimax-oauth.
         result = subprocess.run(
-            [hermes_bin, "-z", prompt, "-m", "MiniMax-M3", "--provider", "minimax-oauth"],
+            [hermes_bin, "-z", prompt],
             capture_output=True, text=True, timeout=timeout,
             env={**__import__('os').environ, "WINEDEBUG": "-all"}
         )
@@ -600,6 +602,23 @@ def safe_modify_sl(symbol: str, ticket, sl_pts: int, entry_price: float = None,
             return result
 
         error = result.get("error", "")
+
+        # Wave 10/08 (Bruno 2026-08-10): retcode 10027 "No changes" = o SL
+        # pedido JÁ ESTÁ aplicado na posição (modify idempotente). Não é erro —
+        # é o estado ideal (posição protegida). Antes caía em UNKNOWN → LLM →
+        # timeout (cadeia degradada) → LLM abortou → EMERGENCY CLOSE de posição
+        # protegida (2x em 10/08: -R$5 e -R$19 desnecessários). Tratar como
+        # sucesso já no primeiro resultado: sem retry, sem LLM, sem emergency.
+        if "no changes" in str(error).lower():
+            _log(f"MODIFY {symbol} ticket={ticket}: 'No changes' — SL já aplicado "
+                 f"({sl_pts}pts), tratando como sucesso")
+            return {
+                "status": "ok",
+                "ticket": ticket,
+                "already_applied": True,
+                "new_sl": sl_pts,
+            }
+
         err_type = _classify_error(error)
         _log(f"MODIFY {symbol} ticket={ticket} falhou [{err_type}]: {error} (tentativa {attempt+1}/{MAX_RETRIES})")
 

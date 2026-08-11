@@ -56,8 +56,15 @@ SAFE_WRITE_TARGETS: list[tuple[str, type | tuple[type, ...], tuple[float, float]
     (r"^strategy_by_tf\.[A-Z]+_(M5|M15|M30|H1)$", str, None),
     # SL em múltiplos de ATR. Range conservador (Lei 5: não blow up risk).
     (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.sl_atr_mult$", float, (0.5, 5.0)),
-    # Trailing (mult OU distance). Range idêntico ao sl_atr_mult.
-    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.trail_(?:mult|distance)$", float, (0.5, 5.0)),
+    # Trailing (mult OU distance). Wave 880.F (07/08): range ampliado p/ poder
+    # apertar em symbols point<1.0 (WDO/WSP/BIT) onde 1 ATR em preço ~ R$8000+
+    # e a distância de trailing precisa ser fração pequena de ATR (ex 0.05).
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.trail_(?:mult|distance)$", float, (0.05, 5.0)),
+    # Wave 880.F (07/08): trail_activate — múltiplo de ATR pra ATIVAR o trailing
+    # por lucro. Range amplo (0.01 a 5.0) porque p/ símbolos com point<1.0
+    # (WDO/WSP/BIT) 1 ATR em preço ~ R$8000+ e o valor precisa ser pequeno
+    # (ex: 0.01-0.05) pra ativar em lucro razoável. AGI tune por (symbol, tf).
+    (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.trail_activate$", float, (0.0005, 5.0)),
     # Breakeven (r OU mult). Range mais apertado — breakeven muito agressivo
     # custa edge (PnL realizável encolhe).
     (r"^params_by_tf\.[A-Z]+_(M5|M15|M30|H1)\.breakeven_(?:r|mult)$", float, (0.5, 3.0)),

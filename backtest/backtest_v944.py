@@ -493,15 +493,22 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
 
             # Wave Melhoria 2: profit-lock por R.
             # Quando lucro atinge profit_lock_r × risco inicial, move SL pro
-            # entry + 1 tick (zero-loss). Usa sl_pts inicial (distância absoluta)
+            # entry (zero-loss). Usa sl_pts inicial (distância absoluta)
             # como 1R. be_done evita re-disparar; BE temporal abaixo também
             # reusa be_done (mutuamente exclusivos — quem disparar primeiro sela).
-            # Wave 880.B-AGI-PARIDADE: respeita stop_level do broker. Se o SL
-            # apertado (entry+1tick) cai dentro do stop_level, NÃO aplica (mantém
-            # SL anterior) — fiel à real que rejeita "Invalid stops".
+            # Wave 880.B-AGI-PARIDADE: respeita stop_level do broker. Replica o
+            # live (vt_autotrader.py PROFIT_LOCK): o lock NÃO é 1 tick do entry
+            # (sempre rejeitado "Invalid stops"), mas sim a distância segura
+            # stops_level×1.1+1 acima do entry — igual ao cmd_modify real.
             if not trail_on and not be_done and profit_lock_r > 0 and e_atr > 0 and sl_pts > 0:
                 if profit_pts >= profit_lock_r * sl_pts:
-                    _lock_sl = ep + tick_size if pos == 1 else ep - tick_size
+                    if sim_stops_level > 0:
+                        _min_lock_pts = max(int(sim_stops_level * 1.1) + 1, tick_size)
+                    else:
+                        _min_lock_pts = tick_size
+                    _lock_sl = ep + _min_lock_pts if pos == 1 else ep - _min_lock_pts
+                    # Replica o gate do live: se o lock ainda cai dentro do
+                    # stop_level (não deveria, mas degradado), mantém SL anterior.
                     _lock_dist = abs(ep - _lock_sl)
                     if sim_stops_level <= 0 or _lock_dist >= sim_stops_level:
                         be_done = True
