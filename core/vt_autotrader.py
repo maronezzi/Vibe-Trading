@@ -3356,6 +3356,10 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         # Fase 2.5: via truth layer (cache 2s) ao inves de chamar orchestrator direto.
         profit = None
         _profit_source = "fallback local"  # Wave 880.G: rastreia origem p/ note honesta
+        # Wave alerts-fix: ENUM_DEAL_REASON do deal de saída (0 = desconhecido).
+        # Antes o alerta "Fechou" mentia "SL no servidor" para qualquer close;
+        # agora derivamos Motivo (Telegram) + exit_reason (DB) deste código.
+        _exit_reason_code = 0
         # FIX 2026-07-26 (P0 bug dados — Qwen Code + Hermes): o loop original
         # dava break no PRIMEIRO deal com position_id match — que é o deal de
         # ENTRADA (mesma direção, profit=0, price=entry_price). O deal de SAÍDA
@@ -3381,6 +3385,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
                 profit = float(_exit_deal.profit) + float(_exit_deal.commission) + float(_exit_deal.swap)
                 if _exit_deal.price:
                     current_price = float(_exit_deal.price)
+                _exit_reason_code = int(getattr(_exit_deal, "reason", 0) or 0)
                 _profit_source = "broker-truth via MT5 history (exit deal)"
                 log(f"[FECHADO PELO SERVIDOR] MT5 history: profit=R$ {profit:.2f} price={_exit_deal.price}")
         except (OSError, ValueError, KeyError) as _he:
@@ -3418,6 +3423,35 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
                 profit = (entry_price - current_price) * _brl_per_pt
             log(f"[FECHADO PELO SERVIDOR] PnL local fallback: R$ {profit:.2f} (mult={_brl_per_pt})")
 
+        # Wave alerts-fix: deriva Motivo (Telegram) + exit_reason (DB) do
+        # ENUM_DEAL_REASON real do deal de saída. Cai em fallback honesto por
+        # sinal do PnL quando o broker não informou (reason 0) — nunca mente
+        # "SL no servidor" num fechamento lucrativo (bug histórico: todo close
+        # server-side virava SL_SERVIDOR, corrompendo alerta e stats do DB).
+        _reason_label = _truth.deal_reason_label(_exit_reason_code)
+        if _reason_label == "SL":
+            _motivo, _exit_reason = "SL atingido no servidor", "SL_SERVIDOR"
+        elif _reason_label == "TP":
+            _motivo, _exit_reason = "Alvo/TP atingido no servidor", "TP_SERVIDOR"
+        elif _reason_label == "SO":
+            _motivo, _exit_reason = "Stop Out (margem) no servidor", "STOP_OUT_SERVIDOR"
+        elif _reason_label == "ROLLOVER":
+            _motivo, _exit_reason = "Rollover da bolsa", "ROLLOVER_SERVIDOR"
+        elif _reason_label in ("CLIENT", "EXPERT"):
+            _motivo, _exit_reason = "Fechamento manual/EA no servidor", "MANUAL_SERVIDOR"
+        else:
+            # reason desconhecido/0: infere do PnL (aproximação honesta)
+            if profit is not None and profit <= 0:
+                _motivo, _exit_reason = "SL no servidor (provável)", "SL_SERVIDOR"
+            else:
+                _motivo, _exit_reason = "Alvo/TP no servidor (lucro)", "TP_SERVIDOR"
+
+        # Observabilidade (Wave alerts-fix): loga o reason_code bruto do MT5 +
+        # label resolvido. Permite calibrar DEAL_REASON_LABELS contra dados reais
+        # do broker sem precisar reabrir o manage_position.
+        log(f"[FECHADO PELO SERVIDOR] reason_code={_exit_reason_code} "
+            f"label='{_reason_label}' → motivo='{_motivo}' | profit=R$ {profit:.2f} ({_profit_source})")
+
         # Calcular preço teórico do SL que foi enviado pro broker — habilita
         # diagnóstico de slippage real (exit_price - exit_sl_price). Sem isso,
         # 100% dos SL_SERVIDOR ficam sem exit_sl_price gravado no DB
@@ -3443,7 +3477,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
         exit_result = log_exit(
             trade_log_id,
             exit_price=_exit_price_for_db,
-            exit_reason="SL_SERVIDOR",
+            exit_reason=_exit_reason,
             exit_ticket="server",
             exit_sl_price=exit_sl_price,
             swap=0,
@@ -3499,7 +3533,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
             f"• {direction} | {_pnl_emoji} R$ {pnl:+.2f}\n"
             f"• Entrada: {entry_price:.2f} → Saída: {_exit_price_for_db:.2f}\n"
             f"• Volume: {_volume} contrato(s) | Ticket: {_ticket}\n"
-            f"• Motivo: SL atingido no servidor{_duracao}\n"
+            f"• Motivo: {_motivo}{_duracao}\n"
             f"• PnL Dia: R$ {state.daily_pnl:+.2f} | {_ts}"
         )
 

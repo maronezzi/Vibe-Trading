@@ -128,7 +128,6 @@ def log_anomaly(symbol, event_type, data):
 _last_notify: dict[str, float] = {}
 
 DEBOUNCE_MINUTES = {
-    "VOLUME_SPIKE": 30,
     "VOLATILITY_SPIKE": 15,
     "DRAWDOWN": 10,
     "STREAK_LOSS": 5,
@@ -157,7 +156,6 @@ def notify(event_type: str, symbol: str, msg: str, tf: str = ""):
     _last_notify[key] = now
 
     icons = {
-        "VOLUME_SPIKE": "📈",
         "VOLATILITY_SPIKE": "⚡",
         "DRAWDOWN": "⚠️",
         "STREAK_LOSS": "🔻",
@@ -192,7 +190,6 @@ def fetch_snapshot(symbol: str, tf: str = "M5") -> dict:
     recent = bars[:20]
     volumes = [b["volume"] for b in recent]
     avg_vol = sum(volumes) / len(volumes) if volumes else 0
-    max_vol = max(volumes) if volumes else 0
 
     # Preço atual vs VWAP
     current = bars[0]["close"]
@@ -233,6 +230,7 @@ def fetch_snapshot(symbol: str, tf: str = "M5") -> dict:
         "symbol": symbol,
         "timeframe": tf,
         "price": current,
+        "last": tick_data.get("last", 0) if tick_data else 0,
         "bid": tick_data.get("bid", 0) if tick_data else 0,
         "ask": tick_data.get("ask", 0) if tick_data else 0,
         "spread": spread,
@@ -295,9 +293,8 @@ def detect_anomalies(snapshot: dict) -> list:
     if not buf or len(buf["volumes"]) < 5:
         return anomalies
 
-    avg_vol = sum(buf["volumes"]) / len(buf["volumes"])
+    # Wave alerts-fix: avg_vol removido (só alimentava o VOLUME_SPIKE, excluído).
     avg_atr = sum(buf["atrs"]) / len(buf["atrs"])
-    avg_spread = sum(buf["spreads"]) / len(buf["spreads"]) if any(s > 0 for s in buf["spreads"]) else 0
 
     # Enriquece snapshot com posição REAL do state (se houver).
     # snapshot.position vem de status()["positions"] (agregado MT5 do symbol),
@@ -336,29 +333,9 @@ def detect_anomalies(snapshot: dict) -> list:
         tf = tf_real or tf
 
 
-    # 1. Volume spike
-    if snapshot["current_volume"] > avg_vol * 2 and avg_vol > 0:
-        ratio = snapshot["current_volume"] / avg_vol
-        price = snapshot.get("price", 0)
-        vwap = snapshot.get("vwap", 0)
-        trend = snapshot.get("trend", "?")
-        pos = snapshot.get("position")
-        msg_parts = [
-            f"Volume {ratio:.0f}x acima do normal",
-            f"• Preço: {price:.2f} | VWAP: {vwap:.2f} ({snapshot.get('vwap_distance_pct', 0):+.2f}%)",
-            f"• Tendência: {trend} | ATR: {snapshot.get('atr', 0):.0f}",
-        ]
-        if pos:
-            pdir = "BUY" if str(pos.get("type", "")).endswith("BUY") or pos.get("type") in (0,) else "SELL"
-            pnl = pos.get("profit", 0)
-            emoji = "🟢" if pnl >= 0 else "🔴"
-            msg_parts.append(f"• Posição: {pdir} {pos.get('price_open', 0):.2f} {emoji} R$ {pnl:.2f}")
-        anomalies.append({
-            "type": "VOLUME_SPIKE",
-            "severity": "ALTO" if ratio > 3 else "MÉDIO",
-            "msg": "\n".join(msg_parts),
-            "tf": tf
-        })
+    # 1. Volume spike — REMOVIDO (Wave alerts-fix): o trigger comparava o volume
+    # da barra M5 em *formação* (incompleta) com a média de barras *fechadas*,
+    # gerando falso-positivo sistemático. Sem detector confiável, melhor excluir.
 
     # 2. Volatilidade spike
     if avg_atr > 0 and snapshot["atr"] > avg_atr * 2:
@@ -385,7 +362,13 @@ def detect_anomalies(snapshot: dict) -> list:
     pos = snapshot.get("position")
     if pos:
         entry = pos.get("price_open", 0)
-        current = snapshot.get("price", 0)
+        # Wave alerts-fix: "Atual" usa tick ao vivo (last → mid → close de barra).
+        # Antes usava bars[0]["close"] (última barra M5 *fechada*), que fica até
+        # 1 barra defasado vs MT5 e fazia o alerta parecer "sempre errado".
+        _last = snapshot.get("last", 0)
+        _bid, _ask = snapshot.get("bid", 0), snapshot.get("ask", 0)
+        _mid = (_bid + _ask) / 2 if (_bid + _ask) > 0 else 0
+        current = _last or _mid or snapshot.get("price", 0)
         _dir_raw = pos.get("type", "")
         direction = "BUY" if (isinstance(_dir_raw, int) and _dir_raw == 0) else (
             "SELL" if isinstance(_dir_raw, int) else _dir_raw)
@@ -416,13 +399,10 @@ def detect_anomalies(snapshot: dict) -> list:
                 if sl_price and entry:
                     if direction == "BUY":
                         sl_dist = abs(current - sl_price) if current else 0
-                        sl_total = abs(entry - sl_price)
                     else:
                         sl_dist = abs(sl_price - current) if current else 0
-                        sl_total = abs(sl_price - entry)
-                    sl_pct = (1 - sl_dist / sl_total * 100) if sl_total > 0 else 0
                 else:
-                    sl_dist = sl_total = sl_pct = 0
+                    sl_dist = 0
                 # Duração
                 duration = ""
                 try:

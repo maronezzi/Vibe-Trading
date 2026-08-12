@@ -816,6 +816,12 @@ def cmd_history(symbol=None, days=7, position=None):
             "symbol": d.symbol,
             "type": "BUY" if d.type == 0 else "SELL",
             "deal_type": d.reason,
+            # Wave alerts-fix: expõe também na chave "reason" — ENUM_DEAL_REASON
+            # int (SL=4, TP=5, SO=6, ROLLOVER=7). Antes só existia "deal_type",
+            # mas vt_truth.Deal lê d.get("reason") → reason ficava sempre 0 e o
+            # alerta "Fechou" mentia "SL no servidor" em qualquer fechamento.
+            # Mantém "deal_type" p/ não quebrar quem já lê (reconcile/etc).
+            "reason": d.reason,
             "volume": d.volume,
             "price": d.price,
             "profit": d.profit,

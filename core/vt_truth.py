@@ -242,6 +242,31 @@ class Deal:
     comment: str = ""
 
 
+# ENUM_DEAL_REASON (MQL5) — int retornado por deal.reason no MT5.
+# Valores canônicos: CLIENT=0, MOBILE=1, WEB=2, EXPERT=3, SL=4, TP=5,
+# SO=6 (Stop Out), ROLLOVER=7. Tratamos 2 e 3 como EXPERT (ambos são
+# fechamento por EA/terminal/mobile) e o resto como desconhecido ("")
+# para o caller cair no fallback honesto por sinal do PnL — nunca mente.
+DEAL_REASON_LABELS: dict[int, str] = {
+    0: "CLIENT",
+    2: "EXPERT",
+    3: "EXPERT",
+    4: "SL",
+    5: "TP",
+    6: "SO",
+    7: "ROLLOVER",
+}
+
+
+def deal_reason_label(reason: int) -> str:
+    """Converte ENUM_DEAL_REASON (int) em label estável ('SL','TP','SO',...).
+
+    Retorna '' se desconhecido — o caller deve então inferir o motivo por
+    other signal (ex.: sinal do PnL) em vez de assumir 'SL'.
+    """
+    return DEAL_REASON_LABELS.get(int(reason or 0), "")
+
+
 # ===== 1. get_open_positions =====
 def get_open_positions(magic_filter: int = MAGIC_VIBETRADING) -> List[Position]:
     """Retorna posicoes abertas no MT5 (autoritativo), filtradas por magic.

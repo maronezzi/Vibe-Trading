@@ -132,6 +132,13 @@ class TestDrawdownCorrectPnl(unittest.TestCase):
         profit correto (real, não stale agregado)."""
         snap = _make_snapshot_wdo_sell_problematic()
         snap["price"] = 5170.0  # CONTRA o SELL (subiu)
+        # Wave alerts-fix: o DRAWDOWN agora usa tick ao vivo (last→mid→price) em
+        # vez de bars[0]['close']. Em produção last/bid/ask/price vêm todos do
+        # mesmo tick() — precisam ser consistentes no mock para simular preço
+        # subindo a 5170 (cenário CONTRA o SELL).
+        snap["last"] = 5170.0
+        snap["bid"] = 5169.5
+        snap["ask"] = 5170.0
         # Substitui o profit agregado por um real
         # WDO: 11pts * R$10/pt * 1 (mini, vol 1) = R$ -110
         snap["position"]["profit"] = -110.0
