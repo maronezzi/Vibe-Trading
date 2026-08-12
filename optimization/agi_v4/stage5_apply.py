@@ -35,6 +35,11 @@ MIN_ITERS_BEFORE_DEACTIVATE = int(
     os.environ.get("VT_AGI_MIN_ITERS_BEFORE_DEACTIVATE", "5")
 )
 
+# Wave zombie-fix (Bruno 12/08): FRAMEWORK_PARAMS (gestão/saída) é definido no
+# guardrails (fonte canônica) e importado lazy em _compute_zombie_drop para
+# evitar import circular. Estes params NUNCA são dropados ao limpar params
+# zombie — senão mudaríamos SL/TP/trailing ao vivo sem validação.
+
 
 def run(ctx: dict) -> dict:
     """Aplica candidatos cuja simulação supera o baseline simulado.
@@ -393,6 +398,51 @@ def _build_change(pair, strategy, params, full):
     }
 
 
+def _compute_zombie_drop(
+    new_cfg: dict, pair: str, strategy_name: str, cand_params: dict
+) -> list[str]:
+    """Computa params zombie de params_by_tf[pair] que a NOVA estratégia não lê.
+
+    Wave zombie-fix (Bruno 12/08): ao trocar de estratégia, params_by_tf[pair]
+    guardava valores da antiga (ex: rsi_period). O runtime faz
+    ``merged = {**base, **params_by_tf[pair]}``, então a nova rodava com valores
+    NÃO backtesteados (divergência runtime≠backtest).
+
+    Default-keep absoluto: só dropa com CERTEZA. Mantém se o param:
+      - é lido pela nova estratégia (read_param_names via AST), OU
+      - é param de framework (FRAMEWORK_PARAMS — SL/TP/trailing), OU
+      - foi trazido pelo candidato (cand_params — validado no backtest).
+    Qualquer dúvida (AST não pega helper externo) → mantém (falha segura).
+
+    Returns:
+        Lista de nomes de params a remover de params_by_tf[pair].
+    """
+    current = (new_cfg.get("params_by_tf") or {}).get(pair, {}) or {}
+    if not current:
+        return []
+    # Keep-set: o que a nova estratégia lê + framework + o que o candidato traz.
+    try:
+        from optimization.agi_v4.guardrails import FRAMEWORK_PARAMS
+    except ImportError:
+        return []  # sem keep-list de framework — não dropa (falha segura)
+    keep = set(FRAMEWORK_PARAMS) | set((cand_params or {}).keys())
+    try:
+        from optimization.agi_v4.param_tuner import read_param_names
+        from optimization.exhaustive_strategy_search import strategy_path_by_name
+        path = strategy_path_by_name(strategy_name)
+        if path:
+            keep |= read_param_names(path)
+    except Exception as e:
+        log.debug(f"zombie_drop {pair}: keep-set indisponível ({e}) — não dropa")
+        return []
+    # Drop-set: tudo que está no config E não está no keep-set.
+    drop = [k for k in current if k not in keep]
+    if drop:
+        log.info(f"zombie_drop {pair} ({strategy_name}): removendo {len(drop)} "
+                 f"param(s) zombie: {drop}")
+    return drop
+
+
 def _write_to_config(config, change, pair):
     """Salva mudança no config. SEMPRE recarrega do disco antes (read-modify-write).
 
@@ -425,6 +475,20 @@ def _write_to_config(config, change, pair):
     new_cfg = load_config(force=True)
     target = change.get("target", {})
 
+    # Wave zombie-fix (Bruno 12/08): computa params zombie para remoção ANTES da
+    # validação (o guardrail valida params_by_tf_drop). _write_to_config só roda
+    # em produção (não-dry_run), então o drop é sempre legítimo. Default-keep:
+    # só dropa o que a nova estratégia definitivamente não lê (_compute_zombie_drop).
+    try:
+        drop = _compute_zombie_drop(
+            new_cfg, pair, change.get("strategy", ""), change.get("params", {})
+        )
+        if drop:
+            target = dict(target)  # não muta o change original
+            target["params_by_tf_drop"] = {pair: drop}
+    except Exception as e:
+        log.debug(f"zombie_drop {pair}: falhou ({e}) — não dropa")
+
     # Wave 875.G: validar ANTES de aplicar. Se violar guardrail, abort sem save.
     # Wave AGI-alerts (Bruno 12/08): antes este branch fazia `return` silencioso —
     # o AGI queria escrever em campo protegido e ninguém ficava sabendo (a
@@ -444,6 +508,16 @@ def _write_to_config(config, change, pair):
         new_cfg.setdefault("strategy_by_tf", {})[k] = v
     for k, v in target.get("params_by_tf", {}).items():
         new_cfg.setdefault("params_by_tf", {}).setdefault(k, {}).update(v)
+
+    # Wave zombie-fix (Bruno 12/08): executa a remoção de params zombie (já
+    # validada por validate_target_block via params_by_tf_drop). Após o merge,
+    # antes do save. Default-keep: só chega aqui o que _compute_zombie_drop
+    # calculou com certeza (não lido + não framework + não do candidato).
+    for pair_key, drop_keys in (target.get("params_by_tf_drop") or {}).items():
+        bucket = new_cfg.get("params_by_tf", {}).get(pair_key)
+        if isinstance(bucket, dict):
+            for dk in drop_keys:
+                bucket.pop(dk, None)
 
     # Wave AGI-soberano (Bruno 01/08): se o AGI validou que um par é lucrativo
     # (passou profitability + walk-forward + regra1), ele é SOBERANO para decidir

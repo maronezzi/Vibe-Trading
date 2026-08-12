@@ -250,5 +250,160 @@ class TestGuardrailRegistry(unittest.TestCase):
         # (aceita ou não depende da whitelist estática, não do registry)
 
 
+class TestOrderingFix(unittest.TestCase):
+    """#1: validate_target_block usa a estratégia PRETENDIDA (do target), não a
+    antiga do disco. Sem isto, params próprios de uma AGI4 recém-aplicada caem em
+    default-deny (o _check_sanctioned consulta a estratégia velha)."""
+
+    def setUp(self):
+        gr.clear_sanctioned_params()
+
+    def tearDown(self):
+        gr.clear_sanctioned_params()
+
+    def test_sanctioned_accepted_when_strategy_in_target(self):
+        # AGI4_X sanciona breakout_lookback (não está na whitelist estática).
+        gr.register_sanctioned_params("AGI4_X", {"breakout_lookback": (int, 5, 100)})
+        # Disco: WIN_M5 ainda usa a estratégia ANTIGA.
+        config = {"strategy_by_tf": {"WIN_M5": "VELHA"}}
+        # Target aplica AGI4_X + seu param próprio no mesmo bloco.
+        target = {
+            "strategy_by_tf": {"WIN_M5": "AGI4_X"},
+            "params_by_tf": {"WIN_M5": {"breakout_lookback": 20}},
+        }
+        # Deve PASSAR: effective_config usa AGI4_X (do target) → sancionado.
+        gr.validate_target_block(target, config)  # não levanta
+
+    def test_rejected_when_strategy_not_sanctioned(self):
+        # Ninguém sanciona breakout_lookback para OUTRA.
+        config = {"strategy_by_tf": {"WIN_M5": "VELHA"}}
+        target = {
+            "strategy_by_tf": {"WIN_M5": "OUTRA"},
+            "params_by_tf": {"WIN_M5": {"breakout_lookback": 20}},
+        }
+        with self.assertRaises(gr.GuardrailReject):
+            gr.validate_target_block(target, config)
+
+
+class TestReadParamNames(unittest.TestCase):
+    """read_param_names extrai params.get E params[...] (subscript defensivo)."""
+
+    def test_captures_get_and_subscript(self):
+        src = '''
+STRATEGY_NAME = "TEST_READ"
+def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
+    a = params.get("ema_fast", 9)
+    b = params["hard_key"]
+    return None
+'''
+        p = _write_strat(src)
+        names = pt.read_param_names(p)
+        self.assertIn("ema_fast", names)
+        self.assertIn("hard_key", names)  # subscript defensivo
+
+    def test_empty_on_parse_error(self):
+        self.assertEqual(pt.read_param_names("/nonexistent/x.py"), set())
+
+
+class TestZombieDrop(unittest.TestCase):
+    """#3: _compute_zombie_drop (default-keep). Só dropa o que a nova estratégia
+    não lê E não é framework E não veio do candidato."""
+
+    def _make_strat(self, name, params_src):
+        """Cria estratégia temporária e patcheia strategy_path_by_name p/ achá-la."""
+        src = f'''
+STRATEGY_NAME = "{name}"
+def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
+    calc_sl = utils["calc_sl"]
+    {params_src}
+    sl_pts = calc_sl(symbol, atr, params)
+    return {{"direction": "BUY", "sl_pts": sl_pts, "info": {{}}}}
+'''
+        path = _write_strat(src)
+        return path
+
+    def test_removes_unread_non_framework(self):
+        # Nova estratégia lê SÓ ema_fast. Config tem rsi_period (zombie) +
+        # ema_fast (lido) + sl_atr_mult (framework).
+        from optimization.agi_v4 import stage5_apply as s5
+        path = self._make_strat("TEST_Z1", 'ema = params.get("ema_fast", 9)')
+        new_cfg = {"params_by_tf": {"WIN_M5": {
+            "rsi_period": 7, "ema_fast": 9, "sl_atr_mult": 1.5}}}
+        with patch("optimization.exhaustive_strategy_search.strategy_path_by_name",
+                   return_value=str(path)):
+            drop = s5._compute_zombie_drop(new_cfg, "WIN_M5", "TEST_Z1", {})
+        self.assertIn("rsi_period", drop)
+        self.assertNotIn("ema_fast", drop)   # lido pela nova
+        self.assertNotIn("sl_atr_mult", drop)  # framework
+
+    def test_framework_never_dropped(self):
+        from optimization.agi_v4 import stage5_apply as s5
+        # Estratégia não lê sl_atr_mult nem cooldown, mas são framework → mantidos.
+        path = self._make_strat("TEST_Z2", 'x = params.get("x", 1)')
+        new_cfg = {"params_by_tf": {"WIN_M5": {
+            "sl_atr_mult": 1.5, "cooldown_seconds": 300, "x": 1}}}
+        with patch("optimization.exhaustive_strategy_search.strategy_path_by_name",
+                   return_value=str(path)):
+            drop = s5._compute_zombie_drop(new_cfg, "WIN_M5", "TEST_Z2", {})
+        self.assertNotIn("sl_atr_mult", drop)
+        self.assertNotIn("cooldown_seconds", drop)
+
+    def test_cand_params_kept(self):
+        from optimization.agi_v4 import stage5_apply as s5
+        # breakout_lookback não é lido pela nova, mas veio no candidato → mantido.
+        path = self._make_strat("TEST_Z3", 'x = params.get("x", 1)')
+        new_cfg = {"params_by_tf": {"WIN_M5": {"breakout_lookback": 20, "x": 1}}}
+        with patch("optimization.exhaustive_strategy_search.strategy_path_by_name",
+                   return_value=str(path)):
+            drop = s5._compute_zombie_drop(
+                new_cfg, "WIN_M5", "TEST_Z3", {"breakout_lookback": 20})
+        self.assertNotIn("breakout_lookback", drop)
+
+    def test_empty_when_no_current_params(self):
+        from optimization.agi_v4 import stage5_apply as s5
+        drop = s5._compute_zombie_drop({}, "WIN_M5", "TEST_Z4", {})
+        self.assertEqual(drop, [])
+
+
+class TestZombieDropGuardrail(unittest.TestCase):
+    """#3: validate_target_block valida params_by_tf_drop (defensivo)."""
+
+    def test_validates_drop_block_ok(self):
+        config = {"params_by_tf": {"WIN_M5": {"rsi_period": 7}}}
+        target = {"params_by_tf_drop": {"WIN_M5": ["rsi_period"]}}
+        gr.validate_target_block(target, config)  # não levanta
+
+    def test_rejects_framework_drop(self):
+        config = {"params_by_tf": {"WIN_M5": {"sl_atr_mult": 1.5}}}
+        target = {"params_by_tf_drop": {"WIN_M5": ["sl_atr_mult"]}}
+        with self.assertRaises(gr.GuardrailReject):
+            gr.validate_target_block(target, config)
+
+    def test_rejects_nonexistent_drop(self):
+        config = {"params_by_tf": {"WIN_M5": {"a": 1}}}
+        target = {"params_by_tf_drop": {"WIN_M5": ["inexistente"]}}
+        with self.assertRaises(gr.GuardrailReject):
+            gr.validate_target_block(target, config)
+
+
+class TestStrategyPathByName(unittest.TestCase):
+    """#2: helper name→path (infra do bootstrap e do zombie keep-set)."""
+
+    def test_returns_none_for_unknown(self):
+        from optimization.exhaustive_strategy_search import strategy_path_by_name
+        self.assertIsNone(strategy_path_by_name("ESTRATEGIA_INEXISTENTE_XYZ"))
+
+    def test_returns_path_for_known(self):
+        from optimization.exhaustive_strategy_search import (
+            strategy_path_by_name, ALL_STRATEGIES,
+        )
+        if not ALL_STRATEGIES:
+            self.skipTest("sem estratégias no ambiente")
+        name = ALL_STRATEGIES[0]
+        path = strategy_path_by_name(name)
+        self.assertIsNotNone(path)
+        self.assertTrue(Path(path).exists())
+
+
 if __name__ == "__main__":
     unittest.main()

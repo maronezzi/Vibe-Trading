@@ -314,6 +314,20 @@ def _format_type_name(expected: type | tuple[type, ...]) -> str:
     return expected.__name__
 
 
+# ─── Framework params keep-list (Wave zombie-fix, Bruno 12/08) ──────────────
+# Params de gestão/saída lidos pelo MOTOR (backtest_v944 + vt_autotrader),
+# independentes da estratégia. NUNCA são dropados ao limpar params zombie —
+# senão mudaríamos SL/TP/trailing ao vivo sem validação. Fonte canônica; o
+# stage5_apply importa daqui (evita duplicação / import circular).
+FRAMEWORK_PARAMS = frozenset({
+    "sl_atr_mult", "cooldown_seconds", "max_consecutive_losses",
+    "halt_duration_minutes", "profit_lock_r", "tp1_r", "tp1_pct", "tp2_r",
+    "tp2_pct", "atr_trail_mult", "trail_activate", "trail_distance",
+    "breakeven_minutes", "max_position_minutes", "hard_exit_minutes",
+    "max_daily_trades", "min_confluence_score",
+})
+
+
 # ─── Sanctioned params registry (Wave AGI-param-tuning, Bruno 12/08) ────────
 # Permite que uma estratégia AGI4 (gerada pelo LLM) tenha seus params PRÓPRIOS
 # escritos no config, MESMO sem entrada em SAFE_WRITE_TARGETS. Mantém default-
@@ -514,10 +528,13 @@ class GuardrailReject(Exception):
 __all__ = [
     "SAFE_WRITE_TARGETS",
     "FORBIDDEN_TARGETS",
+    "FRAMEWORK_PARAMS",
     "normalize_target_key",
     "classify_disabled_timeframes_change",
     "validate_write_target",
     "validate_target_block",
+    "register_sanctioned_params",
+    "clear_sanctioned_params",
     "GuardrailReject",
 ]
 
@@ -549,8 +566,45 @@ def validate_target_block(
         for k, v in (params or {}).items():
             flat.append((normalize_target_key("params_by_tf", sym_tf, k), v))
 
+    # Wave AGI-param-tuning fix (Bruno 12/08): o target pode estar aplicando uma
+    # NOVA estratégia (strategy_by_tf) JUNTO com seus params próprios
+    # (params_by_tf). Validar os params contra a estratégia PRETENDIDA (do target),
+    # não a antiga do disco — senão _check_sanctioned consulta a estratégia velha
+    # e rejeita os params próprios na 1ª aplicação da AGI4 naquele par. O merge é
+    # só para leitura de strategy_by_tf; demais gates são insensíveis a ele.
+    base_cfg = current_config or {}
+    eff_strategy = dict(base_cfg.get("strategy_by_tf") or {})
+    eff_strategy.update(target.get("strategy_by_tf") or {})
+    effective_config = dict(base_cfg)
+    effective_config["strategy_by_tf"] = eff_strategy
+
     for key_path, value in flat:
-        ok, reason = validate_write_target(key_path, value, current_config)
+        ok, reason = validate_write_target(key_path, value, effective_config)
         if not ok:
             raise GuardrailReject(reason=reason, key_path=key_path)
+
+    # Wave zombie-fix (Bruno 12/08): valida a remoção de params zombie
+    # (params_by_tf_drop). Cada key dropada deve (i) ser string, (ii) existir no
+    # config atual do par, e (iii) NÃO ser param de framework (defensivo — nunca
+    # dropar SL/TP/trailing). O _compute_zombie_drop já exclui framework, mas o
+    # guardrail re-checa (belt-and-suspenders) antes de autorizar o pop.
+    base_cfg_drop = current_config or {}
+    for pair_key, drop_keys in (target.get("params_by_tf_drop") or {}).items():
+        drop_path = f"params_by_tf_drop.{pair_key}"
+        if not isinstance(pair_key, str):
+            raise GuardrailReject(reason=f"par drop inválido: {pair_key!r}",
+                                  key_path=drop_path)
+        pair_params = (base_cfg_drop.get("params_by_tf") or {}).get(pair_key, {}) or {}
+        for dk in drop_keys or []:
+            if not isinstance(dk, str):
+                raise GuardrailReject(
+                    reason=f"drop key inválida (não-str): {dk!r}", key_path=drop_path)
+            if dk not in pair_params:
+                raise GuardrailReject(
+                    reason=f"drop '{dk}' não existe em params_by_tf.{pair_key}",
+                    key_path=drop_path)
+            if dk in FRAMEWORK_PARAMS:
+                raise GuardrailReject(
+                    reason=f"drop '{dk}' é param de framework (não removível)",
+                    key_path=drop_path)
 

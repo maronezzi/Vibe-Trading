@@ -74,6 +74,35 @@ def run(days: int = 7,
             log.error(f"[{TAG}] falha ao carregar config: {e}")
             config = {}
 
+    # Wave AGI-param-tuning (Bruno 12/08): registra sanctioned params das AGI4_*
+    # promovidas no PROCESSO PRINCIPAL. O Stage 3 roda em ProcessPoolExecutor
+    # (processos separados); o registry _SANCTIONED_PARAMS é por-processo, então
+    # o registro tem que acontecer aqui — onde o Stage 5 (que valida a escrita)
+    # roda. Sem isto, params próprios de AGI4 existentes seriam rejeitados pelo
+    # guardrail (default-deny). Fail-safe: falha aqui só loga (não derruba).
+    try:
+        from optimization.agi_v4.param_tuner import sanctioned_spec
+        from optimization.agi_v4.guardrails import register_sanctioned_params
+        from optimization.exhaustive_strategy_search import (
+            strategy_path_by_name, ALL_STRATEGIES,
+        )
+        n_reg = 0
+        for _name in ALL_STRATEGIES:
+            if not _name.startswith("AGI4_"):
+                continue
+            _path = strategy_path_by_name(_name)
+            if not _path:
+                continue
+            _spec = sanctioned_spec(_path)
+            if _spec:
+                register_sanctioned_params(_name, _spec)
+                n_reg += 1
+        if n_reg:
+            log.info(f"[{TAG}] bootstrap AGI4 sanctioned: {n_reg} estratégia(s) "
+                     f"registrada(s) no processo principal")
+    except Exception as e:
+        log.warning(f"[{TAG}] bootstrap AGI4 sanctioned falhou: {e}")
+
     # Contexto inicial
     ctx: dict[str, Any] = {
         "tag": TAG,

@@ -55,6 +55,37 @@ def _discover_all_strategies() -> list:
 
 ALL_STRATEGIES = _discover_all_strategies()
 
+
+# Wave AGI-param-tuning (Bruno 12/08): mapeamento name -> path absoluto do .py.
+# Populado uma vez no import (module-level). Reusa o mesmo glob de
+# _discover_all_strategies. Usado por param_tuner (zombie keep-set) e pelo
+# bootstrap de grids AGI4 (Stage 3 existentes).
+def _discover_name_to_path() -> dict:
+    out: dict = {}
+    strategies_dir = _Path_exhaust(__file__).resolve().parent.parent / "strategies"
+    if not strategies_dir.exists():
+        return out
+    for py in sorted(strategies_dir.glob("*.py")):
+        if py.name == "__init__.py":
+            continue
+        try:
+            t = py.read_text(encoding="utf-8")
+            m = _re_exhaust.search(r"^STRATEGY_NAME\s*=\s*[\"\'](.+?)[\"\']", t, _re_exhaust.MULTILINE)
+            if m and m.group(1) not in out:
+                out[m.group(1)] = str(py)
+        except Exception:
+            continue
+    return out
+
+
+_STRATEGY_PATHS = _discover_name_to_path()
+
+
+def strategy_path_by_name(name: str) -> str | None:
+    """Retorna o path absoluto do .py de uma estratégia pelo STRATEGY_NAME."""
+    return _STRATEGY_PATHS.get(name)
+
+
 ALL_SYMBOLS = ["WIN", "BIT", "WSP", "WDO"]
 ALL_TIMEFRAMES = ["M5", "M15", "M30", "H1"]
 
@@ -273,6 +304,53 @@ STRATEGY_PARAM_GRIDS = {
 # dim), 30 era subsampling agressivo demais que descartava bons candidatos.
 # 80 ainda cabe em ~33min para 16 pares × 43 estratégias no AGI v4.
 MAX_COMBOS_PER_STRATEGY = 80
+
+
+def _bootstrap_agi4_grids() -> None:
+    """Popula STRATEGY_PARAM_GRIDS dinamicamente para AGI4_* promovidas.
+
+    Wave AGI-param-tuning (Bruno 12/08): AGI4_* não têm entrada estática em
+    STRATEGY_PARAM_GRIDS, então o Stage 3 só testa seus universais (sl_atr_mult
+    × cooldown = 56 combos) — nunca os params próprios. Este bootstrap extrai os
+    top-2 params próprios de cada AGI4 (via param_tuner) e os injeta no grid.
+
+    LIMITAÇÃO deliberada: top-2 params × 1 valor (extremo oposto ao default) por
+    estratégia. Com os 56 universais: 56 × 2 = 112 combos → cap de 80 do
+    _generate_param_combos subamostra preservando extremos. Tuning fino fica no
+    Stage 4b (estratégias novas) e no sweep manual. Não toca em
+    _generate_param_combos nem nos caps — só popula o dict mutável existente.
+
+    Roda module-level no import, então é visível em todos os processos
+    (incl. workers do ProcessPoolExecutor do Stage 3).
+    """
+    try:
+        from optimization.agi_v4.param_tuner import extract_tunable_params
+    except ImportError:
+        return  # param_tuner indisponível (ex: teste isolado) — sem bootstrap
+    for name, path in _STRATEGY_PATHS.items():
+        if not name.startswith("AGI4_") or name in STRATEGY_PARAM_GRIDS:
+            continue  # só AGI4 sem entrada estática
+        try:
+            tunables = extract_tunable_params(path)
+        except Exception:
+            continue
+        if not tunables:
+            continue
+        # Top-2 params próprios × extremo oposto ao default (1 valor por param).
+        grid = {}
+        for p, t in list(tunables.items())[:2]:
+            kind, d, lo, hi = t["kind"], t["default"], t["lo"], t["hi"]
+            # Extremo oposto: se default mais perto de lo, usa hi; vice-versa.
+            far = hi if abs(d - lo) >= abs(d - hi) else lo
+            if kind == "int":
+                grid[p] = [int(round(far))]
+            else:
+                grid[p] = [round(float(far), 6)]
+        if grid:
+            STRATEGY_PARAM_GRIDS[name] = grid
+
+
+_bootstrap_agi4_grids()
 
 
 def _test_pair_worker(args):

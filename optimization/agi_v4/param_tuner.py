@@ -131,6 +131,45 @@ def _extract_defaults_fallback(tree: ast.AST) -> dict[str, float]:
     return defaults
 
 
+def read_param_names(strategy_path: str | Path) -> set[str]:
+    """Extrai TODOS os nomes de params que a estratégia LÊ (Wave zombie-fix).
+
+    Diferente de ``_extract_defaults_fallback`` (só numéricos com default), esta
+    captura TODO param acessado — via ``params.get("x", ...)`` **ou** ``params["x"]``
+    (subscript) — independentemente de tipo/default. Usada para computar o
+    keep-set ao limpar params zombie: se a nova estratégia lê o param, ele fica.
+
+    Retorna um set de nomes (sem defaults). Defensiva: ``params["x"]`` sem default
+    também é capturado (evita dropar um param que causaria KeyError em runtime).
+    """
+    names: set[str] = set()
+    try:
+        src = Path(strategy_path).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+    except Exception:
+        return names
+    for node in ast.walk(tree):
+        # params.get("x", ...) — Call com func params.get.
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "params"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            names.add(node.args[0].value)
+            continue
+        # params["x"] — Subscript defensivo (sem default).
+        if (isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name) and node.value.id == "params"):
+            key = node.slice
+            # Python 3.8/3.9: slice é o nó direto; 3.10+ pode envolver ast.Index
+            # (removido no 3.9+). Constant str cobre o uso comum params["x"].
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                names.add(key.value)
+    return names
+
+
 def _extract_tunable_decl(tree: ast.AST) -> dict[str, tuple[str, float, float]]:
     """Lê ``TUNABLE_PARAMS = {"param": (tipo, min, max), ...}`` do AST.
 
