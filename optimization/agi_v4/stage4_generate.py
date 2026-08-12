@@ -145,7 +145,10 @@ def run(ctx: dict) -> dict:
         # Se a estratégia gerada passou no backtest_gate, adiciona em
         # search_results (com flag generated) para o stage5 aplicar+promover.
         if result.get("backtest_gate") == "passed" and result.get("backtest"):
-            pair = hyp.get("pair", "")
+            # Wave cross-pair: se a estratégia foi salva noutro par (0 trades
+            # no alvo original), usa o par VENCEDOR — senão o Stage 5 aplicaria
+            # no par errado (o alvo que falhou).
+            pair = result.get("winning_pair") or hyp.get("pair", "")
             search_results.append({
                 "pair": pair,
                 "strategy": result["name"],
@@ -250,6 +253,17 @@ def _generate_and_validate_one(
         full = sim_result.get("full", {}) or {}
         n_trades = full.get("n_trades", 0)
         if n_trades == 0:
+            # Wave cross-pair (Bruno 11/08/2026): 0 trades no par ALVO não
+            # significa "sem edge" — a mesma lógica pode funcionar noutro
+            # par/TF (ex: estratégia p/ WIN_M5 que tem edge em WSP_H1). Antes
+            # de rejeitar, testa nos pares ativos alternativos. Se aprovar em
+            # algum (gate COMPLETO: profitability + walk-forward), salva p/ o
+            # Stage 5 promover no par vencedor. NENHUMA relaxação de gate.
+            cross_winner = _try_cross_pair_salvage(
+                strat_name, pending_path, hypothesis, pair, ctx, thresholds
+            )
+            if cross_winner is not None:
+                return cross_winner
             log.info(
                 f"{strat_name} REJEITADA: simulação gerou 0 trades em 30d "
                 f"(sem edge no backtest). Não há motivo para manter em _pending/."
@@ -625,6 +639,56 @@ def _simulate_generated(strat_name: str, pair: str, ctx: dict, thresholds: dict)
     except Exception as e:
         log.debug(f"Simulação {strat_name} falhou (não crítico): {e}")
         return None
+
+
+def _try_cross_pair_salvage(
+    strat_name: str,
+    pending_path: Path,
+    hypothesis: dict,
+    target_pair: str,
+    ctx: dict,
+    thresholds: dict,
+) -> dict | None:
+    """Tenta salvar uma estratégia que deu 0 trades no par ALVO, testando-a
+    nos demais pares ativos antes de rejeitar (Wave cross-pair, Bruno 11/08).
+
+    Uma estratégia gerada p/ WIN_M5 pode ter edge em WSP_H1 ou BIT_M30. Roda
+    cross_pair_evaluator.cross_evaluate nos pares ativos (excluindo o alvo).
+    Se algum aprovar (gate COMPLETO: profitability + walk-forward), retorna um
+    _approved_strategy com winning_pair preenchido p/ o Stage 5 promover no
+    par vencedor. Caso contrário None (mantém o fluxo de rejeição).
+
+    NENHUMA relaxação: reusa evaluate_candidate com os mesmos thresholds. O
+    fallback só SALVA estratégias que passariam no gate do par vencedor; nunca
+    aprova algo que os gates reprovariam.
+    """
+    try:
+        from optimization.agi_v4.cross_pair_evaluator import cross_evaluate, active_pairs
+        config = ctx.get("config", {}) or {}
+        candidates = active_pairs(config)
+        winner = cross_evaluate(
+            strat_name, pending_path, candidates, config, thresholds,
+            exclude={target_pair},
+        )
+    except Exception as e:
+        log.debug(f"cross-pair salvage {strat_name}: falhou ({e})")
+        return None
+
+    if winner is None:
+        return None
+
+    approved = _approved_strategy(
+        strat_name, pending_path, hypothesis,
+        backtest=winner["full"], backtest_gate="passed",
+        walk_forward=winner.get("walk_forward", []),
+    )
+    approved["winning_pair"] = winner["pair"]
+    log.info(
+        f"↩️ SALVA cross-pair: {strat_name} tinha 0 trades em {target_pair} mas "
+        f"passou em {winner['pair']} (PnL=R${winner['full'].get('total_pnl', 0):.2f}, "
+        f"PF={winner['full'].get('pf', 0):.2f}) — Stage 5 vai promover no par vencedor"
+    )
+    return approved
 
 
 # ═══════════════════════════════════════════════════════════════════
