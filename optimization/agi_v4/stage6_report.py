@@ -308,12 +308,17 @@ def _build_telegram_message(ctx: dict) -> str:
         aprovadas = [g for g in generated if g.get("status") == "approved_pending"]
         aprov_passed = [g for g in aprovadas if g.get("backtest_gate") == "passed"]
         salvages = [g for g in aprov_passed if g.get("winning_pair")]
+        # Wave AGI-param-tuning: estratégias com params próprios otimizados
+        # (nasciam com params={} antes desta wave; agora vêm já tunadas).
+        tunadas = [g for g in aprov_passed if g.get("tuned_params")]
         rejeitadas = [g for g in generated if g.get("status") == "rejected"]
         gates = {}
         for g in rejeitadas:
             gk = g.get("gate", "?")
             gates[gk] = gates.get(gk, 0) + 1
         parts = [f"{len(generated)} gerada(s)", f"{len(aprov_passed)} aprov."]
+        if tunadas:
+            parts.append(f"{len(tunadas)} otim.")
         if rejeitadas:
             gates_str = ", ".join(f"{g}:{n}" for g, n in sorted(gates.items()))
             parts.append(f"{len(rejeitadas)} rej ({gates_str})")
@@ -322,6 +327,10 @@ def _build_telegram_message(ctx: dict) -> str:
             bt = s.get("backtest") or {}
             lines.append(f"   ↩️ {s.get('name','?')} → {s.get('winning_pair','?')} "
                          f"(R$ {bt.get('total_pnl',0):.0f})")
+        for t in tunadas[:3]:
+            tp = t.get("tuned_params") or {}
+            tp_str = ", ".join(f"{k}={v}" for k, v in list(tp.items())[:3])
+            lines.append(f"   🔧 {t.get('name','?')} otimizada ({tp_str})")
 
     # ── Otimização de lucrativos (2c) ──
     profit_opts = ctx.get("profit_optimizations", []) or []

@@ -301,8 +301,42 @@ def ast_gate(plugin_path: str | Path) -> GateResult:
                     reason=f"import proibido em plugin: from {mod} import ...",
                 )
 
+    # 5. (Opcional) TUNABLE_PARAMS — Wave AGI-param-tuning: se a estratégia
+    # declara TUNABLE_PARAMS = {"param": (tipo, min, max), ...}, valida que é um
+    # dict bem-formado. NÃO-FATAL: se ausente ou malformado, a estratégia ainda é
+    # válida (o param_tuner faz fallback AST dos params.get). Só loga warning.
+    _validate_tunable_params_decl(tree, plugin_path)
+
     return GateResult(passed=True, gate_name="ast",
                       details={"file": str(plugin_path)})
+
+
+def _validate_tunable_params_decl(tree: ast.AST, plugin_path: Path) -> None:
+    """Valida (não-fatal) a declaração TUNABLE_PARAMS. Loga warning se malformada.
+
+    Reusa ``param_tuner._eval_tunable_dict`` para checar consistência (lazy import
+    evita acoplamento no carregamento do módulo). Presença bem-formada habilita o
+    tuning com ranges pensados pelo LLM; ausência/malformação cai no fallback AST.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "TUNABLE_PARAMS" for t in node.targets):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            log.warning(f"ast_gate: TUNABLE_PARAMS em {plugin_path.name} não é "
+                        f"dict — ignorado (tuning via fallback AST)")
+            return
+        try:
+            from optimization.agi_v4.param_tuner import _eval_tunable_dict
+            parsed = _eval_tunable_dict(node.value)
+        except Exception:
+            parsed = {}
+        if not parsed:
+            log.warning(f"ast_gate: TUNABLE_PARAMS em {plugin_path.name} malformada "
+                        f"(esperado dict[str, (int|float, min, max)]) — ignorado "
+                        f"(tuning via fallback AST)")
+        return  # só a primeira declaração relevance
 
 
 # ═══════════════════════════════════════════════════════════════════

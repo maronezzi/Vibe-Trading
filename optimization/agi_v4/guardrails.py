@@ -314,6 +314,100 @@ def _format_type_name(expected: type | tuple[type, ...]) -> str:
     return expected.__name__
 
 
+# ─── Sanctioned params registry (Wave AGI-param-tuning, Bruno 12/08) ────────
+# Permite que uma estratégia AGI4 (gerada pelo LLM) tenha seus params PRÓPRIOS
+# escritos no config, MESMO sem entrada em SAFE_WRITE_TARGETS. Mantém default-
+# deny: só params que a própria estratégia sancionou (via TUNABLE_PARAMS no .py,
+# validado pelo ast_gate, ou extraídos deterministicamente por AST) são aceitos.
+#
+# Precedente: "AGI-soberano" (classify_disabled_timeframes_change, 01/08) já
+# estabeleceu que o AGI pode ganhar autoridade de escrita por validação, com
+# path dedicado — sem relaxar a whitelist global estática.
+#
+# O registry vive no processo do pipeline (module-level). É populado por
+# register_sanctioned_params() no Stage 4b (param_tuner.tune_strategy) ANTES do
+# Stage 5 aplicar. Não persiste entre processos — cada run do cron re-registra.
+#
+# Formato: {strategy_name: {param_name: (python_type, lo, hi)}}
+_SANCTIONED_PARAMS: dict[str, dict[str, tuple[type, float, float]]] = {}
+
+
+def register_sanctioned_params(strategy_name: str, spec: dict[str, tuple]) -> None:
+    """Registra params sancionados para uma estratégia AGI4.
+
+    Args:
+        strategy_name: nome da estratégia (ex: "AGI4_BIT_063144").
+        spec: {param_name: (python_type, lo, hi)} — type é int/float, (lo, hi)
+            é o range inclusivo. Ex: {"ema_fast": (int, 5, 30)}.
+    """
+    if not strategy_name or not isinstance(spec, dict):
+        return
+    # Normaliza: só mantém entradas bem-formadas (type + 2 numéricos).
+    clean = {}
+    for param, entry in spec.items():
+        if not isinstance(param, str) or not isinstance(entry, (tuple, list)):
+            continue
+        if len(entry) != 3:
+            continue
+        t, lo, hi = entry
+        if t not in (int, float):
+            continue
+        try:
+            lo_f, hi_f = float(lo), float(hi)
+        except (TypeError, ValueError):
+            continue
+        clean[param] = (t, lo_f, hi_f)
+    if clean:
+        _SANCTIONED_PARAMS[strategy_name] = clean
+        log.debug(f"sanctioned params registrados para {strategy_name}: "
+                  f"{list(clean.keys())}")
+
+
+def clear_sanctioned_params() -> None:
+    """Limpa o registry (hermeticidade entre testes / entre runs se necessário)."""
+    _SANCTIONED_PARAMS.clear()
+
+
+def _check_sanctioned(
+    key_path: str, value: Any, current_config: dict | None
+) -> tuple[bool | None, str]:
+    """Valida um write contra o registry de sanctioned params.
+
+    Returns:
+        (True, "ok") — param sancionado pela estratégia atual do par e válido.
+        (False, reason) — param sancionado mas tipo/range inválido.
+        (None, None) — não aplicável (não é params_by_tf, par sem estratégia,
+            ou param não sancionado). Caller segue para default-deny.
+    """
+    parts = key_path.split(".")
+    # params_by_tf.<PAIR>.<PARAM> tem exatamente 3 segmentos.
+    if len(parts) != 3 or parts[0] != "params_by_tf":
+        return None, None
+    pair, param = parts[1], parts[2]
+    config = current_config or {}
+    strategy = (config.get("strategy_by_tf") or {}).get(pair)
+    if not strategy:
+        return None, None
+    spec = _SANCTIONED_PARAMS.get(strategy, {}).get(param)
+    if spec is None:
+        return None, None  # não sancionado → default-deny permanence
+    expected_type, lo, hi = spec
+    if not _type_matches(value, expected_type):
+        return (
+            False,
+            f"target '{key_path}' valor {type(value).__name__} "
+            f"não é {_format_type_name(expected_type)} (sanctioned)",
+        )
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value < lo or value > hi:
+            return (
+                False,
+                f"target '{key_path}'={value} fora do range "
+                f"[{lo}, {hi}] (sanctioned)",
+            )
+    return True, "ok"
+
+
 def validate_write_target(
     key_path: str,
     value: Any,
@@ -386,6 +480,15 @@ def validate_write_target(
                         f"[{lo}, {hi}]",
                     )
             return True, "ok"
+
+    # 3.5 Sanctioned params (Wave AGI-param-tuning): params declarados pela
+    # própria estratégia AGI4 (TUNABLE_PARAMS no .py, validado pelo ast_gate, ou
+    # extraídos via AST). Mantém default-deny: só abre exceção para params que a
+    # estratégia sancionou explicitamente. _check_sanctioned retorna None quando
+    # não aplicável → cai para o default-deny abaixo.
+    sanctioned = _check_sanctioned(key_path, value, current_config)
+    if sanctioned[0] is not None:
+        return sanctioned
 
     # 4. Default-deny — não está em whitelist nem forbidden, então bloqueia.
     return (

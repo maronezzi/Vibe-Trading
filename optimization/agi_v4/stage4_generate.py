@@ -149,10 +149,18 @@ def run(ctx: dict) -> dict:
             # no alvo original), usa o par VENCEDOR — senão o Stage 5 aplicaria
             # no par errado (o alvo que falhou).
             pair = result.get("winning_pair") or hyp.get("pair", "")
+
+            # Wave AGI-param-tuning (Bruno 12/08): otimiza os params PRÓPRIOS da
+            # estratégia nova (antes nascia com params={}, congelada nos defaults
+            # do LLM). Em dry-run pula (economiza MT5; Stage 5 não escreve).
+            # Best-effort: se falhar, mantém params={} (estado anterior).
+            tuned = _tune_generated(pair, result, config, thresholds) if not dry_run else {}
+            result["tuned_params"] = tuned
+
             search_results.append({
                 "pair": pair,
                 "strategy": result["name"],
-                "params": {},
+                "params": tuned,
                 "full": result["backtest"],
                 "walk_forward": result.get("walk_forward", []),
                 "gates_passed": ["ast", "profitability", "walk_forward"],
@@ -442,6 +450,13 @@ REGRAS OBRIGATÓRIAS:
 4. SANDBOX: NÃO importar nada (sem import os, subprocess, mt5, etc). Receba tudo via utils e params.
 5. Retornar None se não há sinal, ou dict {{"direction": "BUY"/"SELL", "sl_pts": int, "info": {{...}}}}
 6. Params via params.get("nome", default)
+7. TUNABLE_PARAMS (opcional, mas recomendado): declare no nível do módulo um
+   dict com os 3-5 params PRINCIPAIS que controlam o setup da estratégia, no
+   formato {{"param": (tipo, min, max)}}. tipo é int ou float (sem aspas). Estes
+   serão otimizados automaticamente. Exemplo:
+       TUNABLE_PARAMS = {{"ema_fast": (int, 5, 30), "adx_min": (float, 15.0, 35.0)}}
+   Use ranges SENSATOS para o param (não genéricos). Params de gestão (sl_atr_mult,
+   cooldown_seconds) NÃO incluir — eles são otimizados à parte.
 
 CONTRATO DOS INDICADORES (utils) — TIPOS DE RETORNO EXATOS:
 No início de check_entry, extraia os helpers para nomes locais:
@@ -639,6 +654,33 @@ def _simulate_generated(strat_name: str, pair: str, ctx: dict, thresholds: dict)
     except Exception as e:
         log.debug(f"Simulação {strat_name} falhou (não crítico): {e}")
         return None
+
+
+def _tune_generated(
+    pair: str, result: dict, config: dict, thresholds: dict
+) -> dict:
+    """Wave AGI-param-tuning: otimiza params próprios de uma estratégia gerada.
+
+    Wrapper best-effort sobre ``param_tuner.tune_strategy``. Antes desta wave,
+    estratégias novas nasciam com ``params={}`` (congeladas nos defaults do LLM).
+    Agora extrai os params tunable (TUNABLE_PARAMS declarado ou fallback AST),
+    roda grid search e retorna o melhor — desde que supere os defaults.
+
+    Returns:
+        dict de params otimizado, ou ``{}`` se falhar/sem ganho (mantém defaults).
+    """
+    if "_" not in pair:
+        return {}
+    sym, tf = pair.split("_", 1)
+    try:
+        from optimization.agi_v4 import param_tuner
+        return param_tuner.tune_strategy(
+            sym, tf, result["name"], result["path"], config, thresholds
+        ) or {}
+    except Exception as e:
+        log.warning(f"tune_generated {result.get('name', '?')}: falhou ({e}) "
+                    f"— sem tuning, mantém defaults")
+        return {}
 
 
 def _try_cross_pair_salvage(
