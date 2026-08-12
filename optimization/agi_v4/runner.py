@@ -118,6 +118,43 @@ def _acquire_run_lock():
     return fd
 
 
+# ─── Notificações de lifecycle Telegram (Wave AGI-alerts, Bruno 12/08) ──────
+# START e FATAL avisam o operador pelo mesmo canal do relatório final. Reusam
+# send_brief do stage6 (mesmo TELEGRAM_TARGET, thread :1). Fail-safe absoluto:
+# qualquer falha é silenciada — o cron nunca derruba por causa do Telegram.
+
+
+def _notify_start(mode: str, days: int, max_it: int, dry_run: bool) -> None:
+    """Avisa o início da run. Fail-safe: nunca levanta."""
+    log = logging.getLogger("agi_v4.runner")
+    try:
+        from datetime import datetime as _dt
+        from optimization.agi_v4.stage6_report import send_brief
+        mode_label = "🔍 DRY-RUN" if dry_run else "⚡ PROD"
+        ts = _dt.now().strftime("%H:%M")
+        send_brief(
+            f"🚀 AGI v4 START {mode_label}\n"
+            f"• days={days} mode={mode} iters≤{max_it} | {ts}",
+            retries=0,  # não-bloqueante: 1 tentativa só
+        )
+    except Exception as e:
+        log.debug(f"notify_start falhou (não crítico): {e}")
+
+
+def _notify_fatal(exc: Exception) -> None:
+    """Avisa crash fatal. Fail-safe: nunca levanta. 2 retries (importante)."""
+    log = logging.getLogger("agi_v4.runner")
+    try:
+        from optimization.agi_v4.stage6_report import send_brief
+        msg = str(exc).strip().splitlines()[0][:200] if str(exc).strip() else "sem detalhes"
+        send_brief(
+            f"💀 AGI v4 FALHOU\n• {type(exc).__name__}: {msg}",
+            retries=2,
+        )
+    except Exception as e:
+        log.debug(f"notify_fatal falhou (não crítico): {e}")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point principal. Retorna exit code (0 = sucesso)."""
     args = _parse_args(argv)
@@ -166,6 +203,12 @@ def main(argv: list[str] | None = None) -> int:
     log.info(f"═══ AGI v4 START ═══ days={args.days} mode={mode} "
              f"max_iterations={max_it} dry_run={effective_dry_run}")
 
+    # Wave AGI-alerts (Bruno 12/08): notifica o início da run. Antes, se a run
+    # travava em 4h ou caía, o operador nem sabia que tinha começado (só recebia
+    # o relatório final, se chegasse). Mensagem curta, fail-safe (nunca derruba
+    # o cron se hermes estiver indisponível).
+    _notify_start(mode, args.days, max_it, effective_dry_run)
+
     try:
         try:
             # Import robusto: funciona tanto como módulo (python -m) quanto como
@@ -182,6 +225,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         except Exception as e:
             log.error(f"═══ AGI v4 FATAL ═══ pipeline.run falhou: {e}", exc_info=True)
+            # Wave AGI-alerts (Bruno 12/08): antes um crash era 100% silencioso
+            # no Telegram — o operador só descobria ao notar a ausência do
+            # relatório final. Agora avisa imediatamente (2 retries: crash é
+            # importante, vale o backoff). Fail-safe: nunca derruba o exit.
+            _notify_fatal(e)
             return 1
 
         # Resumo final no log (cron captura para /tmp/vt_agi_v4.log)

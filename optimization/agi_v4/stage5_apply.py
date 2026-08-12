@@ -59,6 +59,16 @@ def run(ctx: dict) -> dict:
     ctx["applied_changes"] = applied
     ctx["rejected_changes"] = rejected
 
+    # Wave AGI-alerts (Bruno 12/08): accumulator do run INTEIRO. O Stage 5 roda
+    # ~6-8x por execução (loop de failing + final_deactivation + lucrativos), e
+    # ctx["applied_changes"] é REPLACE a cada chamada (intencional —
+    # _optimize_profitable_pairs depende disso para capturar só os lucrativos em
+    # profit_optimizations). Sem este accumulator, as mudanças que consertaram
+    # pares perdedores no loop SOMEM do relatório Telegram final (só a última
+    # chamada vencia). O Stage 6 lê estas chaves para o retrato completo do run.
+    ctx.setdefault("all_applied_changes", []).extend(applied)
+    ctx.setdefault("all_rejected_changes", []).extend(rejected)
+
     # Wave AGI-soberano (Bruno 01/08): reativa pares lucrativos que estão
     # bloqueados. O stage1 popula ctx["profitable_pairs"] com pares cuja
     # simulação 30d deu PnL>0. Se algum desses está em disabled_timeframes,
@@ -345,6 +355,17 @@ def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: d
                 f"{f' + hoje {today_weight}×R${_base_today:.2f}({_base_tn}t)' if _base_tn >= today_min else ''})"
             )
         except Exception as e:
+            # Wave AGI-alerts (Bruno 12/08): GuardrailReject tem tratamento
+            # dedicado (gate="guardrail_reject") para aparecer no Telegram como
+            # evento de segurança. _write_to_config agora PROPAGA a exceção em
+            # vez de engoli-la silenciosamente. Import lazy: guardrails pode
+            # estar ausente (ImportError tratado em _write_to_config).
+            try:
+                from optimization.agi_v4.guardrails import GuardrailReject
+                if isinstance(e, GuardrailReject):
+                    return _reject(cand, "guardrail_reject", e.reason)
+            except ImportError:
+                pass
             return _reject(cand, "write_error", str(e))
     else:
         change["written"] = False
@@ -405,6 +426,10 @@ def _write_to_config(config, change, pair):
     target = change.get("target", {})
 
     # Wave 875.G: validar ANTES de aplicar. Se violar guardrail, abort sem save.
+    # Wave AGI-alerts (Bruno 12/08): antes este branch fazia `return` silencioso —
+    # o AGI queria escrever em campo protegido e ninguém ficava sabendo (a
+    # rejeição não entrava em rejected_changes). Agora PROPAGA a exceção para
+    # _apply_one registrar como gate="guardrail_reject" (visível no Telegram).
     if _GUARDRAILS_AVAILABLE:
         try:
             validate_target_block(target, new_cfg)
@@ -413,7 +438,7 @@ def _write_to_config(config, change, pair):
                 f"AGI GUARDRAIL rejeitou {_format_target_for_log(target, pair)}: "
                 f"{exc.reason}"
             )
-            return  # não escreve nada; mantém estado anterior do disco
+            raise  # não escreve nada; mantém estado anterior do disco
 
     for k, v in target.get("strategy_by_tf", {}).items():
         new_cfg.setdefault("strategy_by_tf", {})[k] = v

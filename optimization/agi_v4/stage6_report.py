@@ -187,11 +187,51 @@ def _send_telegram(ctx: dict) -> bool:
     return False
 
 
+def send_brief(msg: str, retries: int = 0) -> bool:
+    """Envia mensagem Telegram curta (lifecycle: START/FATAL). Fail-safe.
+
+    Wave AGI-alerts (Bruno 12/08): notificações de lifecycle do runner (início da
+    run e crash). Diferente do relatório final (montado por _build_telegram_message
+    + _send_telegram com 3 tentativas), esta envia texto direto sem montagem.
+
+    Args:
+        msg: texto a enviar (manter curto — <4000 chars, o limite do Telegram).
+        retries: tentativas extras com 10s de backoff. START usa 0 (não-bloqueante);
+            FATAL usa 2 (importante — vale o backoff). Default 0.
+
+    Returns:
+        True se enviou, False caso contrário. NUNCA levanta.
+    """
+    import time as _time
+    try:
+        from core.vt_hermes_helper import hermes_send
+    except ImportError:
+        log.debug("vt_hermes_helper não disponível — send_brief skip")
+        return False
+
+    for attempt in range(1, retries + 2):  # 1 + retries tentativas
+        try:
+            if hermes_send(TELEGRAM_TARGET, msg, timeout=30):
+                return True
+            log.warning(f"send_brief tentativa {attempt}/{retries+1} falhou")
+        except Exception as e:
+            log.warning(f"send_brief tentativa {attempt}/{retries+1} exceção: {e}")
+        if attempt <= retries:
+            _time.sleep(10)
+    return False
+
+
 def _build_telegram_message(ctx: dict) -> str:
     """Constrói mensagem Telegram compacta e informativa."""
+    # Wave AGI-alerts (Bruno 12/08): relatório retrata o run INTEIRO — estratégias
+    # geradas (Stage 4), cross-pair salvages, otimização de lucrativos, condição
+    # de término real (convergiu/estagnou/deadline), métricas completas dos
+    # applied e acumulador de todas as mudanças (não só a última chamada do S5).
     converged = ctx.get("converged", False)
-    applied = ctx.get("applied_changes", [])
-    rejected = ctx.get("rejected_changes", [])
+    stagnated = ctx.get("stagnated", False)
+    deadline_hit = ctx.get("deadline_hit", False)
+    iters = ctx.get("current_iteration", 0)
+    duration_s = ctx.get("duration_s", 0) or 0
     failing = ctx.get("failing_pairs", [])
     dry_run = ctx.get("dry_run", True)
     perf = ctx.get("performance", {})
@@ -201,14 +241,39 @@ def _build_telegram_message(ctx: dict) -> str:
     reactivated = ctx.get("reactivated", [])
     deactivated = ctx.get("deactivated", [])
 
+    # ── Condição de término (1c): distinguir convergiu/estagnou/deadline ──
+    if stagnated:
+        icon, term = "🔄", f"ESTAGNOU ({iters} it)"
+    elif deadline_hit:
+        icon, term = "⏰", f"DEADLINE ({iters} it)"
+    elif converged:
+        icon, term = "✅", "CONVERGIU"
+    else:
+        icon, term = "🔄", "ITERANDO"
+
+    # Duração compacta: "12min" ou "1h05".
+    dur_min = duration_s / 60.0
+    if dur_min >= 60:
+        dur_str = f"{int(dur_min // 60)}h{int(dur_min % 60):02d}min"
+    else:
+        dur_str = f"{dur_min:.0f}min"
+
     mode = "🔍 DRY-RUN" if dry_run else "⚡ APLICADO"
-    icon = "✅" if converged else "🔄"
     ts = datetime.now().strftime("%H:%M:%S")
 
     lines = [
         f"{icon} *AGI v4 — {mode}*",
-        f"• Convergiu: {'sim' if converged else 'não (ainda iterando)'} | {ts}",
+        f"• {term} | {dur_str} | {ts}",
     ]
+
+    # ── Banner de dia inválido (2a) ──
+    # /tmp/vt_invalid_day.flag → o AGI suprimiu todas as mudanças hoje.
+    try:
+        import os as _os
+        if _os.path.exists("/tmp/vt_invalid_day.flag"):
+            lines.append("• 🚫 Dia inválido — mudanças suprimidas")
+    except Exception:
+        pass
 
     # Performance resumida por símbolo
     if by_symbol:
@@ -237,27 +302,69 @@ def _build_telegram_message(ctx: dict) -> str:
         mais = f" (+{len(deactivated)-6})" if len(deactivated) > 6 else ""
         lines.append(f"• 🔒 DESATIVOU {len(deactivated)} par(es) failing: {pairs_str}{mais}")
 
-    # Mudanças
-    if applied:
-        lines.append(f"• ✅ {len(applied)} mudança(s) aprovada(s):")
-        for a in applied[:3]:
-            ch = a.get("change", {})
-            c = a.get("candidate", {})
-            lines.append(f"  → {ch.get('pair','')} {ch.get('strategy','')} "
-                        f"(PF {c.get('backtest_result',{}).get('pf',0):.2f})")
-
-    if rejected:
+    # ── Estratégias geradas (Stage 4) + cross-pair salvages (2b) ──
+    generated = ctx.get("generated_strategies", []) or []
+    if generated:
+        aprovadas = [g for g in generated if g.get("status") == "approved_pending"]
+        aprov_passed = [g for g in aprovadas if g.get("backtest_gate") == "passed"]
+        salvages = [g for g in aprov_passed if g.get("winning_pair")]
+        rejeitadas = [g for g in generated if g.get("status") == "rejected"]
         gates = {}
-        for r in rejected:
+        for g in rejeitadas:
+            gk = g.get("gate", "?")
+            gates[gk] = gates.get(gk, 0) + 1
+        parts = [f"{len(generated)} gerada(s)", f"{len(aprov_passed)} aprov."]
+        if rejeitadas:
+            gates_str = ", ".join(f"{g}:{n}" for g, n in sorted(gates.items()))
+            parts.append(f"{len(rejeitadas)} rej ({gates_str})")
+        lines.append("• 🧪 " + " | ".join(parts))
+        for s in salvages[:3]:
+            bt = s.get("backtest") or {}
+            lines.append(f"   ↩️ {s.get('name','?')} → {s.get('winning_pair','?')} "
+                         f"(R$ {bt.get('total_pnl',0):.0f})")
+
+    # ── Otimização de lucrativos (2c) ──
+    profit_opts = ctx.get("profit_optimizations", []) or []
+    if profit_opts:
+        lines.append(f"• ⬆️ {len(profit_opts)} otimização(ões) em pares lucrativos")
+
+    # ── Mudanças aprovadas (2d): accumulator + métricas completas ──
+    # all_applied_changes acumula o run inteiro (Stage 5 roda várias vezes).
+    # Dedup por par (última vence = estado final do config) para não inflar.
+    all_applied = ctx.get("all_applied_changes") or ctx.get("applied_changes") or []
+    by_pair = {}
+    for a in all_applied:
+        pair = (a.get("change") or {}).get("pair", "")
+        if pair:
+            by_pair[pair] = a
+    if by_pair:
+        lines.append(f"• ✅ {len(by_pair)} par(es) com nova estratégia:")
+        for pair, a in list(by_pair.items())[:5]:
+            ch = a.get("change", {})
+            bt = ch.get("backtest", {})
+            strat = ch.get("strategy", "")
+            pf = bt.get("pf", 0)
+            wr = bt.get("wr", 0)
+            nt = bt.get("n_trades", 0)
+            max_dd = bt.get("max_dd", 0)
+            base_pnl = ch.get("baseline_simulated_pnl", 0)
+            lines.append(f"   → {pair} {strat} (PF {pf:.2f} WR {wr:.0f}% {nt}t "
+                         f"maxDD R${max_dd:.0f}) vs base R${base_pnl:.0f}")
+
+    # ── Rejeitadas por gates (accumulator — agora inclui guardrail_reject) ──
+    all_rejected = ctx.get("all_rejected_changes") or ctx.get("rejected_changes") or []
+    if all_rejected:
+        gates = {}
+        for r in all_rejected:
             g = r.get("gate", "?")
             gates[g] = gates.get(g, 0) + 1
-        gates_str = ", ".join(f"{g}:{n}" for g, n in gates.items())
-        lines.append(f"• ❌ {len(rejected)} rejeitada(s) por gates ({gates_str})")
+        gates_str = ", ".join(f"{g}:{n}" for g, n in sorted(gates.items()))
+        lines.append(f"• ❌ {len(all_rejected)} rejeitada(s) por gates ({gates_str})")
 
     if failing and not converged:
         pair_strs = [f["pair"] if isinstance(f, dict) else f for f in failing[:5]]
         lines.append(f"• 🔻 {len(failing)} par(es) perdedor(es): {', '.join(pair_strs)}")
 
-    lines.append(f"• Audit: /tmp/vt_agi_v4_audit.json")
+    lines.append("• Audit: /tmp/vt_agi_v4_audit.json")
 
     return "\n".join(lines)
