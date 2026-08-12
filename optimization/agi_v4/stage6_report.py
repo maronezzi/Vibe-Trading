@@ -337,6 +337,16 @@ def _build_telegram_message(ctx: dict) -> str:
     if profit_opts:
         lines.append(f"• ⬆️ {len(profit_opts)} otimização(ões) em pares lucrativos")
 
+    # ── Sweep _pending/ (Wave AGI-sweep) ──
+    # O AGI varre TODO o strategies/_pending/: testa em todos os pares ativos,
+    # otimiza params das que têm edge e promove as melhores.
+    sweep = ctx.get("sweep_promotions", []) or []
+    if sweep:
+        pairs_sweep = sorted({(p.get("change") or {}).get("pair", "")
+                              for p in sweep if isinstance(p, dict)})
+        pairs_str = ", ".join(p for p in pairs_sweep if p)[:60]
+        lines.append(f"• 🧹 Sweep _pending/: {len(sweep)} promovida(s) ({pairs_str})")
+
     # ── Mudanças aprovadas (2d): accumulator + métricas completas ──
     # all_applied_changes acumula o run inteiro (Stage 5 roda várias vezes).
     # Dedup por par (última vence = estado final do config) para não inflar.

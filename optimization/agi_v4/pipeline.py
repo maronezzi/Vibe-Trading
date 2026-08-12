@@ -159,6 +159,7 @@ def run(days: int = 7,
         # Wave 881: mesmo sem failing pairs, roda otimização dos lucrativos
         # (busca estratégias/params melhores que a baseline atual).
         _optimize_profitable_pairs(ctx)
+        _run_sweep_pending(ctx)
         _safe_run_stage(ctx, 6, "report", "stage6_report")
         ctx["ended_at"] = datetime.now().isoformat()
         ctx["duration_s"] = time.time() - start_ts
@@ -305,6 +306,12 @@ def run(days: int = 7,
     _safe_run_stage(ctx, 5, "apply_final_deactivation", "stage5_apply")
     _optimize_profitable_pairs(ctx)
 
+    # Wave AGI-sweep (Bruno 12/08): varre TODO o strategies/_pending/, testa em
+    # todos os pares ativos, otimiza params e promove as que têm edge. Antes era
+    # um script manual (e quebrado — writer não autorizado). Agora fecha o ciclo:
+    # o AGI gera → põe em _pending → sweep testa tudo → promove as boas.
+    _run_sweep_pending(ctx)
+
     # ── Stage 6: Relatório (sempre roda) ──
     _safe_run_stage(ctx, 6, "report", "stage6_report")
 
@@ -414,6 +421,25 @@ def _optimize_profitable_pairs(ctx: dict) -> None:
     n_opt = len(ctx["profit_optimizations"])
     log.info(f"[{TAG}] Otimização de lucrativos concluída — "
              f"{n_opt} melhoria(s) aplicada(s)")
+
+
+def _run_sweep_pending(ctx: dict) -> None:
+    """Wave AGI-sweep (Bruno 12/08): varre strategies/_pending/ no pipeline.
+
+    Delega a ``sweep_pending.run(ctx)`` (smoke + cross-evaluate em todos os pares
+    + tune + promote via stage5). Fail-safe: exceção só loga — nunca derruba o
+    pipeline. O sweep testa as estratégias acumuladas em _pending/ em TODOS os
+    índices/TFs ativos, otimiza params das que têm edge e promove as melhores.
+    """
+    try:
+        from optimization.agi_v4 import sweep_pending
+        result = sweep_pending.run(ctx)
+        summary = result.get("summary", "") if isinstance(result, dict) else ""
+        ctx["audit"].append({"stage": "sweep_pending", "ok": True, "summary": summary})
+        log.info(f"[{TAG}] Sweep _pending/ OK — {summary}")
+    except Exception as e:
+        log.error(f"[{TAG}] Sweep _pending/ FALHOU: {e}", exc_info=True)
+        ctx["audit"].append({"stage": "sweep_pending", "ok": False, "error": str(e)})
 
 
 def _safe_run_stage(ctx: dict, stage_num: int, stage_name: str, module_name: str) -> None:
