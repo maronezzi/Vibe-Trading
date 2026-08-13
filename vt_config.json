@@ -619,10 +619,13 @@
     "max_sl_pts_by_symbol": {
       "WIN": 600
     },
-    "_doc": "Wave AGI-exec-guards (13/08): max_slippage_pts = descarta entrada se o preço andou mais que isso contra o sinal (incidente 13/08: fills 430-655pts adversos). max_sl_pts = teto do SL em pontos (incidente 13/08: SL 785pts = -R$158 num stop). Só afeta símbolos listados; 0/ausente = off."
+    "_doc": "Wave AGI-exec-guards (13/08): max_slippage_pts = descarta entrada se o preço andou mais que isso contra o sinal (incidente 13/08: fills 430-655pts adversos). max_sl_pts = teto do SL em pontos (incidente 13/08: SL 785pts = -R$158 num stop). Só afeta símbolos listados; 0/ausente = off. max_daily_loss_by_symbol cobre TODOS os ativos (unidade R$, segura). slippage/SL-cap em pontos só WIN (calibrado 13/08); estender por ativo após coletar dados."
   },
   "max_daily_loss_by_symbol": {
-    "WIN": -250
+    "WIN": -250,
+    "WDO": -250,
+    "WSP": -200,
+    "BIT": -150
   },
   "_rollover_log": {
     "WIN": {

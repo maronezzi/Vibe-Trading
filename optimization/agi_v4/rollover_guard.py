@@ -161,8 +161,19 @@ def contract_state(sym_root: str, config: dict) -> dict:
     return st
 
 
+_series_cache: dict = {}
+
+
 def allow_changes(pair: str, config: dict) -> tuple[bool, str]:
-    """Gate de rolagem do par. Returns (permitido, motivo_do_bloqueio)."""
+    """Gate de rolagem do par. Returns (permitido, motivo_do_bloqueio).
+
+    Bloqueios (nesta ordem):
+      1. freeze — contrato a ≤ FREEZE_DAYS dias úteis do vencimento
+      2. grace — rolagem há ≤ GRACE_DAYS dias (sem histórico live)
+      3. series_divergence — série perpétua (base do backtest) diverge >1%
+         do contrato live: a simulação NÃO representa o que é operado
+         (incidente 05-12/08: WIN$=V26 e live=Q26 com 2.500-4.000pts de base).
+    """
     try:
         st = contract_state(pair_root(pair), config)
         if st["freeze"]:
@@ -171,6 +182,20 @@ def allow_changes(pair: str, config: dict) -> tuple[bool, str]:
         if st["grace"]:
             return False, (f"rollover_grace: {st['symbol']} {st['contract']} — "
                            f"{st['reason']}")
+        # Sanidade da série (cache por run — fetch MT5 é caro)
+        root = pair_root(pair)
+        if root not in _series_cache:
+            try:
+                _series_cache[root] = series_sanity(config).get(root, {})
+            except Exception:
+                _series_cache[root] = {}
+        se = _series_cache.get(root) or {}
+        if se.get("divergent"):
+            return False, (f"series_divergence: {root} perpétua "
+                           f"{se.get('perp_last', 0):.0f} vs live "
+                           f"{se.get('live_contract', '?')} {se.get('live_last', 0):.0f} "
+                           f"(Δ {se.get('diff_pct', '?')}%) — backtest não "
+                           f"representa o contrato operado")
         return True, ""
     except Exception as e:
         log.warning(f"rollover_guard: allow_changes falhou ({e}) — fail-safe libera")
