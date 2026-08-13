@@ -160,6 +160,7 @@ def run(days: int = 7,
         # (busca estratégias/params melhores que a baseline atual).
         _optimize_profitable_pairs(ctx)
         _run_sweep_pending(ctx)
+        _run_tune_incumbents(ctx)
         _safe_run_stage(ctx, 6, "report", "stage6_report")
         ctx["ended_at"] = datetime.now().isoformat()
         ctx["duration_s"] = time.time() - start_ts
@@ -312,6 +313,13 @@ def run(days: int = 7,
     # o AGI gera → põe em _pending → sweep testa tudo → promove as boas.
     _run_sweep_pending(ctx)
 
+    # Wave AGI-tune-incumbents (Bruno 12/08): tuning FINO dos params próprios de
+    # TODAS as AGI4 que JÁ OPERAM (incumbentes). Antes só recebiam o Stage 3
+    # (grid ralo); agora tune_strategy (~40 combos) roda em cada uma, no par em
+    # que opera, e aplica via stage5 se superar o better_baseline. Fecha
+    # "otimizar todos os parâmetros" de verdade.
+    _run_tune_incumbents(ctx)
+
     # ── Stage 6: Relatório (sempre roda) ──
     _safe_run_stage(ctx, 6, "report", "stage6_report")
 
@@ -440,6 +448,21 @@ def _run_sweep_pending(ctx: dict) -> None:
     except Exception as e:
         log.error(f"[{TAG}] Sweep _pending/ FALHOU: {e}", exc_info=True)
         ctx["audit"].append({"stage": "sweep_pending", "ok": False, "error": str(e)})
+
+
+def _run_tune_incumbents(ctx: dict) -> None:
+    """Wave AGI-tune-incumbents (Bruno 12/08): tuning fino dos params das AGI4
+    incumbentes (que já operam). Delega a ``tune_incumbents.run(ctx)``. Fail-safe.
+    """
+    try:
+        from optimization.agi_v4 import tune_incumbents
+        result = tune_incumbents.run(ctx)
+        summary = result.get("summary", "") if isinstance(result, dict) else ""
+        ctx["audit"].append({"stage": "tune_incumbents", "ok": True, "summary": summary})
+        log.info(f"[{TAG}] Tune incumbents OK — {summary}")
+    except Exception as e:
+        log.error(f"[{TAG}] Tune incumbents FALHOU: {e}", exc_info=True)
+        ctx["audit"].append({"stage": "tune_incumbents", "ok": False, "error": str(e)})
 
 
 def _safe_run_stage(ctx: dict, stage_num: int, stage_name: str, module_name: str) -> None:

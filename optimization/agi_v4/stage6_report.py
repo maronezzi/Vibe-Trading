@@ -347,6 +347,15 @@ def _build_telegram_message(ctx: dict) -> str:
         pairs_str = ", ".join(p for p in pairs_sweep if p)[:60]
         lines.append(f"• 🧹 Sweep _pending/: {len(sweep)} promovida(s) ({pairs_str})")
 
+    # ── Tune incumbents (Wave AGI-tune-incumbents) ──
+    # Tuning fino dos params das AGI4 que JÁ OPERAM (não só as novas).
+    inc_tunings = ctx.get("incumbent_tunings", []) or []
+    if inc_tunings:
+        pairs_inc = sorted({(p.get("change") or {}).get("pair", "")
+                            for p in inc_tunings if isinstance(p, dict)})
+        pairs_str = ", ".join(p for p in pairs_inc if p)[:60]
+        lines.append(f"• 🔧 Incumbentes otimizados: {len(inc_tunings)} ({pairs_str})")
+
     # ── Mudanças aprovadas (2d): accumulator + métricas completas ──
     # all_applied_changes acumula o run inteiro (Stage 5 roda várias vezes).
     # Dedup por par (última vence = estado final do config) para não inflar.
