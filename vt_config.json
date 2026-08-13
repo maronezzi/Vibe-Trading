@@ -1,8 +1,8 @@
 {
-  "_version": 1267,
-  "_updated_at": "2026-08-12T22:18:44.623541",
-  "_updated_by": "agi_v4_stage5",
-  "_notes": "Wave 880.F (07/08) auto-resolve vencimento: WDO: WDOU26 → WDOQ26",
+  "_version": 1269,
+  "_updated_at": "2026-08-13T11:19:47.661145",
+  "_updated_by": "copilot_11h",
+  "_notes": "auto-resolve vencimento: WIN: WINQ26 → WINV26",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
   "start_minute": 5,
@@ -102,7 +102,7 @@
   "check_interval": 30,
   "bars_count": 45,
   "resolved_symbols": {
-    "WIN": "WINQ26",
+    "WIN": "WINV26",
     "BIT": "BITQ26",
     "WSP": "WSPU26",
     "WDO": "WDOU26"
@@ -279,7 +279,7 @@
       "max_consecutive_losses": 6,
       "profit_lock_r": 0.5,
       "sl_atr_mult": 1.5,
-      "rsi_overbought": 85,
+      "rsi_overbought": 80,
       "rsi_oversold": 35,
       "rsi_period": 7,
       "range_atr_pct": 0.01,
@@ -288,7 +288,7 @@
       "atr_period": 14,
       "multiplier": 3.5,
       "bb_period": 10,
-      "bb_std": 2.5,
+      "bb_std": 2.0,
       "ema_fast": 5,
       "ema_slow": 26,
       "trail_activate": 0.07,
@@ -303,16 +303,19 @@
       "rsi_oversold": 15,
       "rsi_period": 7,
       "trail_activate": 0.07,
-      "trail_distance": 0.035
+      "trail_distance": 0.035,
+      "ema_period": 30,
+      "lookback": 15
     },
     "BIT_M30": {
-      "bb_std": 2.0,
-      "rsi_oversold": 15,
+      "bb_std": 1.8,
+      "rsi_oversold": 20,
       "bb_period": 18,
       "cooldown_seconds": 60,
       "sl_atr_mult": 0.8,
       "trail_activate": 0.07,
-      "trail_distance": 0.035
+      "trail_distance": 0.035,
+      "rsi_overbought": 80
     },
     "BIT_H1": {
       "sl_atr_mult": 1.0,
