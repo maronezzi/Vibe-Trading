@@ -1,6 +1,6 @@
 {
-  "_version": 1279,
-  "_updated_at": "2026-08-13T17:25:48.826780",
+  "_version": 1284,
+  "_updated_at": "2026-08-13T20:23:45.306987",
   "_updated_by": "agi_v4_stage5",
   "_notes": "auto-resolve vencimento: WIN: WINQ26 → WINV26",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
@@ -123,9 +123,9 @@
     "WSP_M15": "AGI4_WSP_134734",
     "WSP_M30": "EMA_PULLBACK",
     "WSP_H1": "EMA_PULLBACK",
-    "WDO_M5": "AGI4_WIN_171744",
+    "WDO_M5": "EMA_SLOPE_MOMENTUM",
     "WDO_M15": "ADX_TREND",
-    "WDO_M30": "AGI4_BIT_214244",
+    "WDO_M30": "AGI4_WIN_201350",
     "WDO_H1": "RSI_REVERSION"
   },
   "contract_specs": {
@@ -395,11 +395,11 @@
     "WDO_M5": {
       "cooldown_seconds": 60,
       "sl_atr_mult": 0.8,
-      "ema_fast": 14,
-      "ema_slow": 32,
       "adx_period": 14,
-      "ema_trend": 50,
-      "rsi_period": 21
+      "ema_period": 32,
+      "slope_lookback": 4,
+      "slope_threshold": 0.3,
+      "adx_min": 25
     },
     "WDO_M15": {
       "sl_atr_mult": 1.0,
@@ -424,12 +424,7 @@
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
       "halt_duration_minutes": 60,
-      "trail_distance": 0.0006,
-      "ema_fast": 5,
-      "ema_slow": 24,
-      "rsi_period": 7,
-      "rsi_buy_trigger": 45.0,
-      "rsi_sell_trigger": 55.0
+      "trail_distance": 0.0006
     },
     "WDO_H1": {
       "sl_atr_mult": 1.0,
