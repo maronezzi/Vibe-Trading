@@ -264,6 +264,99 @@ _ASK_LLM_PROVIDERS = [
 MIN_VALID_RESPONSE_CHARS = 50
 
 
+# ── Wave AGI-rollover (Bruno 2026-08-13): TRANSPORTE HTTP DIRETO ──
+# Em 13/08 o CLI do hermes quebrou para a cadeia do AGI ("Unknown provider
+# 'zenmux'/'alibaba-token-plan'" após mudança de schema do config.yaml) e a
+# rodada AGI 17h10 ficou com 0 hipóteses (Stage 2) e 0 estratégias geradas
+# (Stage 4). O validator (vt_order_validator_v2) sobreviveu porque usa HTTP
+# direto (medido 06/08: 3-13s vs 46-54s do CLI). Espelho aqui o mesmo
+# transporte como caminho PRIMÁRIO do ask_llm; o CLI vira fallback.
+_PROVIDER_ENDPOINTS = {
+    "alibaba-token-plan": (
+        "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "ALIBABA_TOKEN_PLAN_API_KEY",
+    ),
+    "zenmux": (
+        "https://zenmux.ai/api/v1/chat/completions",
+        "ZENMUX_API_KEY",
+    ),
+}
+
+_hermes_env_cache: dict | None = None
+
+
+def _load_hermes_env() -> dict:
+    """Parse simples de ~/.hermes/.env (KEY=VALUE). Cache em memória."""
+    global _hermes_env_cache
+    if _hermes_env_cache is not None:
+        return _hermes_env_cache
+    env: dict = {}
+    try:
+        from pathlib import Path as _Path
+        env_path = _Path.home() / ".hermes" / ".env"
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                env[k.strip()] = v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    _hermes_env_cache = env
+    return env
+
+
+def _ask_llm_http_direct(prompt: str, provider: str, model: str, timeout: int,
+                         system: str | None = None) -> str | None:
+    """Chamada HTTP direta ao endpoint OpenAI-compatible do provider.
+
+    Igual ao _ask_llm_http do validator, mas com max_tokens generoso
+    (4096) — o Stage 4 gera código Python completo. Retorna resposta ou None.
+    """
+    import json as _json
+    import os as _os
+    import urllib.request
+
+    ep = _PROVIDER_ENDPOINTS.get(provider)
+    if not ep:
+        return None
+    url, key_env = ep
+    api_key = _load_hermes_env().get(key_env) or _os.environ.get(key_env)
+    if not api_key:
+        return None
+
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    body = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": 4096,
+        "enable_thinking": False,
+    }
+    req = urllib.request.Request(
+        url,
+        data=_json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=max(timeout, 10)) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        if content.strip():
+            return content.strip()
+        return None
+    except Exception:
+        return None
+
+
 def ask_llm(
     prompt: str,
     *,
@@ -312,6 +405,27 @@ def ask_llm(
 
         # model=None → default do hermes; usa um label legível no log.
         label = prov["model"] or "hermes-default(qwen)"
+
+        # Wave AGI-rollover (13/08): HTTP direto primeiro. Se o provider tem
+        # endpoint HTTP conhecido, NÃO cai para o CLI neste provider — em
+        # 13/08 o CLI estava quebrado (providers desconhecidos no config) e
+        # cada tentativa CLI torrava ~20-30s do budget, esgotando o deadline
+        # antes de chegar nos providers que funcionam.
+        if prov.get("provider") in _PROVIDER_ENDPOINTS and prov.get("model"):
+            try:
+                _http_resp = _ask_llm_http_direct(
+                    prompt, prov["provider"], prov["model"], per_timeout,
+                    system=system,
+                )
+            except Exception:
+                _http_resp = None
+            if _http_resp and len(_http_resp) >= MIN_VALID_RESPONSE_CHARS:
+                ask_log.debug(
+                    f"ask_llm: {label} OK http ({len(_http_resp)} chars)"
+                )
+                return _http_resp
+            ask_log.debug(f"ask_llm: {label} http falhou — próximo provider")
+            continue
 
         args = [hermes_bin, "-z", prompt]
         # model=None → default global do hermes (deepseek-v4-flash-0731). Não

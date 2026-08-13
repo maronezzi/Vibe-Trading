@@ -65,7 +65,7 @@ def generate_report(
         # 1. losing trades do dia.
         losing_rows = conn.execute(
             """
-            SELECT id, symbol, tf, strategy, direction, entry_time,
+            SELECT id, symbol, timeframe AS tf, strategy, direction, entry_time,
                    exit_time, net_pnl
             FROM trades
             WHERE net_pnl < 0

@@ -1371,6 +1371,56 @@ def _global_max_daily_trades() -> int:
     return min(int(CONFIG.get("global_max_daily_trades", 50)), 50)
 
 
+def _symbol_daily_pnl(resolved_symbol: str) -> float:
+    """PnL realizado de HOJE para UM símbolo.
+
+    Wave AGI-exec-guards (Bruno 2026-08-13): fonte primária broker-truth
+    (MT5 history deals, mesmo caminho do get_daily_pnl — history SEM filtro
+    de símbolo, o único confiável no Wine, ver Wave 880.I) filtrada por
+    símbolo+data em Python. FALLBACK: se o MT5 não retorna deals (observado
+    13/08 pós-19h: history vazio), usa o DB vt_trades (net_pnl, exclui
+    GHOST) — mesma fonte do relatório diário. Fail-safe: erro retorna 0.0
+    (nunca bloqueia por falha de leitura).
+    """
+    try:
+        from core import vt_truth
+        deals = vt_truth.get_position_history(symbol=None, days=2)
+        today = datetime.now().strftime("%Y-%m-%d")
+        total = 0.0
+        for d in deals:
+            try:
+                d_date = vt_truth._extract_date_iso(str(d.time)) or str(d.time)[:10]
+            except Exception:
+                continue
+            if d_date != today or d.symbol != resolved_symbol:
+                continue
+            total += float(d.profit or 0) + float(d.commission or 0) + float(d.swap or 0)
+        if deals:
+            return total
+        # MT5 sem deals (pós-mercado/instabilidade) → fallback DB
+        import sqlite3 as _sqlite3
+        _db = DB_PATH if "DB_PATH" in globals() else None
+        try:
+            from core.vt_trade_log import DB_PATH as _db
+        except Exception:
+            pass
+        if _db and Path(_db).exists():
+            conn = _sqlite3.connect(str(_db))
+            try:
+                row = conn.execute(
+                    """SELECT COALESCE(sum(net_pnl), 0) FROM trades
+                       WHERE symbol = ? AND date(entry_time) = ?
+                         AND exit_time IS NOT NULL AND exit_reason != 'GHOST'""",
+                    (resolved_symbol, today),
+                ).fetchone()
+                return float(row[0] or 0.0)
+            finally:
+                conn.close()
+        return 0.0
+    except Exception:
+        return 0.0
+
+
 def _check_max_trades(params: dict, symbol: str = "") -> bool:
     """Retorna True se pode operar (limite não atingido). Conta por símbolo.
 
@@ -1396,6 +1446,30 @@ def _check_max_trades(params: dict, symbol: str = "") -> bool:
             severity="critical", cooldown_min=1440,
         )
         return False
+
+    # ── SYMBOL STOP (Wave AGI-exec-guards, Bruno 2026-08-13): perda diária
+    # máxima POR SÍMBOLO. Incidente 12-13/08: WIN perdeu -354/-246 em dias
+    # de rolagem e o kill global (-500) não conteve a tempo. O corte por
+    # símbolo estanca o sangramento cedo (só bloqueia NOVAS entradas do
+    # símbolo; posições abertas seguem geridas por SL/trailing).
+    # Config: "max_daily_loss_by_symbol": {"WIN": -250} (0/ausente = off). ──
+    try:
+        _sym_limits = CONFIG.get("max_daily_loss_by_symbol", {}) or {}
+        _sym_limit = float(_sym_limits.get(_symbol_root(symbol), 0) or 0)
+        if _sym_limit < 0 and symbol:
+            _sym_pnl = _symbol_daily_pnl(symbol)
+            if _sym_pnl <= _sym_limit:
+                log(f"🛑 SYMBOL STOP: {symbol} PnL diário R$ {_sym_pnl:.2f} ≤ limite "
+                    f"R$ {_sym_limit:.2f} (broker-truth) — sem novas entradas hoje")
+                notify_block_activated(
+                    CAT_MAX_DAILY_LOSS,
+                    reason=(f"SYMBOL STOP {symbol}: PnL diário R$ {_sym_pnl:.2f} ≤ "
+                            f"R$ {_sym_limit:.2f} — símbolo travado até o próximo pregão"),
+                    severity="warning", cooldown_min=240,
+                )
+                return False
+    except Exception as _ss_err:
+        log(f"[SYMBOL-STOP] falha na checagem ({_ss_err}) — fail-safe segue")
 
     # ── KILL SWITCH: disabled_ativos (AGI pode desativar ativos que perdem) ──
     disabled = CONFIG.get("disabled_symbols", [])
@@ -2440,6 +2514,52 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             f"🤖 [VALIDATOR] SL ajustado (pré-envio)\n"
             f"{symbol} {direction} {tf} | SL: {_old_sl}pts → {sl_pts}pts"
         )
+
+    # ===== Wave AGI-exec-guards (Bruno 2026-08-13): GUARDAS DE EXECUÇÃO =====
+    # Incidente 13/08 (dia de rolagem WINV26): sinal dispara na barra em
+    # formação, a ordem sai tarde (validador LLM + fita rápida) e o fill vem
+    # 430-655 pts ADVERSO ao preço do sinal no M15 — R$86-131 de handicap
+    # por trade antes de começar. Config: "execution_guards".
+    _guards = CONFIG.get("execution_guards", {}) or {}
+    _root_g = _symbol_root(symbol) if symbol else ""
+
+    # 1) SLIPPAGE GUARD: se o preço andou além do limite desde o sinal,
+    #    DESCARTA a entrada (melhor perder o setup do que entrar handicapped).
+    try:
+        _max_slip = float((_guards.get("max_slippage_pts_by_symbol") or {}).get(_root_g, 0) or 0)
+        if _max_slip > 0 and price > 0:
+            _tk = tick(symbol)
+            if _tk and _tk.get("bid", 0) > 0 and _tk.get("ask", 0) > 0:
+                _ref = _tk["ask"] if direction == "BUY" else _tk["bid"]
+                _dev = (_ref - price) if direction == "BUY" else (price - _ref)
+                if _dev > _max_slip:
+                    log(f"🚫 [SLIPPAGE-GUARD] {symbol} {tf} {direction}: preço andou "
+                        f"{_dev:.0f}pts contra o sinal {price:.2f} → {_ref:.2f} "
+                        f"(limite {_max_slip:.0f}pts) — entrada descartada")
+                    try:
+                        from core.vt_signal_journal import log_blocked_signal
+                        log_blocked_signal(symbol, tf, strategy, direction=direction,
+                                           block_reason="SLIPPAGE_GUARD",
+                                           sl_pts=sl_pts, atr_pts=atr)
+                    except Exception:
+                        pass
+                    return {"status": "BLOCKED", "reason": "SLIPPAGE_GUARD",
+                            "detail": f"desvio {_dev:.0f}pts > limite {_max_slip:.0f}pts",
+                            "symbol": symbol}
+    except Exception as _sg_err:
+        log(f"[SLIPPAGE-GUARD] falha ({_sg_err}) — fail-safe segue")
+
+    # 2) SL CAP: teto de SL em pontos por símbolo. Em dia de ATR esticado o
+    #    sl_atr_mult gera stop gigante (13/08: SL 785pts no WIN = -R$158,20
+    #    num único stop). O teto limita a perda máxima por trade.
+    try:
+        _max_sl = float((_guards.get("max_sl_pts_by_symbol") or {}).get(_root_g, 0) or 0)
+        if _max_sl > 0 and sl_pts > _max_sl:
+            log(f"🛡️ [SL-CAP] {symbol} {tf} {direction}: SL {sl_pts}pts → "
+                f"{_max_sl:.0f}pts (teto execution_guards)")
+            sl_pts = int(_max_sl)
+    except Exception:
+        pass
 
     # Log
     detail_parts = [f"{strategy}"]

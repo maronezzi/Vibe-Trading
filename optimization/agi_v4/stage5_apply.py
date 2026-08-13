@@ -271,6 +271,31 @@ def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: d
     except Exception:
         pass
 
+    # ── Wave AGI-rollover (Bruno 2026-08-13): ROLLOVER GUARD + CHOQUE DE
+    # REALIDADE. Incidente 12-13/08: AGI otimizava WIN na série perpétua
+    # (= WINV26) enquanto o bot operava WINQ26 no vencimento, e trocou a
+    # estratégia de WIN_M5 no meio do 1o pregão do contrato novo com base
+    # em 3 trades simulados. Agora o AGI tem consciência de rolagem:
+    #   1. freeze: contrato a ≤ FREEZE_DAYS dias úteis do vencimento
+    #   2. grace: contrato trocado há ≤ GRACE_DAYS dias (sem histórico live)
+    #   3. live_bleeding: par sangrando no pregão → congela churn intraday
+    #   4. sim_live_divergence: live péssimo + sim do dia ≥ 0 → sim não
+    #      representa a execução; candidato baseado nela é rejeitado
+    try:
+        from optimization.agi_v4 import rollover_guard
+        _ok, _why = rollover_guard.allow_changes(pair, config)
+        if not _ok:
+            return _reject(cand, "rollover_guard", _why)
+        _ok, _why = rollover_guard.reality_check(
+            pair, config,
+            cand_today_pnl=cand.get("full", {}).get("today_pnl", 0),
+            cand_today_n=cand.get("full", {}).get("today_n_trades", 0),
+        )
+        if not _ok:
+            return _reject(cand, "live_reality", _why)
+    except Exception as _rg_err:
+        log.warning(f"rollover_guard falhou em {pair} ({_rg_err}) — fail-safe: segue")
+
     # ── REGRA ABSOLUTA (2026-07-04): a função da AGI é SEMPRE achar
     # estratégia + params que deem LUCRO (PnL > 0) e WR alto. Nunca aceitar
     # negativo. Um candidato negativo nunca é aplicado, mesmo que seja "menos

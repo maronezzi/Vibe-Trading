@@ -7,7 +7,8 @@ Responsabilidades:
 3. Detectar rolagem de contrato (próximo vencimento quando o atual expira)
 
 Feriados B3 2025-2027: feriados nacionais + feriados da bolsa.
-Contratos B3: código mês + ano (H=março, J=junho, M=setembro, Z=dezembro)
+Contratos B3: código mês + ano. WIN/IND bimestral (G/J/M/Q/V/Z, quarta ~dia 15);
+WDO/DOL mensal (1º dia útil do mês); BIT/WSP mensal (último dia útil do mês).
 """
 import logging
 import re
@@ -87,20 +88,28 @@ MONTH_CODES = {
     7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"
 }
 
-# Contratos trimestrais (índice, dólar, etc.)
+# Contratos trimestrais (legado — ver EXPIRY_RULES para regras vigentes)
 QUARTERLY_MONTHS = {3: "H", 6: "M", 9: "U", 12: "Z"}
 
-# Vencimentos por ativo (dia do mês do vencimento)
-# Índice/Dólar: 3ª sexta do mês de vencimento
-# Mini índice/Mini dólar: mesmo dia
-# BIT: último dia útil do mês anterior ao vencimento
+# WIN/IND: bimestral, apenas meses PARES (G=fev, J=abr, M=jun, Q=ago, V=out, Z=dez).
+# Correção 2026-08-13 (bug histórico): o código tratava WIN como trimestral
+# H/M/U/Z com 3ª sexta, calculando vencimento do WINQ26 como 21/08 quando o
+# real é 12/08 (quarta-feira mais próxima do dia 15). O bot operou o contrato
+# no próprio dia do vencimento (12/08) e o pre-flight reportava "6 dias úteis".
+WIN_MONTHS = {2: "G", 4: "J", 6: "M", 8: "Q", 10: "V", 12: "Z"}
+
+# Vencimentos por ativo (regras oficiais B3):
+#   bimonthly  → WIN/IND: meses pares, quarta-feira mais próxima do dia 15
+#   first_bday → WDO/DOL: 1º dia útil do mês de vencimento (contrato mensal)
+#   monthly    → BIT/WSP: último dia útil do mês de vencimento
+#   quarterly  → legado (3ª sexta H/M/U/Z) — nenhum ativo usa desde 13/08
 EXPIRY_RULES = {
-    "WIN": "quarterly",   # 3ª sexta de H, M, U, Z
-    "WDO": "quarterly",
-    "IND": "quarterly",
-    "DOL": "quarterly",
-    "BIT": "monthly",     # último dia útil do mês anterior
-    "WSP": "monthly",     # último dia útil do mês anterior
+    "WIN": "bimonthly",
+    "WDO": "first_bday",
+    "IND": "bimonthly",
+    "DOL": "first_bday",
+    "BIT": "monthly",     # último dia útil do mês
+    "WSP": "monthly",     # último dia útil do mês
 }
 
 
@@ -127,7 +136,7 @@ def is_trading_day(d: date = None) -> tuple[bool, str]:
 
 
 def _third_friday(year: int, month: int) -> date:
-    """Retorna a 3ª sexta-feira do mês (regra de vencimento B3 para índice/dólar)."""
+    """Retorna a 3ª sexta-feira do mês (regra LEGADA — nenhum ativo usa desde 13/08)."""
     # Primeiro dia do mês
     first = date(year, month, 1)
     # Dia da semana do primeiro dia (0=seg, 4=sex)
@@ -138,6 +147,29 @@ def _third_friday(year: int, month: int) -> date:
     # Terceira sexta
     third_friday = first_friday + timedelta(weeks=2)
     return third_friday
+
+
+def _nearest_wednesday_15(year: int, month: int) -> date:
+    """Quarta-feira mais próxima do dia 15 (regra B3 oficial de vencimento WIN/IND).
+
+    Ex: ago/2026 → 12/08 (15/08 é sábado; 12/08 está a 3 dias, 19/08 a 4).
+    Ex: out/2026 → 14/10 (15/10 é quinta; 14/10 está a 1 dia, 21/10 a 6).
+    """
+    fifteenth = date(year, month, 15)
+    wd = fifteenth.weekday()  # 0=seg, 2=qua, 6=dom
+    before = fifteenth - timedelta(days=(wd - 2) % 7)  # quarta anterior/igual
+    after = fifteenth + timedelta(days=(2 - wd) % 7)   # quarta posterior/igual
+    if abs((after - fifteenth).days) < abs((fifteenth - before).days):
+        return after
+    return before
+
+
+def _first_business_day(year: int, month: int) -> date:
+    """1º dia útil do mês (regra B3 oficial de vencimento WDO/DOL)."""
+    d = date(year, month, 1)
+    while d.weekday() >= 5 or not is_trading_day(d)[0]:
+        d += timedelta(days=1)
+    return d
 
 
 def _last_business_day(year: int, month: int) -> date:
@@ -157,14 +189,17 @@ def _last_business_day(year: int, month: int) -> date:
 def get_contract_expiry(symbol_root: str, contract_month: int, contract_year: int) -> date:
     """
     Retorna a data de vencimento de um contrato.
-    symbol_root: WIN, DOL, BIT, etc.
+    symbol_root: WIN, WDO, DOL, BIT, etc.
     """
-    rule = EXPIRY_RULES.get(symbol_root, "quarterly")
+    rule = EXPIRY_RULES.get(symbol_root, "monthly")
 
-    if rule == "quarterly":
+    if rule == "bimonthly":
+        return _nearest_wednesday_15(contract_year, contract_month)
+    if rule == "first_bday":
+        return _first_business_day(contract_year, contract_month)
+    if rule == "quarterly":  # legado
         return _third_friday(contract_year, contract_month)
-    else:  # monthly
-        # BIT/WSP vencem no último dia útil do mês
+    else:  # monthly (BIT/WSP): último dia útil do mês
         return _last_business_day(contract_year, contract_month)
 
 
@@ -227,26 +262,15 @@ def _get_next_expiry_month(symbol_root: str, after_date: date = None) -> tuple[i
     if after_date is None:
         after_date = date.today()
 
-    rule = EXPIRY_RULES.get(symbol_root, "quarterly")
+    rule = EXPIRY_RULES.get(symbol_root, "monthly")
+    months = sorted(WIN_MONTHS.keys()) if rule == "bimonthly" else list(range(1, 13))
 
-    if rule == "quarterly":
-        # Vencimentos trimestrais: H(Mar), M(Jun), U(Sep), Z(Dec)
-        quarterly = [3, 6, 9, 12]
-        year = after_date.year
-        for m in quarterly:
-            expiry = _third_friday(year, m)
-            if expiry > after_date:
-                return m, year
-        # Próximo ano
-        return quarterly[0], year + 1
-    else:
-        # Mensal: próximo mês
-        year = after_date.year
-        month = after_date.month + 1
-        if month > 12:
-            month = 1
-            year += 1
-        return month, year
+    for i in range(24):
+        m = ((after_date.month - 1 + i) % 12) + 1
+        y = after_date.year + ((after_date.month - 1 + i) // 12)
+        if m in months and get_contract_expiry(symbol_root, m, y) > after_date:
+            return m, y
+    return months[0], after_date.year + 1
 
 
 def _check_contract_spread(symbol: str) -> float:
@@ -283,29 +307,18 @@ def resolve_symbol(symbol_root: str, force_check: bool = False) -> str:
     Hierarquia de decisão (determinística e estável — elimina a divergência
     config↔runtime e a rolagem prematura):
 
-      1. ESTABILIDADE (só para trimestrais): se o contrato ATUAL é
-         trimestral e está líquido (spread < 999 no MT5) com > ROLL_DAYS dias
-         úteis até o vencimento, MANTÉM o atual — o auto-resolve nunca
-         sobrescreve um trimestral ainda viável. Isto acabou com a oscilação
-         config↔runtime e com rolls prematuros (ex: trocar um contrato com
-         44 dias de vida). PONTES (bridge — mês não-trimestral) NÃO têm
-         estabilidade: são provisórias e reavaliadas a cada execução, para
-         subir ao trimestral assim que ele tiver liquidez e para escolher
-         sempre a ponte com mais dias úteis (ex: WDOQ26, não WDON26).
+      1. ESTABILIDADE: se o contrato ATUAL está líquido (spread < 999 no MT5)
+         com > ROLL_DAYS dias úteis até o vencimento, MANTÉM o atual.
+      2. ROLAGEM: escolhe o candidato mais próximo com liquidez real.
+         Meses candidatos dependem da regra do ativo (EXPIRY_RULES):
+         - WIN/IND (bimonthly): meses pares G/J/M/Q/V/Z (quarta ~dia 15)
+         - WDO/DOL (first_bday): todos os meses (1º dia útil do mês)
+         - BIT/WSP (monthly): todos os meses (último dia útil do mês)
+         Sempre o vencimento mais próximo (NÃO o de menor spread) —
+         determinístico e respeita a progressão natural do contrato.
+      3. Fallback: mantém o atual se nada líquido foi encontrado.
 
-      2. ROLAGEM (atual expirando a ≤ ROLL_DAYS dias OU sem liquidez): escolhe
-         o candidato PRIMÁRIO mais próximo que tenha liquidez. Para ativos
-         trimestrais (WDO/WIN/IND/DOL) são os meses H/M/U/Z; para mensais
-         (BIT/WSP) são os próximos meses consecutivos. Sempre o vencimento
-         mais próximo (NÃO o de menor spread) — determinístico e respeita a
-         progressão natural do contrato.
-
-      3. BRIDGE (último recurso): só se NENHUM candidato primário tiver
-         liquidez, usa o mês não-trimestral mais próximo com cotação (ex:
-         WDON26 quando WDOU26 ainda não tem spread). Prioriza o bridge com
-         mais dias úteis (evita trocar por um bridge prestes a vencer).
-
-    Retorna o código do contrato (ex: WINQ26, WDON26, INDM26).
+    Retorna o código do contrato (ex: WINV26, WDOU26, INDM26).
     """
     from vt_config_loader import load_config
 
@@ -314,36 +327,19 @@ def resolve_symbol(symbol_root: str, force_check: bool = False) -> str:
     current = resolved.get(symbol_root, "")
 
     today = date.today()
-    rule = EXPIRY_RULES.get(symbol_root, "quarterly")
+    rule = EXPIRY_RULES.get(symbol_root, "monthly")
 
-    # ─── Gerar meses candidatos ───
+    # ─── Meses candidatos (ordem de vencimento) ───
+    months = sorted(WIN_MONTHS.keys()) if rule == "bimonthly" else list(range(1, 13))
+    max_candidates = 4 if rule == "bimonthly" else 6
     candidates: list[tuple[int, int]] = []
-    bridge_candidates: list[tuple[int, int]] = []
-    if rule == "quarterly":
-        # Meses trimestrais oficiais B3 (H/M/U/Z).
-        quarterly_months = sorted(QUARTERLY_MONTHS.keys())
-        year = today.year
-        for qm in quarterly_months:
-            if _third_friday(year, qm) >= today:
-                candidates.append((qm, year))
-        # Se não sobrou nenhum no ano (ou só do mesmo ano), adiciona Q1 do próximo
-        if not candidates or all(c[1] == year for c in candidates):
-            for qm in quarterly_months:
-                candidates.append((qm, year + 1))
-        candidates = candidates[:4]
-        # Bridge: próximos meses NÃO-trimestrais que o MT5 pode estar cotando
-        # quando o trimestral ainda não tem liquidez.
-        for i in range(1, 4):
-            bm = ((today.month - 1 + i) % 12) + 1
-            by = today.year + ((today.month - 1 + i) // 12)
-            if bm not in QUARTERLY_MONTHS:
-                bridge_candidates.append((bm, by))
-    else:
-        # Mensal (BIT/WSP): próximos 6 meses consecutivos.
-        for i in range(6):
-            m = ((today.month - 1 + i) % 12) + 1
-            y = today.year + ((today.month - 1 + i) // 12)
+    for i in range(24):
+        m = ((today.month - 1 + i) % 12) + 1
+        y = today.year + ((today.month - 1 + i) // 12)
+        if m in months:
             candidates.append((m, y))
+        if len(candidates) >= max_candidates:
+            break
 
     def _info(m: int, y: int) -> dict | None:
         """Contrato + vencimento + dias úteis + spread real (MT5) de (mês, ano)."""
@@ -364,51 +360,27 @@ def resolve_symbol(symbol_root: str, force_check: bool = False) -> str:
             "expiry": expiry, "days_util": days_util, "spread": spread,
         }
 
-    primary = [i for i in (_info(m, y) for m, y in candidates) if i]
-
     # ─── 1. ESTABILIDADE: honrar o config enquanto o contrato é viável ───
     # Só saímos do contrato atual quando ele está a ≤ ROLL_DAYS dias úteis do
-    # vencimento OU perdeu liquidez (spread = 999). Isto é o que elimina a
-    # divergência config↔runtime e a rolagem prematura.
-    #
-    # EXCEÇÃO — ponte (bridge) nunca é estável: para ativos trimestrais
-    # (WDO/WIN/IND/DOL), um contrato de mês não-trimestral (ex: WDON26, WDOQ26)
-    # só existe como provisório porque o trimestral oficial ainda não pegou
-    # liquidez. Logo a ponte nunca "trava" no config — a cada execução
-    # reavaliamos (passo 2/3) para (a) subir ao trimestral assim que ele tiver
-    # liquidez e (b) escolher sempre a ponte com mais dias úteis (ex: WDOQ26,
-    # não WDON26). Sem isto, uma ponte obsoleta grudada no config vencia a
-    # prioridade do trimestral. Apenas o trimestral tem estabilidade.
+    # vencimento OU perdeu liquidez (spread = 999). Isto elimina a divergência
+    # config↔runtime e a rolagem prematura.
     if current:
         _, cur_m, cur_y = _parse_contract_code(current)
-        is_bridge = rule == "quarterly" and cur_m and cur_m not in QUARTERLY_MONTHS
-        if cur_m and not is_bridge:
+        if cur_m:
             cur = _info(cur_m, cur_y)
             if cur and cur["spread"] < 999 and cur["days_util"] > ROLL_DAYS:
                 return current
 
-    # ─── 2. ROLAGEM: candidato primário mais próximo com liquidez ───
-    # Prioriza trimestrais/mensais oficiais sobre bridge. Vencimento mais
-    # próximo primeiro (determinístico) — não spread.
-    viable = [c for c in primary if c["spread"] < 999 and c["days_util"] > 0]
+    # ─── 2. ROLAGEM: candidato mais próximo com liquidez ───
+    viable = [c for c in (_info(m, y) for m, y in candidates)
+              if c and c["spread"] < 999 and c["days_util"] > 0]
     viable.sort(key=lambda c: c["expiry"])
     if viable:
         return viable[0]["contract"]
 
-    # ─── 3. BRIDGE: só se nenhum candidato primário tiver liquidez ───
-    if bridge_candidates:
-        bridge = [i for i in (_info(bm, by) for bm, by in bridge_candidates)
-                  if i and i["spread"] < 999 and i["days_util"] > 0]
-        if bridge:
-            # Mais dias úteis primeiro → não rola para um bridge prestes a vencer.
-            bridge.sort(key=lambda c: -c["days_util"])
-            return bridge[0]["contract"]
-
-    # ─── Fallback final: nada líquido encontrado ───
+    # ─── 3. Fallback final: nada líquido encontrado ───
     if current:
         return current
-    if primary:
-        return primary[0]["contract"]
     if candidates:
         m, y = candidates[0]
         return _make_contract_code(symbol_root, m, y)
@@ -456,18 +428,38 @@ def resolve_all_symbols(persist: bool = False) -> dict:
     updated = {}
     changed = []
 
+    changed_map: dict[str, dict] = {}
     for root in symbols:
         resolved = resolve_symbol(root)
         updated[root] = resolved
 
         if resolved != current.get(root):
             changed.append(f"{root}: {current.get(root, '?')} → {resolved}")
+            changed_map[root] = {"from": current.get(root, ""), "to": resolved}
 
     if changed:
         if persist:
             # Atualizar config (chamador precisa estar em ALLOWED_WRITERS)
             config["resolved_symbols"] = updated
             config["_notes"] = f"auto-resolve vencimento: {', '.join(changed)}"
+            # Wave AGI-rollover (Bruno 2026-08-13): registrar a DATA da rolagem.
+            # O AGI (optimization/agi_v4/rollover_guard) lê _rollover_log para
+            # o grace period: não decidir sobre um símbolo cujo contrato trocou
+            # há ≤ GRACE_DAYS dias (não há histórico live honesto ainda).
+            try:
+                from datetime import datetime as _dt
+                _rlog = dict(config.get("_rollover_log") or {})
+                for _root, _ch in changed_map.items():
+                    if _ch.get("from"):  # só rolagem real (não o 1º resolve)
+                        _rlog[_root] = {
+                            "from": _ch["from"], "to": _ch["to"],
+                            "changed_at": _dt.now().isoformat(timespec="seconds"),
+                            "changed_by": "calendar_resolve",
+                        }
+                if _rlog:
+                    config["_rollover_log"] = _rlog
+            except Exception:
+                pass
             _save_config(config)
             _notify("📅 Rolagem de contrato detectada!\n" + "\n".join(changed))
         else:
@@ -509,14 +501,15 @@ def get_trading_calendar(days: int = 10) -> list[dict]:
         # Verificar vencimentos nesse dia
         expiries = []
         for root in ["WIN", "WDO", "IND", "DOL", "BIT", "WSP"]:
-            rule = EXPIRY_RULES.get(root, "quarterly")  # noqa: F841
-            if rule == "quarterly":
-                for m in [3, 6, 9, 12]:
-                    if _third_friday(d.year, m) == d:
+            rule = EXPIRY_RULES.get(root, "monthly")
+            months = sorted(WIN_MONTHS.keys()) if rule == "bimonthly" else list(range(1, 13))
+            for m in months:
+                try:
+                    if get_contract_expiry(root, m, d.year) == d:
                         expiries.append(root)
-            else:
-                if _last_business_day(d.year, d.month) == d and d == _last_business_day(d.year, d.month):
-                    expiries.append(root)
+                        break
+                except Exception:
+                    continue
 
         calendar.append({
             "date": d.strftime("%d/%m/%Y (%a)"),

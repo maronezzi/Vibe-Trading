@@ -122,6 +122,20 @@ def run(days: int = 7,
         "converged": False,
     }
 
+    # ── Wave AGI-rollover (Bruno 2026-08-13): estado de rolagem dos símbolos ──
+    # Consciência de vencimento no AGI: loga contrato/vencimento/dias úteis e
+    # flags FREEZE (≤3d úteis p/ vencer) / GRACE (rolagem há ≤3d). O Stage 5
+    # usa o mesmo guard para bloquear mudanças nesses símbolos.
+    try:
+        from . import rollover_guard
+        ctx["rollover_state"] = rollover_guard.all_symbols_state(config)
+        log.info(f"[{TAG}] Estado de rolagem (FREEZE_DAYS={rollover_guard.FREEZE_DAYS}, "
+                 f"GRACE_DAYS={rollover_guard.GRACE_DAYS}):")
+        for _st in ctx["rollover_state"].values():
+            log.info("[{tag}] {line}".format(tag=TAG, line=rollover_guard.format_state_line(_st)))
+    except Exception as _rg_e:
+        log.warning(f"[{TAG}] rollover_state falhou: {_rg_e}")
+
     # ── Stage 1: Coleta (sempre roda) ──
     try:
         from .stage1_collect import run as stage1_run

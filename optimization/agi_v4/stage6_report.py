@@ -78,6 +78,7 @@ def _write_audit(ctx: dict) -> Path:
         "generated_strategies": ctx.get("generated_strategies", []),
         "applied_changes": ctx.get("applied_changes", []),
         "rejected_changes": ctx.get("rejected_changes", []),
+        "rollover_state": ctx.get("rollover_state", {}),
         "stage_audit": ctx.get("audit", []),
     }
     try:
@@ -272,6 +273,24 @@ def _build_telegram_message(ctx: dict) -> str:
         import os as _os
         if _os.path.exists("/tmp/vt_invalid_day.flag"):
             lines.append("• 🚫 Dia inválido — mudanças suprimidas")
+    except Exception:
+        pass
+
+    # ── Estado de rolagem (Wave AGI-rollover 13/08): vencimentos à vista ──
+    try:
+        _rs = ctx.get("rollover_state") or {}
+        _flags = []
+        for _st in _rs.values():
+            if not isinstance(_st, dict):
+                continue
+            if _st.get("freeze"):
+                _exp = str(_st.get("expiry", "?"))
+                _flags.append(f"🧊 {_st.get('symbol')} vence {_exp[-5:]} ({_st.get('days_util')}d úteis)")
+            elif _st.get("grace"):
+                _flags.append(f"⏳ {_st.get('symbol')} em grace pós-rolagem "
+                              f"({_st.get('days_since_rollover')}d)")
+        if _flags:
+            lines.append("• 📅 Rolagem: " + " | ".join(_flags))
     except Exception:
         pass
 
