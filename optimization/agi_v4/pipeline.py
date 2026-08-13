@@ -133,6 +133,12 @@ def run(days: int = 7,
                  f"GRACE_DAYS={rollover_guard.GRACE_DAYS}):")
         for _st in ctx["rollover_state"].values():
             log.info("[{tag}] {line}".format(tag=TAG, line=rollover_guard.format_state_line(_st)))
+        # Sanidade perpétua vs contrato live (incidente 05-12/08: WIN$=V26
+        # enquanto o live operava Q26 com 2.500-4.000pts de diferença).
+        ctx["series_sanity"] = rollover_guard.series_sanity(config)
+        log.info(f"[{TAG}] Sanidade série perpétua vs contrato live:")
+        for _se in ctx["series_sanity"].values():
+            log.info("[{tag}] {line}".format(tag=TAG, line=rollover_guard.format_series_line(_se)))
     except Exception as _rg_e:
         log.warning(f"[{TAG}] rollover_state falhou: {_rg_e}")
 

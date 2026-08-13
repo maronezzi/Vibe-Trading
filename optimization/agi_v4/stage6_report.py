@@ -79,6 +79,7 @@ def _write_audit(ctx: dict) -> Path:
         "applied_changes": ctx.get("applied_changes", []),
         "rejected_changes": ctx.get("rejected_changes", []),
         "rollover_state": ctx.get("rollover_state", {}),
+        "series_sanity": ctx.get("series_sanity", {}),
         "stage_audit": ctx.get("audit", []),
     }
     try:
@@ -291,6 +292,12 @@ def _build_telegram_message(ctx: dict) -> str:
                               f"({_st.get('days_since_rollover')}d)")
         if _flags:
             lines.append("• 📅 Rolagem: " + " | ".join(_flags))
+        _div = [f"{s.get('symbol')} Δ{s.get('diff_pts'):+.0f}pts"
+                for s in (ctx.get("series_sanity") or {}).values()
+                if isinstance(s, dict) and s.get("divergent")]
+        if _div:
+            lines.append("• ⚠️ Série perpétua DIVERGE do contrato live: "
+                         + " | ".join(_div) + " — simulação não representa o live")
     except Exception:
         pass
 

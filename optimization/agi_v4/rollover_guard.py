@@ -255,6 +255,74 @@ def all_symbols_state(config: dict) -> dict:
     return out
 
 
+# ── Sanidade da série perpétua vs contrato live ──
+# Incidente 05-12/08: o AGI otimizava WIN na WIN$ (= WINV26) enquanto o bot
+# operava WINQ26, 2.500-4.000 pts abaixo (carry). A simulação não representava
+# a execução. Este check compara o último close da perpétua com o último tick
+# do contrato resolvido; divergência > SERIES_DIVERGENCE_PCT vira alerta.
+SERIES_DIVERGENCE_PCT = float(os.environ.get("VT_AGI_SERIES_DIVERGENCE_PCT", "0.01"))
+
+
+def series_sanity(config: dict) -> dict:
+    """Compara perpétua ({root}$) vs contrato resolvido para cada símbolo.
+
+    Returns: {root: {"perp_last", "live_last", "diff_pts", "diff_pct",
+                     "divergent"} }. Fail-safe por símbolo.
+    """
+    out: dict = {}
+    resolved = (config.get("resolved_symbols") or {}) if config else {}
+    for root in (config.get("symbols") or []):
+        entry: dict = {"symbol": root, "perp_last": None, "live_last": None,
+                       "diff_pts": None, "diff_pct": None, "divergent": False}
+        try:
+            from backtest import backtest_v944 as bt
+            path = bt.fetch(f"{root}$", "M15", 60)
+            df = bt.load_csv(path) if path else None
+            if df is not None and len(df):
+                entry["perp_last"] = float(df["close"].iloc[-1])
+        except Exception as e:
+            entry["error_perp"] = str(e)[:120]
+        try:
+            from mt5.mt5_orchestrator import tick as _tick
+            contract = resolved.get(root, "")
+            if contract:
+                tk = _tick(contract)
+                if tk and tk.get("bid", 0) > 0:
+                    entry["live_last"] = float(tk["bid"])
+                    entry["live_contract"] = contract
+                else:
+                    # Pós-mercado: tick pode vir vazio → última barra do
+                    # contrato resolvido (copy_rates funciona p/ histórico).
+                    from backtest import backtest_v944 as bt
+                    p2 = bt.fetch(contract, "M15", 30)
+                    df2 = bt.load_csv(p2) if p2 else None
+                    if df2 is not None and len(df2):
+                        entry["live_last"] = float(df2["close"].iloc[-1])
+                        entry["live_contract"] = contract
+        except Exception as e:
+            entry["error_live"] = str(e)[:120]
+        if entry["perp_last"] and entry["live_last"]:
+            diff = entry["perp_last"] - entry["live_last"]
+            entry["diff_pts"] = round(diff, 1)
+            entry["diff_pct"] = round(abs(diff) / entry["live_last"] * 100, 2)
+            entry["divergent"] = abs(diff) / entry["live_last"] > SERIES_DIVERGENCE_PCT
+        out[root] = entry
+    return out
+
+
+def format_series_line(entry: dict) -> str:
+    """Linha humana do series sanity p/ log."""
+    if entry.get("divergent"):
+        return (f"  ⚠️ {entry['symbol']}: perpétua {entry.get('perp_last'):.0f} vs "
+                f"live {entry.get('live_contract')} {entry.get('live_last'):.0f} — "
+                f"Δ {entry.get('diff_pts'):+.0f}pts ({entry.get('diff_pct')}%) "
+                f"> {SERIES_DIVERGENCE_PCT*100:.0f}% — SIMULAÇÃO NÃO REPRESENTA O LIVE")
+    if entry.get("perp_last") and entry.get("live_last"):
+        return (f"  ✅ {entry['symbol']}: perpétua≈live "
+                f"(Δ {entry.get('diff_pts'):+.0f}pts)")
+    return f"  ❓ {entry['symbol']}: sem dados para comparar série"
+
+
 def format_state_line(st: dict) -> str:
     """Linha humana de estado p/ log/Telegram."""
     if not st.get("contract"):
