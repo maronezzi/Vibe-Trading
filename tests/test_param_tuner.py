@@ -108,6 +108,38 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
         t = pt.extract_tunable_params(p)
         self.assertLessEqual(len(t), 5)
 
+    def test_clips_to_guardrail_range(self):
+        # Bug 1 fix: ema_fast default 25 → fallback range [13, 38], mas a
+        # whitelist do guardrail é [5, 30]. Após clip, hi deve ser ≤30 (não 38).
+        src = '''
+STRATEGY_NAME = "TEST_CLIP"
+def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
+    ema = params.get("ema_fast", 25)
+    return None
+'''
+        p = _write_strat(src)
+        t = pt.extract_tunable_params(p)
+        self.assertIn("ema_fast", t)
+        # Range clipsado ao aceito pelo guardrail ([5,30]).
+        self.assertLessEqual(t["ema_fast"]["hi"], 30)
+        self.assertGreaterEqual(t["ema_fast"]["lo"], 5)
+        # Default 25 está dentro — mantém.
+        self.assertEqual(t["ema_fast"]["default"], 25)
+
+    def test_clips_default_outside_guardrail_range(self):
+        # Default abaixo do range da whitelist → clipsado para o limite inferior.
+        # rsi_period whitelist é [5,30]; default 3 → clipsado para 5.
+        src = '''
+STRATEGY_NAME = "TEST_CLIP2"
+def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
+    rsi = params.get("rsi_period", 3)
+    return None
+'''
+        p = _write_strat(src)
+        t = pt.extract_tunable_params(p)
+        if "rsi_period" in t:  # só se passou o filtro de range não-degenerado
+            self.assertGreaterEqual(t["rsi_period"]["default"], 5)
+
 
 class TestSanctionedSpec(unittest.TestCase):
     def test_format_matches_guardrail(self):

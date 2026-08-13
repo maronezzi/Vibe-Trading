@@ -382,6 +382,32 @@ def clear_sanctioned_params() -> None:
     _SANCTIONED_PARAMS.clear()
 
 
+def accepted_range_for_param(
+    param: str, pair: str = "WIN_M5"
+) -> tuple[type, float, float] | None:
+    """Retorna o (tipo, lo, hi) que o guardrail ACEITA para um param, ou None.
+
+    Wave AGI-sweep fix (Bruno 12/08): consulta SAFE_WRITE_TARGETS com um path
+    canônico ``params_by_tf.<pair>.<param>``. Usado pelo param_tuner para gerar
+    grids SÓ com valores que o guardrail aceita — evita otimizar para um valor
+    (ex: ema_fast=4) que depois é rejeitado por estar fora do range da whitelist
+    ([5,30]). Params só-sancionados (não na whitelist) retornam None (o tuner
+    usa seu próprio range, que será registrado como sanctioned).
+
+    Args:
+        param: nome do param (ex: "ema_fast").
+        pair: par canônico para casar a regex (default "WIN_M5").
+
+    Returns:
+        (tipo, lo, hi) se o param está na whitelist estática; None caso contrário.
+    """
+    key = f"params_by_tf.{pair}.{param}"
+    for pattern, expected_type, value_range in SAFE_WRITE_TARGETS:
+        if re.match(pattern, key) and value_range is not None:
+            return (expected_type, value_range[0], value_range[1])
+    return None
+
+
 def _check_sanctioned(
     key_path: str, value: Any, current_config: dict | None
 ) -> tuple[bool | None, str]:
@@ -535,6 +561,7 @@ __all__ = [
     "validate_target_block",
     "register_sanctioned_params",
     "clear_sanctioned_params",
+    "accepted_range_for_param",
     "GuardrailReject",
 ]
 

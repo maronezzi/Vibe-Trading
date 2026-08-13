@@ -91,10 +91,41 @@ def extract_tunable_params(strategy_path: str | Path) -> dict[str, dict[str, Any
             kind, lo, hi = decl[param]
         else:
             kind, lo, hi = _infer_range(default)
+        # Wave AGI-sweep fix (Bruno 12/08): clipsa ao range que o guardrail
+        # ACEITA (whitelist estática). Sem isto, o tuner gera valores (ex:
+        # ema_fast=4) que o guardrail rejeita por estar fora do range da
+        # whitelist ([5,30]) — promoção falha e a melhoria se perde.
+        lo, hi, default = _clip_to_guardrail_range(param, lo, hi, default)
+        if lo > hi:
+            continue  # range aceito não cobre nada útil — param não é tunable
         result[param] = {"kind": kind, "lo": lo, "hi": hi, "default": default}
         if len(result) >= _MAX_TUNABLE_PARAMS:
             break
     return result
+
+
+def _clip_to_guardrail_range(
+    param: str, lo: float, hi: float, default: float
+) -> tuple[float, float, float]:
+    """Intersecta o range do tuner com o range aceito pelo guardrail.
+
+    Se o param está na whitelist estática (ex: ema_fast ∈ [5,30]), o range do
+    tuner é clipsado a esse — o grid só gera valores que passam no guardrail.
+    O default também é clipsado (se 9 está dentro, mantém; senão, vira o limite
+    mais próximo). Params só-sancionados (não na whitelist) retornam intactos.
+    """
+    try:
+        from optimization.agi_v4.guardrails import accepted_range_for_param
+        acc = accepted_range_for_param(param)
+    except Exception:
+        return lo, hi, default
+    if acc is None:
+        return lo, hi, default  # param não está na whitelist — usa range do tuner
+    _, a_lo, a_hi = acc
+    lo = max(lo, a_lo)
+    hi = min(hi, a_hi)
+    default = max(a_lo, min(a_hi, default))
+    return lo, hi, default
 
 
 def _extract_defaults_fallback(tree: ast.AST) -> dict[str, float]:

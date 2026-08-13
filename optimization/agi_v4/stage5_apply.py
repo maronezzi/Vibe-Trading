@@ -327,6 +327,7 @@ def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: d
     # precisa ser PROMOVIDO para strategies/ antes de atualizar o config.
     # Senão o loader (que ignora _-prefixed) não carrega na próxima
     # simulação, e o par volta a dar 0 trades.
+    original_pending_path = cand.get("pending_path")  # p/ reverter se write falhar
     promoted_path = _maybe_promote_generated(strategy, cand, dry_run)
     change["promoted_from_pending"] = promoted_path
 
@@ -360,6 +361,22 @@ def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: d
                 f"{f' + hoje {today_weight}×R${_base_today:.2f}({_base_tn}t)' if _base_tn >= today_min else ''})"
             )
         except Exception as e:
+            # Wave AGI-sweep fix (Bruno 12/08): se o write falhou (ex:
+            # guardrail_reject) E o arquivo foi promovido (_pending→strategies/),
+            # REVERTE o move para não deixar órfão em strategies/ (promovido
+            # fisicamente mas o config não usa). Antes o move era "fire-and-
+            # forget" — criava órfãos silenciosamente (causa das ~17 estratégias
+            # órfãs acumuladas em strategies/ ao longo do tempo).
+            if promoted_path and original_pending_path:
+                try:
+                    import shutil
+                    shutil.move(promoted_path, original_pending_path)
+                    log.info(f"revertido promote de {strategy} (write falhou) "
+                             f"→ {original_pending_path}")
+                    change["promoted_from_pending"] = None
+                except Exception as revert_err:
+                    log.warning(f"falha ao reverter promote de {strategy} "
+                                f"(órfão potencial): {revert_err}")
             # Wave AGI-alerts (Bruno 12/08): GuardrailReject tem tratamento
             # dedicado (gate="guardrail_reject") para aparecer no Telegram como
             # evento de segurança. _write_to_config agora PROPAGA a exceção em
