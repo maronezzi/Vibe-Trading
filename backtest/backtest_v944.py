@@ -83,6 +83,7 @@ def _bars_newest_first(df: pd.DataFrame) -> list:
     out = []
     for _, r in df.iloc[::-1].iterrows():
         out.append({
+            "open": float(r.get("open", r["close"]) or r["close"]),
             "high": float(r["high"]),
             "low": float(r["low"]),
             "close": float(r["close"]),
@@ -193,6 +194,130 @@ def calculate_vwap(bars, period=20):
         spv += tp * v
         sv += v
     return spv / sv if sv > 0 else 0
+
+
+# ── Wave AGI-super (Bruno 13/08): caixa de ferramentas expandida ──
+# Antes o AGI só podia construir estratégias com 5 indicadores (ema/rsi/adx/
+# bollinger/vwap). Estas 8 funções novas (MACD, estocástico, Donchian, Keltner,
+# z-score, ROC, candle stats e inclinação de regressão) são cópias puras das
+# de core/vt_autotrader.py — MESMO comportamento, mesma convenção:
+# bars newest-first, retorno escalar/tupla fixa (nunca série).
+
+def calculate_macd(bars, fast=12, slow=26, signal=9):
+    """MACD. Retorna (macd_line, signal_line, histograma) da barra mais nova."""
+    if not bars or len(bars) < slow + signal + 5:
+        return 0, 0, 0
+    chrono = [b["close"] for b in reversed(bars)]
+
+    def _ema_series(vals, period):
+        mult = 2 / (period + 1)
+        out = [sum(vals[:period]) / period]
+        for v in vals[period:]:
+            out.append(v * mult + out[-1] * (1 - mult))
+        return out
+
+    fast_s = _ema_series(chrono, fast)
+    slow_s = _ema_series(chrono, slow)
+    offset = slow - fast
+    if len(fast_s) <= offset:
+        return 0, 0, 0
+    macd_s = [fast_s[offset + i] - slow_s[i] for i in range(len(slow_s))]
+    if len(macd_s) < signal:
+        return 0, 0, 0
+    sig_s = _ema_series(macd_s, signal)
+    macd_v, sig_v = macd_s[-1], sig_s[-1]
+    return macd_v, sig_v, macd_v - sig_v
+
+
+def calculate_stochastic(bars, k_period=14, d_period=3):
+    """Estocástico %K/%D (0-100). Retorna (k, d)."""
+    if not bars or len(bars) < k_period + d_period:
+        return 50, 50
+    k_vals = []
+    for s in range(d_period):
+        win = bars[s:s + k_period]
+        hh = max(b["high"] for b in win)
+        ll = min(b["low"] for b in win)
+        c = bars[s]["close"]
+        k_vals.append(100 * (c - ll) / (hh - ll) if hh > ll else 50)
+    return k_vals[0], sum(k_vals) / len(k_vals)
+
+
+def calculate_donchian(bars, period=20):
+    """Canal de Donchian das últimas `period` barras EXCLUINDO a atual
+    (bars[1:]) — pronto para breakout. Retorna (upper, mid, lower)."""
+    win = bars[1:period + 1]
+    if len(win) < period:
+        return 0, 0, 0
+    hh = max(b["high"] for b in win)
+    ll = min(b["low"] for b in win)
+    return hh, (hh + ll) / 2, ll
+
+
+def calculate_keltner(bars, ema_period=20, atr_period=14, mult=2.0):
+    """Canal de Keltner (EMA ± mult×ATR). Retorna (upper, mid, lower)."""
+    mid = calculate_ema(bars, ema_period)
+    atr_v = calculate_atr(bars, atr_period)
+    if mid == 0 or atr_v == 0:
+        return 0, 0, 0
+    return mid + mult * atr_v, mid, mid - mult * atr_v
+
+
+def calculate_zscore(bars, period=20):
+    """Z-score do último close vs janela de `period` barras. float."""
+    if not bars or len(bars) < period:
+        return 0
+    closes = [b["close"] for b in bars[:period]]
+    mean = sum(closes) / period
+    std = (sum((c - mean) ** 2 for c in closes) / period) ** 0.5
+    if std == 0:
+        return 0
+    return (bars[0]["close"] - mean) / std
+
+
+def calculate_roc(bars, period=10):
+    """Rate of Change (%): close atual vs close de `period` barras atrás."""
+    if not bars or len(bars) <= period:
+        return 0
+    prev = bars[period]["close"]
+    if prev <= 0:
+        return 0
+    return (bars[0]["close"] - prev) / prev * 100
+
+
+def calculate_candle_stats(bars):
+    """Estatísticas da barra mais nova. Retorna (body_ratio, direction):
+    body_ratio = |close-open|/(high-low) em 0..1; direction +1/-1/0."""
+    if not bars:
+        return 0, 0
+    b = bars[0]
+    rng = b["high"] - b["low"]
+    if rng <= 0:
+        return 0, 0
+    body = b["close"] - b.get("open", b["close"])
+    return abs(body) / rng, (1 if body > 0 else (-1 if body < 0 else 0))
+
+
+def calculate_linreg_slope(bars, period=20):
+    """Inclinação da regressão linear dos closes, normalizada em % POR BARRA
+    (positiva = tendência de alta). Robusta a ruído — melhor que EMA-cross
+    para medir força/direção da tendência em janela fixa."""
+    if not bars or len(bars) < period:
+        return 0
+    closes = [b["close"] for b in reversed(bars[:period])]  # cronológico
+    n = period
+    sx = n * (n - 1) / 2
+    sy = sum(closes)
+    sxx = n * (n - 1) * (2 * n - 1) / 6
+    sxy = sum(i * closes[i] for i in range(n))
+    denom = n * sxx - sx * sx
+    if denom == 0 or sy == 0:
+        return 0
+    slope = (n * sxy - sx * sy) / denom
+    mean_y = sy / n
+    if mean_y == 0:
+        return 0
+    return slope / mean_y * 100
 
 
 def calc_sl(symbol, atr, params):
@@ -309,6 +434,16 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
         "calculate_bollinger": calculate_bollinger,
         "calculate_vwap": calculate_vwap,
         "calculate_atr": calculate_atr,
+        # Wave AGI-super (13/08): toolbox expandida (sincronizada com
+        # core/vt_autotrader._init_strategy_utils)
+        "calculate_macd": calculate_macd,
+        "calculate_stochastic": calculate_stochastic,
+        "calculate_donchian": calculate_donchian,
+        "calculate_keltner": calculate_keltner,
+        "calculate_zscore": calculate_zscore,
+        "calculate_roc": calculate_roc,
+        "calculate_candle_stats": calculate_candle_stats,
+        "calculate_linreg_slope": calculate_linreg_slope,
         "calc_sl": calc_sl,
     }
 

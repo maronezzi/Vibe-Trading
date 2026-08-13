@@ -366,6 +366,16 @@ def _runtime_smoke_gate(path: Path) -> GateResult:
         "calculate_bollinger": _bt.calculate_bollinger,
         "calculate_vwap": _bt.calculate_vwap,
         "calculate_atr": _bt.calculate_atr,
+        # Wave AGI-super (13/08): toolbox expandida
+        "calculate_macd": _bt.calculate_macd,
+        "calculate_stochastic": _bt.calculate_stochastic,
+        "calculate_donchian": _bt.calculate_donchian,
+        "calculate_keltner": _bt.calculate_keltner,
+        "calculate_zscore": _bt.calculate_zscore,
+        "calculate_roc": _bt.calculate_roc,
+        "calculate_candle_stats": _bt.calculate_candle_stats,
+        "calculate_linreg_slope": _bt.calculate_linreg_slope,
+        "get_market_regime": lambda bars, params=None: "CHOPPY",
         "calc_sl": lambda symbol, atr, params: int(max(1, atr * 1.5)),
     }
 
@@ -447,66 +457,98 @@ REGRAS OBRIGATÓRIAS:
 1. Deve ter: STRATEGY_NAME = "{strat_name}" (constante string no nível do módulo)
 2. Deve ter: def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils)
 3. LEI 3: TODO sinal retornado DEVE incluir "sl_pts" calculado via calc_sl = utils["calc_sl"]; sl_pts = calc_sl(symbol, atr, params)
-4. SANDBOX: NÃO importar nada (sem import os, subprocess, mt5, etc). Receba tudo via utils e params.
+4. SANDBOX: NÃO importar nada (sem import os, subprocess, mt5, math, etc). Receba tudo via utils e params.
 5. Retornar None se não há sinal, ou dict {{"direction": "BUY"/"SELL", "sl_pts": int, "info": {{...}}}}
-6. Params via params.get("nome", default)
-7. TUNABLE_PARAMS (opcional, mas recomendado): declare no nível do módulo um
-   dict com os 3-5 params PRINCIPAIS que controlam o setup da estratégia, no
-   formato {{"param": (tipo, min, max)}}. tipo é int ou float (sem aspas). Estes
-   serão otimizados automaticamente. Exemplo:
+6. Params via params.get("nome", default) — SEMPRE com default defensivo
+7. TUNABLE_PARAMS: declare no nível do módulo um dict com os 4-6 params PRINCIPAIS
+   que controlam o setup, no formato {{"param": (tipo, min, max)}} (tipo é int ou
+   float sem aspas). Eles serão otimizados automaticamente pelo AGI. Exemplo:
        TUNABLE_PARAMS = {{"ema_fast": (int, 5, 30), "adx_min": (float, 15.0, 35.0)}}
-   Use ranges SENSATOS para o param (não genéricos). Params de gestão (sl_atr_mult,
-   cooldown_seconds) NÃO incluir — eles são otimizados à parte.
+   Use ranges SENSATOS para cada param. Params de gestão (sl_atr_mult,
+   cooldown_seconds) NÃO incluir — são otimizados à parte.
 
 CONTRATO DOS INDICADORES (utils) — TIPOS DE RETORNO EXATOS:
 No início de check_entry, extraia os helpers para nomes locais:
     calculate_ema = utils["calculate_ema"]
-    calculate_rsi = utils["calculate_rsi"]
-    calculate_adx = utils["calculate_adx"]
-    calculate_bollinger = utils["calculate_bollinger"]
-    calc_sl = utils["calc_sl"]
-
+    ...
 CADA função retorna um ÚNICO valor (escalar ou tupla fixa), NÃO uma lista/série.
 Use o resultado DIRETAMENTE — NUNCA indexe com [-1], [:], len(), nem chame .get():
 
-  calculate_ema(bars, period)        -> float         (ex: 152340.5)
-  calculate_rsi(bars, period)        -> float         (ex: 42.3; 50 se faltar barra)
-  calculate_adx(bars, period)        -> tuple de 3    unpack: adx, plus_di, minus_di = calculate_adx(bars, period)
-  calculate_bollinger(bars, p, std)  -> tuple de 3    unpack: upper, mid, lower = calculate_bollinger(bars, period, std)
-  calc_sl(symbol, atr, params)       -> int           sl_pts = calc_sl(symbol, atr, params)
+  calculate_ema(bars, period)              -> float
+  calculate_rsi(bars, period)              -> float  (50 se faltar barra)
+  calculate_adx(bars, period)              -> tupla3: adx, plus_di, minus_di = calculate_adx(bars, period)
+  calculate_bollinger(bars, p, std)        -> tupla3: upper, mid, lower = calculate_bollinger(bars, p, std)
+  calculate_vwap(bars, period)             -> float
+  calculate_atr(bars, period)              -> float
+  calculate_macd(bars, fast, slow, signal) -> tupla3: macd_line, signal_line, hist = calculate_macd(...)
+  calculate_stochastic(bars, k_p, d_p)     -> tupla2: k, d = calculate_stochastic(...)   (0-100)
+  calculate_donchian(bars, period)         -> tupla3: upper, mid, lower (EXCLUI a barra atual — pronto p/ breakout)
+  calculate_keltner(bars, ema_p, atr_p, m) -> tupla3: upper, mid, lower
+  calculate_zscore(bars, period)           -> float  (z-score do close atual; >2 esticado p/ cima)
+  calculate_roc(bars, period)              -> float  (variação % em `period` barras)
+  calculate_candle_stats(bars)             -> tupla2: body_ratio, direction = calculate_candle_stats(bars) (ratio 0..1; dir +1/-1/0)
+  calculate_linreg_slope(bars, period)     -> float  (% por barra; >0 tendência de alta, <0 de baixa)
+  calc_sl(symbol, atr, params)             -> int    sl_pts = calc_sl(symbol, atr, params)
 
 ⚠️ ERRO COMUM (REJEITADO): rsi_values = calculate_rsi(bars, 14); rsi_values[-1]  ← ERRADO, float não é subscritável.
 ✅ CORRETO: rsi = calculate_rsi(bars, 14)  ← use 'rsi' direto.
 
-EXEMPLO CANÔNICO (siga este padrão de uso dos retornos):
+PRINCÍPIOS DE SUPER ESTRATÉGIA (aprendidos com as vencedoras do portfólio):
+As estratégias mais lucrativas do sistema compartilham 4 características — INCORPORE-AS:
+
+A) COMPOSIÇÃO DE FILTROS INDEPENDENTES (mínimo 3 condições de famílias DIFERENTES):
+   gatilho de entrada (ex: reclaim de banda média, breakout de Donchian) +
+   filtro de polaridade/tendência (ex: +DI vs -DI, inclinação de regressão, MACD) +
+   gate de regime/volatilidade (ex: ADX em faixa saudável, z-score não esticado).
+   Um único indicador isolado NÃO é estratégia.
+
+B) FAIXA SAUDÁVEL DE ADX (padrão da vencedora AGI4_WIN_121815): ADX fraco demais =
+   ruído (não entrar); ADX forte demais = exaustão/clímax (não entrar). Use
+   adx_min <= ADX <= adx_max como gate, não como gatilho.
+
+C) ADAPTAÇÃO DE REGIME (padrão da vencedora AGI4_WSP_134734): se possível, a
+   estratégia deve se comportar diferente em tendência (continuação) vs lateral
+   (reversão nas extremidades), usando o ADX para escolher o modo.
+
+D) DISCIPLINA: warmup mínimo (len(bars) >= maior período + folga), guards contra
+   valores 0, e NENHUMA lógica de saída/gestão (só entrada; SL vem do calc_sl).
+
+EXEMPLO CANÔNICO (padrão de código esperado — estrutura, guards, unpack de tuplas):
     def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
         calculate_ema = utils["calculate_ema"]
         calculate_rsi = utils["calculate_rsi"]
         calculate_adx = utils["calculate_adx"]
+        calculate_bollinger = utils["calculate_bollinger"]
+        calculate_linreg_slope = utils["calculate_linreg_slope"]
         calc_sl = utils["calc_sl"]
 
-        ema_fast_period = params.get("ema_fast", 9)
-        ema_slow_period = params.get("ema_slow", 21)
+        bb_period = params.get("bb_period", 20)
         adx_period = params.get("adx_period", 14)
+        adx_min = params.get("adx_min", 18)
+        adx_max = params.get("adx_max", 45)
+        slope_period = params.get("slope_period", 20)
+        slope_min = params.get("slope_min", 0.01)
 
-        min_bars = max(ema_slow_period, adx_period * 2) + 5
+        min_bars = max(bb_period, adx_period * 2, slope_period) + 5
         if not bars or len(bars) < min_bars:
             return None
-        if atr <= 0:
+        if atr <= 0 or price <= 0:
             return None
 
-        ema_fast_val = calculate_ema(bars, ema_fast_period)   # float direto
-        ema_slow_val = calculate_ema(bars, ema_slow_period)   # float direto
-        adx_val, plus_di, minus_di = calculate_adx(bars, adx_period)  # tupla unpack
-        rsi = calculate_rsi(bars, params.get("rsi_period", 14))       # float direto
+        upper, mid, lower = calculate_bollinger(bars, bb_period, params.get("bb_std", 2.0))
+        adx_val, plus_di, minus_di = calculate_adx(bars, adx_period)
+        slope = calculate_linreg_slope(bars, slope_period)
+        rsi = calculate_rsi(bars, params.get("rsi_period", 14))
 
-        if ema_fast_val == 0 or ema_slow_val == 0 or adx_val == 0:
+        if mid == 0 or adx_val == 0:
             return None
+        if adx_val < adx_min or adx_val > adx_max:
+            return None  # ruído ou exaustão
 
-        # ... sua lógica de entrada aqui ...
+        # ... lógica de entrada: gatilho + polaridade + gates ...
 
         sl_pts = calc_sl(symbol, atr, params)
-        return {{"direction": direction, "sl_pts": sl_pts, "info": {{...}}}}
+        return {{"direction": direction, "sl_pts": sl_pts, "info": {{"adx": adx_val}}}}
 
 ESTRATÉGIA PARA IMPLEMENTAR:
 Par: {pair}

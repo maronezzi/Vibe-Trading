@@ -132,6 +132,16 @@ def _init_strategy_utils():
         "calculate_bollinger": calculate_bollinger,
         "calculate_atr": calculate_atr,
         "get_market_regime": get_market_regime,
+        # Wave AGI-super (13/08): toolbox expandida (sincronizada com
+        # backtest/backtest_v944.py — manter as duas cópias idênticas)
+        "calculate_macd": calculate_macd,
+        "calculate_stochastic": calculate_stochastic,
+        "calculate_donchian": calculate_donchian,
+        "calculate_keltner": calculate_keltner,
+        "calculate_zscore": calculate_zscore,
+        "calculate_roc": calculate_roc,
+        "calculate_candle_stats": calculate_candle_stats,
+        "calculate_linreg_slope": calculate_linreg_slope,
         "calc_sl": _calc_sl,
     }
 
@@ -904,6 +914,128 @@ def calculate_adx(bars: list, period: int = 14):
     di_sum = plus_di + minus_di
     dx = 100 * abs(plus_di - minus_di) / di_sum if di_sum > 0 else 0
     return dx, plus_di, minus_di
+
+
+# ── Wave AGI-super (Bruno 13/08): caixa de ferramentas expandida ──
+# MESMAS implementações de backtest/backtest_v944.py (manter sincronizado —
+# o backtest precisa ser fiel ao live). bars newest-first; retorno escalar
+# ou tupla fixa (nunca série).
+
+def calculate_macd(bars: list, fast: int = 12, slow: int = 26, signal: int = 9):
+    """MACD. Retorna (macd_line, signal_line, histograma) da barra mais nova."""
+    if not bars or len(bars) < slow + signal + 5:
+        return 0, 0, 0
+    chrono = [b["close"] for b in reversed(bars)]
+
+    def _ema_series(vals, period):
+        mult = 2 / (period + 1)
+        out = [sum(vals[:period]) / period]
+        for v in vals[period:]:
+            out.append(v * mult + out[-1] * (1 - mult))
+        return out
+
+    fast_s = _ema_series(chrono, fast)
+    slow_s = _ema_series(chrono, slow)
+    offset = slow - fast
+    if len(fast_s) <= offset:
+        return 0, 0, 0
+    macd_s = [fast_s[offset + i] - slow_s[i] for i in range(len(slow_s))]
+    if len(macd_s) < signal:
+        return 0, 0, 0
+    sig_s = _ema_series(macd_s, signal)
+    macd_v, sig_v = macd_s[-1], sig_s[-1]
+    return macd_v, sig_v, macd_v - sig_v
+
+
+def calculate_stochastic(bars: list, k_period: int = 14, d_period: int = 3):
+    """Estocástico %K/%D (0-100). Retorna (k, d)."""
+    if not bars or len(bars) < k_period + d_period:
+        return 50, 50
+    k_vals = []
+    for s in range(d_period):
+        win = bars[s:s + k_period]
+        hh = max(b["high"] for b in win)
+        ll = min(b["low"] for b in win)
+        c = bars[s]["close"]
+        k_vals.append(100 * (c - ll) / (hh - ll) if hh > ll else 50)
+    return k_vals[0], sum(k_vals) / len(k_vals)
+
+
+def calculate_donchian(bars: list, period: int = 20):
+    """Canal de Donchian das últimas `period` barras EXCLUINDO a atual
+    (bars[1:]) — pronto para breakout. Retorna (upper, mid, lower)."""
+    win = bars[1:period + 1]
+    if len(win) < period:
+        return 0, 0, 0
+    hh = max(b["high"] for b in win)
+    ll = min(b["low"] for b in win)
+    return hh, (hh + ll) / 2, ll
+
+
+def calculate_keltner(bars: list, ema_period: int = 20, atr_period: int = 14,
+                      mult: float = 2.0):
+    """Canal de Keltner (EMA ± mult×ATR). Retorna (upper, mid, lower)."""
+    mid = calculate_ema(bars, ema_period)
+    atr_v = calculate_atr(bars, atr_period)
+    if mid == 0 or atr_v == 0:
+        return 0, 0, 0
+    return mid + mult * atr_v, mid, mid - mult * atr_v
+
+
+def calculate_zscore(bars: list, period: int = 20) -> float:
+    """Z-score do último close vs janela de `period` barras."""
+    if not bars or len(bars) < period:
+        return 0
+    closes = [b["close"] for b in bars[:period]]
+    mean = sum(closes) / period
+    std = (sum((c - mean) ** 2 for c in closes) / period) ** 0.5
+    if std == 0:
+        return 0
+    return (bars[0]["close"] - mean) / std
+
+
+def calculate_roc(bars: list, period: int = 10) -> float:
+    """Rate of Change (%): close atual vs close de `period` barras atrás."""
+    if not bars or len(bars) <= period:
+        return 0
+    prev = bars[period]["close"]
+    if prev <= 0:
+        return 0
+    return (bars[0]["close"] - prev) / prev * 100
+
+
+def calculate_candle_stats(bars: list):
+    """Estatísticas da barra mais nova. Retorna (body_ratio, direction):
+    body_ratio = |close-open|/(high-low) em 0..1; direction +1/-1/0."""
+    if not bars:
+        return 0, 0
+    b = bars[0]
+    rng = b["high"] - b["low"]
+    if rng <= 0:
+        return 0, 0
+    body = b["close"] - b.get("open", b["close"])
+    return abs(body) / rng, (1 if body > 0 else (-1 if body < 0 else 0))
+
+
+def calculate_linreg_slope(bars: list, period: int = 20) -> float:
+    """Inclinação da regressão linear dos closes, normalizada em % POR BARRA
+    (positiva = tendência de alta)."""
+    if not bars or len(bars) < period:
+        return 0
+    closes = [b["close"] for b in reversed(bars[:period])]  # cronológico
+    n = period
+    sx = n * (n - 1) / 2
+    sy = sum(closes)
+    sxx = n * (n - 1) * (2 * n - 1) / 6
+    sxy = sum(i * closes[i] for i in range(n))
+    denom = n * sxx - sx * sx
+    if denom == 0 or sy == 0:
+        return 0
+    slope = (n * sxy - sx * sy) / denom
+    mean_y = sy / n
+    if mean_y == 0:
+        return 0
+    return slope / mean_y * 100
 
 
 def get_market_regime(bars: list, params: dict = None) -> str:

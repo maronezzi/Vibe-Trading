@@ -105,6 +105,32 @@ def run(ctx: dict) -> dict:
     return {"hypotheses": hypotheses, "summary": summary}
 
 
+def _format_winners_for_prompt(performance: dict) -> str:
+    """Top setups lucrativos do período para cross-pollination.
+
+    Wave AGI-super (Bruno 13/08): alimenta o prompt do LLM com o que JÁ
+    FUNCIONA no portfólio, para as hipóteses adaptarem lógica vencedora
+    aos pares perdedores em vez de partir do zero.
+    """
+    by_tf = (performance or {}).get("by_symbol_tf", {}) or {}
+    winners = []
+    for p, d in by_tf.items():
+        if not isinstance(d, dict):
+            continue
+        pnl = d.get("total_pnl") or 0
+        n = d.get("n_trades") or 0
+        if pnl > 0 and n >= 5:
+            winners.append((p, d.get("strategy", "?"), pnl,
+                            d.get("win_rate", 0), n))
+    winners.sort(key=lambda x: -x[2])
+    if not winners:
+        return "(nenhum setup lucrativo com trades suficientes no período)"
+    lines = []
+    for p, strat, pnl, wr, n in winners[:6]:
+        lines.append(f"- {p}: {strat} | R$ {pnl:+.0f} | WR {wr:.0f}% ({n} trades)")
+    return "\n".join(lines)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Web search por par
 # ═══════════════════════════════════════════════════════════════════
@@ -165,8 +191,12 @@ def _ask_llm_for_hypotheses(
     web_summary = _format_web_for_prompt(web_results)
     db_summary = _format_db_for_prompt(pair, performance)
     current_config = _format_config_for_prompt(pair, config)
+    # Wave AGI-super (Bruno 13/08): cross-pollination — o LLM recebe os setups
+    # vencedores do portfólio para ADAPTAR lógica vencedora ao par perdedor,
+    # em vez de inventar do zero (as vencedoras já passaram pelo gate de 30d).
+    winners_summary = _format_winners_for_prompt(performance)
 
-    prompt = f"""Você é um analista quantitativo. Analise este par de trading que está perdendo e proponha melhorias.
+    prompt = f"""Você é um analista quantitativo sênior de futuros B3. Analise este par que está perdendo e proponha melhorias.
 
 PAR: {pair} ({sym_root} — contrato B3 futures)
 ESTRATÉGIA ATUAL: {current_config}
@@ -174,13 +204,21 @@ ESTRATÉGIA ATUAL: {current_config}
 DADOS REAIS (últimos 7 dias do banco de dados broker-reconciled):
 {db_summary}
 
+SETUPS VENCEDORES ATUAIS DO PORTFÓLIO (referência — adapte a lógica vencedora
+deles para este par; não invente do zero o que já funciona em outro par):
+{winners_summary}
+
 PESQUISA WEB (fatos confirmados sobre estratégias para este ativo):
 {web_summary}
 
 Com base NOS FATOS acima (não invente), proponha ATÉ 3 melhorias. Para cada uma:
 1. Tipo: "param_variation" (ajustar params da estratégia atual) ou "new_logic" (estratégia diferente)
-2. Descrição objetiva do que mudar
-3. Justificativa citando o fato web ou dado DB que sustenta
+2. Descrição objetiva do que mudar — para "new_logic", descreva a TESE do setup
+   (gatilho + filtro de tendência + gate de regime/volatilidade) com detalhes
+   suficientes para outro analista implementar (indicadores, condições, direção)
+3. Justificativa citando o fato web, dado DB ou setup vencedor que sustenta
+
+PRIORIZE hipóteses que adaptem padrões dos setups vencedores listados acima.
 
 Responda APENAS em JSON válido, sem markdown:
 {{"hypotheses": [{{"type": "...", "description": "...", "justification": "..."}}]}}"""
