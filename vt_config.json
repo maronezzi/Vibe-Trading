@@ -1,7 +1,7 @@
 {
-  "_version": 1284,
-  "_updated_at": "2026-08-13T20:23:45.306987",
-  "_updated_by": "agi_v4_stage5",
+  "_version": 1287,
+  "_updated_at": "2026-08-13T21:26:31.964199",
+  "_updated_by": "agi_v4_risk_calibrator",
   "_notes": "auto-resolve vencimento: WIN: WINQ26 → WINV26",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
@@ -596,7 +596,7 @@
     "degrade_disable_breakouts": true
   },
   "profit_lock_enabled": true,
-  "profit_lock_min_target": 250.0,
+  "profit_lock_min_target": 300.0,
   "profit_lock_target_mult": 1.0,
   "profit_lock_lookback_days": 7,
   "trailing_profit_lock_enabled": true,
@@ -614,7 +614,10 @@
   },
   "execution_guards": {
     "max_slippage_pts_by_symbol": {
-      "WIN": 200
+      "WIN": 125,
+      "WDO": 2020,
+      "WSP": 375,
+      "BIT": 34955
     },
     "max_sl_pts_by_symbol": {
       "WIN": 600
@@ -622,7 +625,7 @@
     "_doc": "Wave AGI-exec-guards (13/08): max_slippage_pts = descarta entrada se o preço andou mais que isso contra o sinal (incidente 13/08: fills 430-655pts adversos). max_sl_pts = teto do SL em pontos (incidente 13/08: SL 785pts = -R$158 num stop). Só afeta símbolos listados; 0/ausente = off. max_daily_loss_by_symbol cobre TODOS os ativos (unidade R$, segura). slippage/SL-cap em pontos só WIN (calibrado 13/08); estender por ativo após coletar dados."
   },
   "max_daily_loss_by_symbol": {
-    "WIN": -250,
+    "WIN": -150,
     "WDO": -250,
     "WSP": -200,
     "BIT": -150
