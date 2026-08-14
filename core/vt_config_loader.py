@@ -71,6 +71,11 @@ ALLOWED_WRITERS = (
     "optimization/agi_evidence_validator.py",
     "optimization/strategy_explorer.py",
     "optimization/exhaustive_strategy_search.py",
+    # Wave AGI-super (Bruno 13/08): o AGI calibra os próprios parâmetros de
+    # risco (stop diário por símbolo, alvo do profit lock, tolerância de
+    # slippage) por simulação counterfactual nos trades reais. Escrita só
+    # nessas chaves, com evidência mínima (ver módulo).
+    "optimization/agi_v4/risk_calibrator.py",
     # scripts de manutenção (devem rodar com autotrader PAUSADO)
     "scripts/vt_meio_dia_tuning.py",
     "scripts/migrate_today_trades_w13_2.py",

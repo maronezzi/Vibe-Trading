@@ -80,6 +80,7 @@ def _write_audit(ctx: dict) -> Path:
         "rejected_changes": ctx.get("rejected_changes", []),
         "rollover_state": ctx.get("rollover_state", {}),
         "series_sanity": ctx.get("series_sanity", {}),
+        "risk_calibration": ctx.get("risk_calibration", {}),
         "stage_audit": ctx.get("audit", []),
     }
     try:
@@ -298,6 +299,29 @@ def _build_telegram_message(ctx: dict) -> str:
         if _div:
             lines.append("• ⚠️ Série perpétua DIVERGE do contrato live: "
                          + " | ".join(_div) + " — simulação não representa o live")
+    except Exception:
+        pass
+
+    # ── Calibração de risco pelo AGI (Wave AGI-super 13/08) ──
+    try:
+        rc = ctx.get("risk_calibration") or {}
+        _parts = []
+        for _root, _r in (rc.get("daily_stops") or {}).items():
+            if isinstance(_r, dict) and _r.get("status") == "calibrado":
+                _mark = "→" + str(_r.get("best")) if _r.get("apply") else "=" + str(int(_r.get("current") or 0))
+                _parts.append(f"{_root} {_mark}")
+        if _parts:
+            lines.append("• 🛑 Stop diário calibrado: " + " | ".join(_parts))
+        _tg = rc.get("profit_target") or {}
+        if _tg.get("status") == "calibrado":
+            _tmark = ("→" + str(_tg.get("best")) if _tg.get("apply")
+                      else "=" + str(int(_tg.get("current") or 0)))
+            lines.append(f"• 🎯 Alvo diário calibrado: {_tmark} "
+                         f"(ganho potencial R${_tg.get('gain', 0):+.0f})")
+        _sl = [f"{_root}→{_r.get('best')}pts" for _root, _r in (rc.get("slippage") or {}).items()
+               if isinstance(_r, dict) and _r.get("apply")]
+        if _sl:
+            lines.append("• 🚫 Slippage recalibrado: " + " | ".join(_sl))
     except Exception:
         pass
 

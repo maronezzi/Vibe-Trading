@@ -181,6 +181,7 @@ def run(days: int = 7,
         _optimize_profitable_pairs(ctx)
         _run_sweep_pending(ctx)
         _run_tune_incumbents(ctx)
+        _run_risk_calibrator(ctx)
         _safe_run_stage(ctx, 6, "report", "stage6_report")
         ctx["ended_at"] = datetime.now().isoformat()
         ctx["duration_s"] = time.time() - start_ts
@@ -340,6 +341,10 @@ def run(days: int = 7,
     # "otimizar todos os parâmetros" de verdade.
     _run_tune_incumbents(ctx)
 
+    # Wave AGI-super (13/08): calibração de risco pelo próprio AGI (stop
+    # diário por símbolo, alvo de lucro, slippage) — simulação counterfactual.
+    _run_risk_calibrator(ctx)
+
     # ── Stage 6: Relatório (sempre roda) ──
     _safe_run_stage(ctx, 6, "report", "stage6_report")
 
@@ -468,6 +473,23 @@ def _run_sweep_pending(ctx: dict) -> None:
     except Exception as e:
         log.error(f"[{TAG}] Sweep _pending/ FALHOU: {e}", exc_info=True)
         ctx["audit"].append({"stage": "sweep_pending", "ok": False, "error": str(e)})
+
+
+def _run_risk_calibrator(ctx: dict) -> None:
+    """Wave AGI-super (Bruno 13/08): o AGI calibra os próprios parâmetros de
+    risco — stop diário por símbolo, alvo diário de lucro (profit lock) e
+    tolerância de slippage — por simulação counterfactual nos trades reais.
+    Roda pós-mercado, com evidência mínima p/ mexer (anti-churn). Fail-safe.
+    """
+    try:
+        from optimization.agi_v4 import risk_calibrator
+        result = risk_calibrator.run(ctx)
+        summary = result.get("summary", "") if isinstance(result, dict) else ""
+        ctx["audit"].append({"stage": "risk_calibrator", "ok": True, "summary": summary})
+        log.info(f"[{TAG}] Risk calibrator OK — {summary}")
+    except Exception as e:
+        log.error(f"[{TAG}] Risk calibrator FALHOU: {e}", exc_info=True)
+        ctx["audit"].append({"stage": "risk_calibrator", "ok": False, "error": str(e)})
 
 
 def _run_tune_incumbents(ctx: dict) -> None:
