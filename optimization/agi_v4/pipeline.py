@@ -157,6 +157,22 @@ def run(days: int = 7,
         ctx["failing_pairs"] = result.get("failing_pairs", [])
         ctx["audit"].append({"stage": 1, "ok": True, "summary": result.get("summary", "")})
         log.info(f"[{TAG}] Stage 1 (collect) OK — {result.get('summary', '')}")
+        # Wave AGI-comms: brief de diagnóstico (o que o AGI encontrou)
+        try:
+            _ts = datetime.now().strftime("%H:%M")
+            _fp = _normalize_failing(ctx.get("failing_pairs", []))
+            _rs = ctx.get("rollover_state") or {}
+            _flags = [f"{'🧊' if _s.get('freeze') else '⏳'} {_s.get('symbol')}"
+                      for _s in _rs.values()
+                      if isinstance(_s, dict) and (_s.get("freeze") or _s.get("grace"))]
+            _msg = (f"🔎 AGI v4 — diagnóstico ({_ts})\n"
+                    f"• failing: {', '.join(_fp[:5]) if _fp else 'nenhum'}\n")
+            if _flags:
+                _msg += f"• rolagem protegida: {', '.join(_flags)}\n"
+            _msg += "• em execução: busca exaustiva + geração de estratégias..."
+            _notify_progress(ctx, _msg)
+        except Exception:
+            pass
     except Exception as e:
         log.error(f"[{TAG}] Stage 1 (collect) FALHOU: {e}", exc_info=True)
         ctx["audit"].append({"stage": 1, "ok": False, "error": str(e)})
@@ -325,6 +341,16 @@ def run(days: int = 7,
     # tornar lucrativos. Em seguida, _optimize_profitable_pairs reseta o flag
     # internamente para não desativar os lucrativos que ela está otimizando.
     ctx["_loop_exhausted"] = True
+    # Wave AGI-comms: brief de fase final
+    try:
+        _ts = datetime.now().strftime("%H:%M")
+        _notify_progress(ctx,
+            f"⚙️ AGI v4 — fase final ({_ts})\n"
+            f"• busca concluída em {ctx.get('current_iteration', 0)} iteração(ões)\n"
+            f"• a seguir: otimizar lucrativos → sweep _pending → tune incumbentes → calibrar risco\n"
+            f"• relatório completo em instantes")
+    except Exception:
+        pass
     _safe_run_stage(ctx, 5, "apply_final_deactivation", "stage5_apply")
     _optimize_profitable_pairs(ctx)
 
@@ -505,6 +531,20 @@ def _run_tune_incumbents(ctx: dict) -> None:
     except Exception as e:
         log.error(f"[{TAG}] Tune incumbents FALHOU: {e}", exc_info=True)
         ctx["audit"].append({"stage": "tune_incumbents", "ok": False, "error": str(e)})
+
+
+def _notify_progress(ctx: dict, msg: str) -> None:
+    """Brief de progresso no Telegram — 'o que está sendo feito agora'.
+
+    Wave AGI-comms (Bruno 13/08): runs de ~20min eram uma caixa-preta entre
+    o START e o relatório final. Máximo de 2 briefs intermediários por run
+    (diagnóstico + fase final) para informar sem spam. Fail-safe.
+    """
+    try:
+        from .stage6_report import send_brief
+        send_brief(msg, retries=0)
+    except Exception as _e:
+        log.debug(f"notify_progress falhou (não crítico): {_e}")
 
 
 def _safe_run_stage(ctx: dict, stage_num: int, stage_name: str, module_name: str) -> None:

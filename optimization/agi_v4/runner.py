@@ -133,8 +133,11 @@ def _notify_start(mode: str, days: int, max_it: int, dry_run: bool) -> None:
         mode_label = "🔍 DRY-RUN" if dry_run else "⚡ PROD"
         ts = _dt.now().strftime("%H:%M")
         send_brief(
-            f"🚀 AGI v4 START {mode_label}\n"
-            f"• days={days} mode={mode} iters≤{max_it} | {ts}",
+            f"🚀 AGI v4 START {mode_label} ({ts})\n"
+            f"• janela {days}d | mode={mode} | iters≤{max_it}\n"
+            f"• plano: diagnóstico → busca+geração (failing) → otimizar lucrativos\n"
+            f"  → sweep _pending → tune incumbentes → calibrar risco → relatório\n"
+            f"• progressos intermediários serão avisados aqui",
             retries=0,  # não-bloqueante: 1 tentativa só
         )
     except Exception as e:

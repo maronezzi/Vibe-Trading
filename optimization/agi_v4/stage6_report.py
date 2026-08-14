@@ -107,6 +107,34 @@ def _summarize_performance(ctx: dict) -> dict:
     }
 
 
+def _live_today_summary() -> dict:
+    """PnL live de HOJE por raiz de símbolo (DB reconciled, sem GHOST).
+
+    Wave AGI-comms (Bruno 13/08): alimenta a seção 'Resultados vistos' do
+    relatório — o que realmente aconteceu no pregão, por ativo. Fail-safe.
+    """
+    import sqlite3 as _sqlite3
+    out: dict = {}
+    try:
+        conn = _sqlite3.connect("/home/bruno/Projects/Vibe-Trading/vt_trades.db")
+        rows = conn.execute("""
+            SELECT substr(symbol, 1, 3) AS root, count(*) AS n,
+                   sum(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                   round(sum(net_pnl), 2) AS pnl
+            FROM trades
+            WHERE date(entry_time) = date('now', 'localtime')
+              AND exit_time IS NOT NULL AND exit_reason != 'GHOST'
+            GROUP BY root""").fetchall()
+        conn.close()
+        for r in rows:
+            out[r[0]] = {"n": r[1],
+                         "wr": (r[2] / r[1] * 100) if r[1] else 0.0,
+                         "pnl": float(r[3] or 0)}
+    except Exception:
+        pass
+    return out
+
+
 def _shadow_today_summary() -> str | None:
     """Lê forward_sim_trades (walker shadow) do pregão atual e retorna resumo.
 
@@ -302,39 +330,79 @@ def _build_telegram_message(ctx: dict) -> str:
     except Exception:
         pass
 
-    # ── Calibração de risco pelo AGI (Wave AGI-super 13/08) ──
+    # ── 📊 RESULTADOS VISTOS (Wave AGI-comms, Bruno 13/08): o pregão de
+    # HOJE no broker (DB reconciled) lado a lado com o que a simulação de
+    # 7 dias enxerga. Fecha o ciclo sim↔live no relatório — o usuário vê
+    # o resultado real e a leitura do AGI na mesma tela. ──
+    try:
+        _live = _live_today_summary()
+        _perf_strs = []
+        for _sym in sorted(set(list(_live.keys()) + list(by_symbol.keys()))):
+            _lv = _live.get(_sym) or {}
+            _sm = by_symbol.get(_sym) or {}
+            _emoji = "🟢" if _lv.get("pnl", 0) >= 0 else "🔴"
+            _part = f"{_sym} {_emoji}hoje R${_lv.get('pnl', 0):+.0f}"
+            if _lv.get("n"):
+                _part += f" ({_lv['n']}t, WR {_lv.get('wr', 0):.0f}%)"
+            else:
+                _part += " (sem trades)"
+            if isinstance(_sm, dict) and _sm.get("total_pnl") is not None:
+                _spnl = _sm.get("total_pnl", 0)
+                _se = "🟢" if _spnl >= 0 else "🔴"
+                _part += f" | sim 7d {_se}R${_spnl:+.0f}"
+            _perf_strs.append(_part)
+        if _perf_strs:
+            lines.append("📊 Resultados vistos:")
+            for _p in _perf_strs[:4]:
+                lines.append(f"   {_p}")
+    except Exception:
+        if by_symbol:
+            perf_strs = []
+            for sym, s in sorted(by_symbol.items()):
+                if isinstance(s, dict):
+                    pnl = s.get("total_pnl", 0)
+                    emoji = "🟢" if pnl >= 0 else "🔴"
+                    perf_strs.append(f"{sym} {emoji}R$ {pnl:.0f} ({s.get('n_trades',0)}t)")
+            if perf_strs:
+                lines.append(f"• PnL 7d: {' | '.join(perf_strs[:4])}")
+
+    # ── 🛡️ RISCO CALIBRADO PELO AGI (com evidência: dias + ganho) ──
     try:
         rc = ctx.get("risk_calibration") or {}
-        _parts = []
-        for _root, _r in (rc.get("daily_stops") or {}).items():
-            if isinstance(_r, dict) and _r.get("status") == "calibrado":
-                _mark = "→" + str(_r.get("best")) if _r.get("apply") else "=" + str(int(_r.get("current") or 0))
-                _parts.append(f"{_root} {_mark}")
-        if _parts:
-            lines.append("• 🛑 Stop diário calibrado: " + " | ".join(_parts))
+        _rc_lines = []
+        for _root, _r in sorted((rc.get("daily_stops") or {}).items()):
+            if not isinstance(_r, dict):
+                continue
+            if _r.get("status") == "calibrado":
+                if _r.get("apply"):
+                    _rc_lines.append(f"🛑 Stop {_root}: {_r.get('current'):.0f}→{_r.get('best')} "
+                                     f"({_r.get('days')}d evidência, +R${_r.get('gain', 0):.0f})")
+                else:
+                    _rc_lines.append(f"🛑 Stop {_root}: mantém {_r.get('current'):.0f} "
+                                     f"(ótimo {_r.get('best')}, ganho R${_r.get('gain', 0):.0f} < mínimo)")
+            else:
+                _rc_lines.append(f"🛑 Stop {_root}: mantém (só {_r.get('days', 0)}d de histórico)")
         _tg = rc.get("profit_target") or {}
         if _tg.get("status") == "calibrado":
-            _tmark = ("→" + str(_tg.get("best")) if _tg.get("apply")
-                      else "=" + str(int(_tg.get("current") or 0)))
-            lines.append(f"• 🎯 Alvo diário calibrado: {_tmark} "
-                         f"(ganho potencial R${_tg.get('gain', 0):+.0f})")
-        _sl = [f"{_root}→{_r.get('best')}pts" for _root, _r in (rc.get("slippage") or {}).items()
-               if isinstance(_r, dict) and _r.get("apply")]
-        if _sl:
-            lines.append("• 🚫 Slippage recalibrado: " + " | ".join(_sl))
+            if _tg.get("apply"):
+                _rc_lines.append(f"🎯 Alvo diário: {_tg.get('current'):.0f}→{_tg.get('best')} "
+                                 f"({_tg.get('days')}d, +R${_tg.get('gain', 0):.0f})")
+            else:
+                _rc_lines.append(f"🎯 Alvo diário: mantém {_tg.get('current'):.0f} "
+                                 f"(ótimo {_tg.get('best')}, ganho R${_tg.get('gain', 0):.0f} < mínimo)")
+        _sl_parts = []
+        for _root, _r in sorted((rc.get("slippage") or {}).items()):
+            if isinstance(_r, dict) and _r.get("status") == "calibrado":
+                _sl_parts.append(f"{_root} {_r.get('current') or 0}→{_r.get('best')}pts"
+                                 if _r.get("apply") else f"{_root} ={int(_r.get('current') or 0)}pts")
+        if _sl_parts:
+            _rc_lines.append("🚫 Slippage: " + " | ".join(_sl_parts))
+        if _rc_lines:
+            lines.append("🛡️ Risco calibrado pelo AGI (simulação counterfactual):")
+            for _l in _rc_lines:
+                lines.append(f"   {_l}")
     except Exception:
         pass
-
-    # Performance resumida por símbolo
-    if by_symbol:
-        perf_strs = []
-        for sym, s in sorted(by_symbol.items()):
-            if isinstance(s, dict):
-                pnl = s.get("total_pnl", 0)
-                emoji = "🟢" if pnl >= 0 else "🔴"
-                perf_strs.append(f"{sym} {emoji}R$ {pnl:.0f} ({s.get('n_trades',0)}t)")
-        if perf_strs:
-            lines.append(f"• PnL 7d: {' | '.join(perf_strs[:4])}")
 
     # Sinal SHADOW do pregão atual (forward_walker, soft — não decide).
     shadow = _shadow_today_summary()
@@ -438,6 +506,21 @@ def _build_telegram_message(ctx: dict) -> str:
             gates[g] = gates.get(g, 0) + 1
         gates_str = ", ".join(f"{g}:{n}" for g, n in sorted(gates.items()))
         lines.append(f"• ❌ {len(all_rejected)} rejeitada(s) por gates ({gates_str})")
+        # Wave AGI-comms (13/08): transparência dos JULGAMENTOS do AGI —
+        # os gates de consciência (rolagem/realidade/série) merecem motivo
+        # visível, não só contagem.
+        _interesting = [r for r in all_rejected
+                        if r.get("gate") in ("rollover_guard", "live_reality",
+                                             "guardrail_reject")]
+        _seen_pairs = set()
+        for r in _interesting:
+            _pair = (r.get("candidate") or {}).get("pair", "?")
+            if _pair in _seen_pairs:
+                continue
+            _seen_pairs.add(_pair)
+            lines.append(f"   🧠 {_pair}: {str(r.get('reason', ''))[:110]}")
+            if len(_seen_pairs) >= 3:
+                break
 
     if failing and not converged:
         pair_strs = [f["pair"] if isinstance(f, dict) else f for f in failing[:5]]
