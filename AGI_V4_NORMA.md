@@ -136,7 +136,9 @@ Ordem dos stages no loop de convergência (`optimization/agi_v4/pipeline.py`):
 5. **Convergência** — re-simula todos os pares.
 6. **Stage 4** (generate) — gera estratégias novas via LLM para pares ainda failing.
 7. **Stage 5** novamente.
-8. **Stage 6** (report) — Telegram + audit JSON. Sempre roda.
+8. **Pós-loop**: sweep _pending → tune incumbentes → **risk_calibrator** →
+   **backfill_intel** (Wave AGI-backfill, 16/08 — ver seção 11).
+9. **Stage 6** (report) — Telegram + audit JSON. Sempre roda.
 
 **Freios (configuráveis via env var):**
 - `VT_AGI_DEADLINE_MINS` (default 480 = 8h) — deadline hard. Bruno: "tempo não é
@@ -277,3 +279,43 @@ a1aef10c Wave limpeza-sandbox — remove última _pending com bug
 ```
 
 Use `git show <hash>` para ver o diff de qualquer correção.
+
+---
+
+## 11. backfill_intel — calibração autônoma de sessão por replay (16/08/2026)
+
+**O que é:** fase pós-loop (`optimization/agi_v4/backfill_intel.py`) que fecha o ciclo
+da "história melhor". O forward_walker ganhou modo `--backfill` (replay histórico com
+a semântica EXATA do daemon: mesma check_entry, gestão TP1/breakeven/trailing/hard/
+time, EOD na virada de data, gate `aggregate_blackout`). O backfill_intel usa esse
+replay para o AGI decidir sozinho filtros de horário (`time_blocks`).
+
+**Ciclo autônomo (a cada cron 17h10):**
+1. Replay baseline da janela rolante (default 30d, `VT_BACKFILL_INTEL_DAYS`) com o
+   config atual → tabela isolada `forward_backfill_trades` (o stage6 shadow NÃO lê).
+2. Analisa (root × hora) na MESMA escala do gate do daemon (hora do ts da barra —
+   hoje 06h renderizado ≈ 09h BRT de abertura; consistente por construção).
+3. Só nasce candidato de hora NEGATIVA (PnL < 0, n ≥ 12) — horas positivas nunca
+   são tocadas (anti-overfit).
+4. Contrafactual: re-replay da mesma janela com o bloco da hipótese IN-MEMORY
+   (`--config-override` do walker; config em disco intocado).
+5. Aplica via `save_full_config(updated_by="agi_v4_backfill_intel")` só se:
+   ΔPnL ≥ R$20, ≥ 10 dias de evidência, bloqueio cortou trades, e não sobrepõe
+   bloco manual (manual sempre vence). Blocks próprios são marcados
+   `reason="agi_backfill: ..."` — churn controlado.
+
+**Guardas:** só roda pós-close (≥ 17h ou fim de semana — o do meio-dia pula;
+o walker recusa dia útil 08–17h para não colidir com o cron 09:01). Kill-switch
+`VT_BACKFILL_INTEL=0`. Fail-safe: erro aqui NUNCA derruba o pipeline.
+
+**Invariantes (não quebrar):**
+- Backfill NUNCA escreve em `forward_sim_trades` (sinal shadow do meio-dia é só
+  do pregão ao vivo) nem em `trades`.
+- Cenários A/B só via override in-memory; escrever config live direto de
+  "experimento" é proibido — só o passo 5 (com evidência) escreve, pelo writer
+  autorizado.
+- Uso manual: `python3 optimization/forward_walker.py --backfill --from ...`
+  fora do pregão; `run_id` distinto por cenário; A/B compara por run_id.
+- Limitação conhecida (v1): replay é in-sample p/ params de estratégia (o AGI os
+  afinou no mesmo período) — por isso valida GESTÃO e FILTROS, não estratégia.
+  Multiplier do walker (0.20) é uniforme p/ todos os símbolos (escala relativa).

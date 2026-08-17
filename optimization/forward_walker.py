@@ -21,10 +21,25 @@ Diferenças do autotrader (intencionais):
   - Tabela própria forward_sim_trades (não toca `trades`)
   - Zero chamadas a mt5.order_send / mt5.positions_get / modify_sl
 
+Modo --backfill (replay histórico, adicionado 16/08/2026): mesma semântica
+(check_entry em candle fechado + gestão TP1/breakeven/trailing/hard/time +
+gate aggregate_blackout do daemon — time_blocks/day_dir/events) sobre
+candles HISTÓRICOS, gravando em tabela
+ISOLADA forward_backfill_trades com run_id — o stage6 do AGI NÃO lê essa
+tabela, então o sinal shadow do meio-dia continua vindo só do pregão ao
+vivo. É validação contrafactual (padrão risk_calibrator), NÃO treinamento.
+Rodar FORA do pregão (o script recusa dia útil 08-17h sem --force).
+
 Uso:
   python3 optimization/forward_walker.py --duration-min 60
   python3 optimization/forward_walker.py --symbols WINQ26 --tfs M5
   python3 optimization/forward_walker.py --duration-min 30 --poll-secs 5
+
+  # Backfill: 3 meses de replay do config atual (fim de semana/madrugada)
+  python3 optimization/forward_walker.py --backfill --from 2026-05-01
+  # A/B: mesmo período com run_id distinto pra comparar cenários depois
+  python3 optimization/forward_walker.py --backfill --from 2026-06-01 --run-id baseline
+  python3 optimization/forward_walker.py --backfill --from 2026-06-01 --run-id sem_bloco --ignore-time-blocks
 """
 
 from __future__ import annotations
@@ -40,7 +55,6 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
 
 # ─── path bootstrap (mesmo padrão do resto do repo) ────────────────────────────
 ROOT = Path(__file__).resolve().parent.parent
@@ -55,6 +69,10 @@ CONFIG = load_config()
 TRADES_DB = ROOT / "vt_trades.db"
 SIM_TABLE = "forward_sim_trades"
 SIM_MAGIC = 555599  # reservado pra forward sims
+# Backfill (replay histórico): tabela ISOLADA com run_id. O stage6 do AGI
+# (stage6_report.py:_shadow_today_summary) lê SOMENTE forward_sim_trades —
+# backfill nunca contamina o sinal shadow do pregão atual.
+BACKFILL_TABLE = "forward_backfill_trades"
 
 # Telegram target — espelha scripts/check_symbols_active.py:155 e core/vt_autotrader.py:724
 TELEGRAM_TARGET = os.environ.get(
@@ -99,6 +117,51 @@ def ensure_schema() -> None:
     con = sqlite3.connect(str(TRADES_DB))
     try:
         con.executescript(SCHEMA_SQL)
+        con.commit()
+    finally:
+        con.close()
+
+
+# Mesmo schema do live + run_id (permite A/B: baseline vs cenário alternativo
+# no mesmo período sem misturar amostras).
+BACKFILL_SCHEMA_SQL = f"""
+CREATE TABLE IF NOT EXISTS {BACKFILL_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_ticket TEXT UNIQUE,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    volume REAL NOT NULL,
+    entry_time TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    entry_sl REAL NOT NULL,
+    exit_time TEXT,
+    exit_price REAL,
+    exit_reason TEXT,
+    exit_sl_price REAL,
+    highest_price REAL,
+    lowest_price REAL,
+    gross_pnl_pts REAL DEFAULT 0,
+    gross_pnl_brl REAL DEFAULT 0,
+    fees_brl REAL DEFAULT 0,
+    net_pnl_brl REAL DEFAULT 0,
+    bars_held INTEGER DEFAULT 0,
+    signal_detail TEXT,
+    notes TEXT,
+    run_id TEXT NOT NULL DEFAULT 'main',
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_bf_run ON {BACKFILL_TABLE}(run_id);
+CREATE INDEX IF NOT EXISTS idx_bf_entry ON {BACKFILL_TABLE}(entry_time);
+"""
+
+
+def ensure_backfill_schema() -> None:
+    """Cria a tabela forward_backfill_trades se não existir. Idempotente."""
+    con = sqlite3.connect(str(TRADES_DB))
+    try:
+        con.executescript(BACKFILL_SCHEMA_SQL)
         con.commit()
     finally:
         con.close()
@@ -190,11 +253,11 @@ class SimPosition:
 
     def update_extremes(self, bar: dict) -> None:
         h = bar["high"]
-        l = bar["low"]
+        low = bar["low"]
         if h > self.highest:
             self.highest = h
-        if l < self.lowest:
-            self.lowest = l
+        if low < self.lowest:
+            self.lowest = low
 
     def _set_sl_price(self, new_sl_price: float) -> bool:
         """Move current_sl_pts pra fazer SL = new_sl_price (se melhorar o lock).
@@ -478,7 +541,9 @@ def open_sim_position(state: WalkerState, symbol: str, tf: str, strategy: str,
         tp1_r=params.get("tp1_r", 1.0),
         tp1_pct=params.get("tp1_pct", 0.5),
         atr_trail_mult=params.get("atr_trail_mult", 2.0),
-        notes=json.dumps(signal_detail, ensure_ascii=False)[:500],
+        # default=str: estratégias podem botar datetime/Decimal no info
+        # (crash real no backfill 16/08 — json.dumps levanta TypeError).
+        notes=json.dumps(signal_detail, ensure_ascii=False, default=str)[:500],
     )
     state.positions[(symbol, tf)] = pos
     state.total_signals_executed += 1
@@ -487,8 +552,14 @@ def open_sim_position(state: WalkerState, symbol: str, tf: str, strategy: str,
 
 def close_sim_position(con: sqlite3.Connection, pos: SimPosition,
                        exit_price: float, exit_reason: str, exit_time: datetime,
-                       bars_held: int) -> dict:
-    """Calcula PnL (composição TP1 + restante) e grava no DB. Retorna dict com métricas."""
+                       bars_held: int, table: str = SIM_TABLE,
+                       run_id: str | None = None) -> dict:
+    """Calcula PnL (composição TP1 + restante) e grava no DB. Retorna dict com métricas.
+
+    table/run_id: backfill grava em forward_backfill_trades com run_id;
+    live usa os defaults (forward_sim_trades, sem run_id) — comportamento
+    do path live é inalterado.
+    """
     if pos.direction == "BUY":
         gross_pts_remaining = exit_price - pos.entry_price
     else:
@@ -505,14 +576,18 @@ def close_sim_position(con: sqlite3.Connection, pos: SimPosition,
         fees_brl += pos.tp1_volume_closed * fees_per_leg * 2
     net_brl = pos.tp1_profit_brl + gross_brl_remaining - fees_brl
 
+    # Colunas de run_id só existem na tabela de backfill
+    cols_extra = ", run_id" if run_id is not None else ""
+    vals_extra = ", ?" if run_id is not None else ""
+    params_extra = [run_id] if run_id is not None else []
     con.execute(
-        f"""INSERT INTO {SIM_TABLE}
+        f"""INSERT INTO {table}
             (entry_ticket, symbol, timeframe, strategy, direction, volume,
              entry_time, entry_price, entry_sl, exit_time, exit_price,
              exit_reason, exit_sl_price, highest_price, lowest_price,
              gross_pnl_pts, gross_pnl_brl, fees_brl, net_pnl_brl,
-             bars_held, signal_detail)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             bars_held, signal_detail{cols_extra})
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?{vals_extra})""",
         (
             pos.ticket, pos.symbol, pos.timeframe, pos.strategy, pos.direction,
             pos.volume, pos.entry_time.isoformat(sep=" ", timespec="seconds"),
@@ -524,7 +599,7 @@ def close_sim_position(con: sqlite3.Connection, pos: SimPosition,
             gross_pts_remaining,
             pos.tp1_profit_brl + gross_brl_remaining,
             fees_brl, net_brl, bars_held, pos.notes,
-        ),
+        ) + tuple(params_extra),
     )
     return {
         "symbol": pos.symbol, "tf": pos.timeframe, "strategy": pos.strategy,
@@ -539,7 +614,9 @@ def compute_forward_metrics(con: sqlite3.Connection) -> dict:
     rows = list(con.execute(
         f"""SELECT symbol, timeframe, strategy, direction,
                    gross_pnl_pts, net_pnl_brl, exit_reason
-            FROM {SIM_TABLE} WHERE exit_time IS NOT NULL"""
+            FROM {SIM_TABLE}
+            WHERE exit_time IS NOT NULL
+              AND date(created_at) = date('now', 'localtime')"""
     ))
     if not rows:
         return {"n": 0}
@@ -596,7 +673,9 @@ def print_report(state: WalkerState, con: sqlite3.Connection, label: str,
         f"""SELECT symbol, timeframe, strategy, COUNT(*),
                    SUM(net_pnl_brl), AVG(gross_pnl_pts),
                    SUM(CASE WHEN net_pnl_brl > 0 THEN 1 ELSE 0 END) AS wins
-            FROM {SIM_TABLE} WHERE exit_time IS NOT NULL
+            FROM {SIM_TABLE}
+            WHERE exit_time IS NOT NULL
+              AND date(created_at) = date('now', 'localtime')
             GROUP BY symbol, timeframe"""
     ):
         sym, tf, strat, n, pnl, avg_pts, wins = r
@@ -962,6 +1041,327 @@ def walker_loop(args, state: WalkerState) -> None:
             con.close()
 
 
+# ─── backfill: replay histórico (validação contrafactual) ────────────────────
+# Bruno 16/08: o walker live acumula ~1 pregão de amostra por dia — histórico
+# pequeno demais pra validar filtros de horário/gestão. O modo --backfill
+# replica a MESMA semântica do walker sobre candles históricos do MT5:
+#   - entry: check_entry no candle FECHADO i (sim_bars[1] = i, espelho do live)
+#   - gestão: barra subsequente (i+1) faz o papel da barra "formando" do poll
+#     (extremos, TP1, breakeven, trailing, SL/time/hard exits)
+#   - EOD: daemon fecha tudo às 16:45; replay fecha na virada de data
+#   - gate time_blocks: mesma função _is_blocked_time do daemon (contrafactual
+#     A/B futuro: --ignore-time-blocks remove o gate)
+# Fidelidade máxima com o live, zero ordens, tabela isolada com run_id.
+TF_SECS_MAP = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800,
+               "H1": 3600, "H4": 14400}
+
+
+def backfill_pair(con: sqlite3.Connection, state: WalkerState, symbol: str,
+                  tf: str, args, run_id: str,
+                  date_from, date_to) -> int:
+    """Replay bar-a-bar de um par. Retorna nº de trades fechados."""
+    root = symbol_root_of(symbol)
+    window = args.bars_count  # mesma janela de check_entry do live (default 100)
+    bars = fetch_bars(symbol, tf, args.backfill_bars)
+    if not bars or len(bars) < window + 2:
+        print(f"  [BACKFILL] {symbol} {tf}: barras insuficientes "
+              f"({len(bars or [])} < {window + 2}) — pulando")
+        return 0
+    # fetch vem newest-first; cronológico facilita o replay. Recorta --from/--to.
+    chron = [b for b in reversed(bars)
+             if date_from <= datetime.fromtimestamp(b["time"]).date() <= date_to]
+    if len(chron) < window + 2:
+        print(f"  [BACKFILL] {symbol} {tf}: só {len(chron)} barras em "
+              f"[{date_from}..{date_to}] — pulando")
+        return 0
+    earliest = datetime.fromtimestamp(chron[0]["time"])
+    if earliest.date() > date_from:
+        print(f"  [BACKFILL] {symbol} {tf}: ATENÇÃO — histórico disponível "
+              f"começa em {earliest:%Y-%m-%d}, não em {date_from} (limite do "
+              f"broker/terminal para este TF)")
+    last_dt = datetime.fromtimestamp(chron[-1]["time"])
+    print(f"  [BACKFILL] {symbol} {tf}: {len(chron)} barras "
+          f"({earliest:%Y-%m-%d} → {last_dt:%Y-%m-%d})")
+
+    tf_secs = TF_SECS_MAP.get(tf, 300)
+    key = (symbol, tf)
+    n_closed = 0
+    strategy_name = vat._get_strategy_for_tf(root, tf)
+    if not strategy_name:
+        print(f"  [BACKFILL] {symbol} {tf}: sem estratégia mapeada — pulando")
+        return 0
+    params = get_params_for_pair(root, tf)
+    strat_func = get_strategy_func(strategy_name)
+    if not strat_func:
+        print(f"  [BACKFILL] {symbol} {tf}: estratégia {strategy_name} não carrega — pulando")
+        return 0
+
+    # i = índice do candle que ACABOU DE FECHAR; chron[i+1] faz o papel da
+    # barra formando (mesma forma de sim_bars do poll live: [formando, fechada, ...])
+    for i in range(window - 1, len(chron) - 1):
+        forming = chron[i + 1]
+        closed = chron[i]
+        closed_dt = datetime.fromtimestamp(closed["time"])
+        forming_dt = datetime.fromtimestamp(forming["time"])
+        sim_bars = [forming] + chron[i - window + 2: i + 1]
+        pos = state.positions.get(key)
+
+        # EOD: daemon fecha tudo às 16:45 — no replay, fecha na virada de data
+        # (posição nunca atravessa a noite, igual ao live)
+        if pos is not None and i > 0:
+            prev_dt = datetime.fromtimestamp(chron[i - 1]["time"])
+            if closed_dt.date() != prev_dt.date():
+                res = close_sim_position(
+                    con, pos, chron[i - 1]["close"], "EOD",
+                    prev_dt, pos.bars_held,
+                    table=BACKFILL_TABLE, run_id=run_id,
+                )
+                con.commit()
+                n_closed += 1
+                print(f"  [CLOSE] {symbol} {tf} {pos.direction} "
+                      f"@{chron[i - 1]['close']:.0f} reason=EOD "
+                      f"pts={res['gross_pts']:+.0f} R$ {res['net_brl']:+.2f}")
+                del state.positions[key]
+                pos = None
+
+        if pos is not None:
+            # gestão com a barra subsequente (formando): espelho do poll live
+            held_min = (forming_dt - pos.entry_time).total_seconds() / 60
+            pos.update_extremes(forming)
+            atr_now = vat.calculate_atr(sim_bars, 14)
+            pos.apply_trailing(atr_now, held_min)
+            new_ts = forming.get("time", 0)
+            if new_ts != pos.last_bar_ts:
+                pos.bars_held += 1
+                pos.last_bar_ts = new_ts
+                state.total_bars_processed += 1
+            should_exit, reason, exit_px = pos.check_exit(forming, held_min)
+            if should_exit:
+                res = close_sim_position(
+                    con, pos, exit_px, reason, forming_dt, pos.bars_held,
+                    table=BACKFILL_TABLE, run_id=run_id,
+                )
+                con.commit()
+                n_closed += 1
+                print(f"  [CLOSE] {symbol} {tf} {pos.direction} @{exit_px:.0f} "
+                      f"reason={reason} pts={res['gross_pts']:+.0f} "
+                      f"R$ {res['net_brl']:+.2f}")
+                del state.positions[key]
+            continue  # live: poll com posição aberta não avalia entry
+
+        # ── sem posição → avalia entry no candle fechado (igual ao live) ──
+        atr = vat.calculate_atr(sim_bars, 14)
+        if atr == 0:
+            continue
+        result = strat_func(
+            symbol, tf, closed["close"], atr,
+            bar_ts=closed_dt, bars=sim_bars,
+            params=params, utils=vat._strategy_utils,
+        )
+        state.total_signals_seen += 1
+        if not result:
+            continue
+        # Gate de blackout do daemon (Wave N+4A): MESMA função e MESMO ts
+        # (bar_ts do candle fechado) que o live usa em check_and_trade —
+        # cobre time_blocks + day_direction + events (feriado é implícito:
+        # candle só existe em dia de pregão). Avaliado APÓS o sinal, como no
+        # daemon. --ignore-time-blocks pula o gate (braço B de contrafactual).
+        if not args.ignore_time_blocks:
+            from core.vt_calendar import aggregate_blackout
+            _blocked, _reason = aggregate_blackout(
+                symbol, result["direction"],
+                config=CONFIG, ts=closed_dt,
+            )
+            if _blocked:
+                continue
+        # ANTI-RE-ENTRY COOLDOWN — mesma regra do live (1 candle por TF)
+        last_seen = state.last_signal_seen_at.get(key, 0)
+        if last_seen and (closed["time"] - last_seen) < tf_secs:
+            continue
+        state.last_signal_seen_at[key] = closed["time"]
+        direction = result["direction"]
+        sl_pts = result["sl_pts"]
+        pv = POINT_VAL_MAP.get(root, 1.0)
+        open_sim_position(
+            state, symbol, tf, strategy_name, direction,
+            closed["close"], sl_pts, closed_dt, atr, params,
+            result.get("info", {}),
+        )
+        if direction == "BUY":
+            entry_sl_price = closed["close"] - sl_pts * pv
+        else:
+            entry_sl_price = closed["close"] + sl_pts * pv
+        print(f"  [OPEN]  {symbol} {tf} {strategy_name} {direction} "
+              f"@{closed['close']:.0f} sl@{entry_sl_price:.0f} "
+              f"(atr={atr:.0f}, sl_pts={sl_pts:.0f}, pv={pv})")
+
+    # posição que sobreviveu ao fim dos dados (nunca atravessa o "agora")
+    pos = state.positions.pop(key, None)
+    if pos is not None:
+        last = chron[-1]
+        close_sim_position(
+            con, pos, last["close"], "END_OF_DATA",
+            datetime.fromtimestamp(last["time"]), pos.bars_held,
+            table=BACKFILL_TABLE, run_id=run_id,
+        )
+        con.commit()
+        n_closed += 1
+    return n_closed
+
+
+def backfill_report(con: sqlite3.Connection, run_id: str, min_trades: int = 5) -> dict:
+    """Relatório do run de backfill: geral + por hora + por par + por estratégia.
+
+    O corte POR HORA é a razão de existir do backfill: valida (ou refuta)
+    hipóteses de filtro de sessão com meses de amostra em vez de 1 pregão.
+    """
+    rows = list(con.execute(
+        f"""SELECT symbol, timeframe, strategy, direction, net_pnl_brl,
+                   exit_reason, strftime('%H', entry_time)
+            FROM {BACKFILL_TABLE}
+            WHERE run_id = ? AND exit_time IS NOT NULL""",
+        (run_id,),
+    ))
+    print(f"\n{'=' * 60}")
+    print(f"[BACKFILL FINAL] run_id={run_id} | trades={len(rows)}")
+    if not rows:
+        print("  (sem trades no período)")
+        print(f"{'=' * 60}")
+        return {"n": 0}
+    pnls = [r[4] for r in rows]
+    n = len(pnls)
+    wins = sum(1 for p in pnls if p > 0)
+    gross_wins = sum(p for p in pnls if p > 0)
+    gross_losses = abs(sum(p for p in pnls if p < 0))
+    pf = gross_wins / gross_losses if gross_losses > 0 else float("inf") if gross_wins > 0 else 0
+    cum = peak = max_dd = 0
+    for p in pnls:
+        cum += p
+        peak = max(peak, cum)
+        max_dd = max(max_dd, peak - cum)
+    print(f"  n={n} wins={wins} WR={wins * 100 / n:.1f}% PF={pf:.2f} "
+          f"total=R$ {sum(pnls):+.2f} max_dd=R$ {max_dd:+.2f}")
+
+    # ── por hora de entrada (validação de time_blocks) ──
+    by_hour: dict[str, list] = {}
+    for r in rows:
+        by_hour.setdefault(r[6], []).append(r[4])
+    if by_hour:
+        print("  por hora de entrada (escala do ts da barra do broker — a MESMA do")
+        print("  gate time_blocks do daemon; confira offset vs relógio local antes")
+        print("  de configurar blocks — hoje 06h renderizado ≈ 09h BRT de abertura):")
+        for h in sorted(by_hour):
+            ps = by_hour[h]
+            w = sum(1 for p in ps if p > 0)
+            print(f"    {h}h  n={len(ps):>4}  WR={w * 100 / len(ps):>4.0f}%  "
+                  f"R$ {sum(ps):>+9.2f}")
+
+    # ── por par ──
+    by_pair: dict[str, dict] = {}
+    for r in rows:
+        k = f"{r[0]}/{r[1]}"
+        d = by_pair.setdefault(k, {"symbol": r[0], "tf": r[1], "strategy": r[2],
+                                   "n": 0, "wins": 0, "pnl": 0.0})
+        d["n"] += 1
+        d["wins"] += 1 if r[4] > 0 else 0
+        d["pnl"] += r[4]
+    if by_pair:
+        print("  por par:")
+        for k, v in sorted(by_pair.items(), key=lambda x: -x[1]["pnl"]):
+            wr = v["wins"] / v["n"] if v["n"] else 0
+            tag = "  " if v["n"] >= min_trades else " (?)"
+            print(f"    {k:<14}{tag} n={v['n']:>4} WR={wr * 100:>4.0f}% "
+                  f"R$ {v['pnl']:>+9.2f} ({v['strategy']}) → "
+                  f"{recommend(v['pnl'], v['n'], wr)}")
+
+    # ── por motivo de saída (onde nascem perdas vs lucros) ──
+    by_reason: dict[str, list] = {}
+    for r in rows:
+        by_reason.setdefault(r[5] or "?", []).append(r[4])
+    if by_reason:
+        print("  por motivo de saída:")
+        for reason, ps in sorted(by_reason.items(), key=lambda x: -sum(x[1])):
+            print(f"    {reason:<18} n={len(ps):>4}  R$ {sum(ps):>+9.2f}")
+    print(f"{'=' * 60}")
+    return {"n": n, "wr": wins / n, "pf": pf, "total": sum(pnls),
+            "by_hour": {h: sum(ps) for h, ps in by_hour.items()},
+            "by_pair": by_pair}
+
+
+def run_backfill(args, state: WalkerState) -> None:
+    """Orquestra o replay histórico. Sem Telegram, sem drift — é ferramenta
+    de validação manual (fora do pregão), não um job operacional."""
+    # Guarda de horário: em dia útil de pregão o pgrep do cron 09:01
+    # (start_forward_walker.sh) confundiria este processo com o walker live
+    # (não reinicia o live) e o Wine/executor ficaria disputado entre os dois.
+    now = datetime.now()
+    if now.weekday() < 5 and 8 <= now.hour < 17 and not args.force_backfill_hours:
+        print("[BACKFILL] RECUSADO: dia útil dentro do pregão (08–17h).")
+        print("           Rode fora do pregão (fim de semana/madrugada) ou")
+        print("           use --force-backfill-hours se souber o que está fazendo.")
+        sys.exit(2)
+
+    # Cenário contrafactual (A/B): sobrepõe chaves top-level do CONFIG
+    # IN-MEMORY (time_blocks, disabled_timeframes, disabled_symbols...).
+    # O config live em disco NÃO é tocado — é a via do backfill_intel do AGI
+    # validar candidatos antes de aplicar pelo writer autorizado.
+    # NOTA: params de estratégia NÃO são afetados (vivem no CONFIG do
+    # autotrader, lidos por vat._get_params_for_tf).
+    override = getattr(args, "config_override", None)
+    if override:
+        global CONFIG
+        CONFIG = dict(CONFIG)
+        CONFIG.update(override)
+        print(f"[BACKFILL] config-override IN-MEMORY aplicado: {sorted(override)}")
+
+    if not vat._strategy_utils:
+        vat._init_strategy_utils()
+
+    date_from = datetime.strptime(args.from_date, "%Y-%m-%d").date()
+    date_to = datetime.strptime(args.to_date, "%Y-%m-%d").date()
+    run_id = args.run_id or f"bf_{args.from_date}_{args.to_date}"
+    ensure_backfill_schema()
+
+    con = sqlite3.connect(str(TRADES_DB), timeout=30.0)
+    try:
+        try:
+            con.execute("PRAGMA journal_mode=WAL")
+            con.execute("PRAGMA busy_timeout=30000")
+            con.commit()
+        except Exception as _e:
+            print(f"[WARN] Não consegui ativar WAL: {_e} — seguindo com default")
+        # Re-run idempotente com o mesmo run_id: recomeça a amostra do zero
+        con.execute(f"DELETE FROM {BACKFILL_TABLE} WHERE run_id = ?", (run_id,))
+        con.commit()
+
+        print(f"[BACKFILL] run_id={run_id} | período {date_from} → {date_to} | "
+              f"símbolos: {args.symbols} | TFs: {args.tfs}")
+        print(f"[BACKFILL] DB: {TRADES_DB} | Tabela isolada: {BACKFILL_TABLE} "
+              f"(stage6 do AGI NÃO lê esta tabela)")
+        print("[BACKFILL] Read-only no MT5 — ZERO ordens serão enviadas")
+        print(f"[BACKFILL] ignore_time_blocks={args.ignore_time_blocks} | "
+              f"PID: {os.getpid()} | Início: {datetime.now():%Y-%m-%d %H:%M:%S}")
+        print()
+
+        total_closed = 0
+        for symbol_or_root in args.symbols:
+            symbol = resolve_contract(symbol_or_root)
+            root = symbol_root_of(symbol)
+            if is_symbol_disabled(root):
+                continue
+            for tf in args.tfs:
+                if is_tf_disabled(root, tf):
+                    continue
+                total_closed += backfill_pair(
+                    con, state, symbol, tf, args, run_id, date_from, date_to)
+        print(f"\n[BACKFILL] concluído: {total_closed} trades fechados | "
+              f"signals vistos={state.total_signals_seen} "
+              f"exec={state.total_signals_executed}")
+        backfill_report(con, run_id, min_trades=args.min_trades)
+    finally:
+        con.close()
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--duration-min", type=int, default=60,
@@ -987,6 +1387,34 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--force-trading-time", action="store_true",
                    help="[DEV/SMOKE] Força is_trading_time()=True ignorando pregão. "
                         "USAR APENAS em testes — em produção o autotrader segue o calendário.")
+    # ── modo backfill (replay histórico) ──
+    p.add_argument("--backfill", action="store_true",
+                   help="Modo replay histórico: mesma semântica do walker sobre candles "
+                        "passados, gravando em forward_backfill_trades (isolada do AGI). "
+                        "Recusa dia útil 08-17h sem --force-backfill-hours.")
+    p.add_argument("--from", dest="from_date",
+                   default=(datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d"),
+                   help="Backfill: data inicial YYYY-MM-DD (default: 90 dias atrás)")
+    p.add_argument("--to", dest="to_date",
+                   default=datetime.now().strftime("%Y-%m-%d"),
+                   help="Backfill: data final YYYY-MM-DD (default: hoje)")
+    p.add_argument("--backfill-bars", type=int, default=6000,
+                   help="Backfill: barras fetchadas por par (default: 6000 — ~6 meses "
+                        "de M15 ou ~2 meses de M5, sujeito ao limite do terminal)")
+    p.add_argument("--run-id", default=None,
+                   help="Backfill: identificador do run (default: bf_{from}_{to}). "
+                        "A/B: rode o mesmo período com run_ids distintos.")
+    p.add_argument("--config-override", default=None,
+                   help="Backfill: JSON (string ou @arquivo) com chaves top-level de config "
+                        "sobrescritas IN-MEMORY pro run (ex: '{\"time_blocks\": {...}}'). "
+                        "Config live em disco NÃO é tocado — é a via de cenários A/B.")
+    p.add_argument("--ignore-time-blocks", action="store_true",
+                   help="Backfill: ignora o gate de blackout do daemon (time_blocks + "
+                        "day_direction + events; braço B de um contrafactual — o default "
+                        "honra o config como o live)")
+    p.add_argument("--force-backfill-hours", action="store_true",
+                   help="[AVANÇADO] Permite backfill em dia útil de pregão (risco: o "
+                        "pgrep do cron confunde com o walker live + disputa de Wine).")
     return p.parse_args()
 
 
@@ -997,7 +1425,7 @@ def main() -> None:
     print(f"[forward_walker] include_disabled={args.include_disabled} | "
           f"min_trades={args.min_trades} | no_telegram={args.no_telegram}")
     print(f"[forward_walker] DB: {TRADES_DB} | Tabela isolada: {SIM_TABLE}")
-    print(f"[forward_walker] Read-only no MT5 — ZERO ordens serão enviadas")
+    print("[forward_walker] Read-only no MT5 — ZERO ordens serão enviadas")
     print(f"[forward_walker] PID: {os.getpid()} | Início: {datetime.now():%Y-%m-%d %H:%M:%S}")
     print()
 
@@ -1023,6 +1451,16 @@ def main() -> None:
         CONFIG["disabled_symbols"] = []
         # reload CONFIG-aware helpers (eles usam o module-level CONFIG)
         print("[forward_walker] --include-disabled: ignorando disabled_timeframes/disabled_symbols")
+
+    # Modo replay histórico: caminho separado do loop live (sem Telegram/drift)
+    if args.backfill:
+        if args.config_override:
+            raw = args.config_override
+            if raw.startswith("@"):
+                args.config_override = Path(raw[1:]).read_text(encoding="utf-8")
+            args.config_override = json.loads(args.config_override)
+        run_backfill(args, state)
+        return
 
     walker_loop(args, state)
 

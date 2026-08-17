@@ -210,7 +210,6 @@ def run(days: int = 7,
     # (uma iteração sem melhorar nenhum par = espaço de busca esgotado
     # nesta execução; próxima execução do cron retenta com dados frescos).
     # max_iterations é só teto de segurança anti-bug.
-    prev_failing_count = None
     # Wave LLM-AGI: inicializa prev_failing_pairs com os pares do stage1.
     # Antes era set() vazio → primeira iteração sempre via "improved=True"
     # e o log mostrava "0 par(es) pendentes" enganoso. Agora reflete realidade.
@@ -257,7 +256,6 @@ def run(days: int = 7,
         # esgotou. Em vez de girar pra sempre, força geração de estratégias
         # novas (stage4) e checa novamente.
         improved = len(current_failing) < len(prev_failing_pairs) if prev_failing_pairs else True
-        same_set = current_failing == prev_failing_pairs
 
         if improved:
             stagnation_counter = 0
@@ -319,7 +317,6 @@ def run(days: int = 7,
             break
 
         prev_failing_pairs = current_failing
-        prev_failing_count = len(current_failing)
         log.info(f"[{TAG}] {len(current_failing)} par(es) ainda negativos — próxima iteração")
 
     # ── Wave 881: Otimização dos pares lucrativos ──
@@ -370,6 +367,11 @@ def run(days: int = 7,
     # Wave AGI-super (13/08): calibração de risco pelo próprio AGI (stop
     # diário por símbolo, alvo de lucro, slippage) — simulação counterfactual.
     _run_risk_calibrator(ctx)
+
+    # Wave AGI-backfill (16/08): inteligência de sessão pelo replay histórico
+    # do forward_walker — propõe/valida/aplica time_blocks contrafactual.
+    # Só age no cron pós-close (17h10); o do meio-dia pula (guarda interna).
+    _run_backfill_intel(ctx)
 
     # ── Stage 6: Relatório (sempre roda) ──
     _safe_run_stage(ctx, 6, "report", "stage6_report")
@@ -451,7 +453,6 @@ def _optimize_profitable_pairs(ctx: dict) -> None:
     # ctx["search_results"]. Restauramos ctx["failing_pairs"] ao final para
     # preservar o histórico do loop de convergência (usado no stage6 report).
     saved_failing = ctx.get("failing_pairs", [])
-    saved_search_results = ctx.get("search_results", [])
 
     ctx["failing_pairs"] = profitable
     ctx["search_results"] = []  # reset: resultados são da otimização lucrativa
@@ -516,6 +517,22 @@ def _run_risk_calibrator(ctx: dict) -> None:
     except Exception as e:
         log.error(f"[{TAG}] Risk calibrator FALHOU: {e}", exc_info=True)
         ctx["audit"].append({"stage": "risk_calibrator", "ok": False, "error": str(e)})
+
+
+def _run_backfill_intel(ctx: dict) -> None:
+    """Wave AGI-backfill (Bruno 16/08): o AGI valida e calibra filtros de
+    sessão (time_blocks) por replay histórico contrafactual do
+    forward_walker. Delega a ``backfill_intel.run(ctx)``. Fail-safe.
+    """
+    try:
+        from optimization.agi_v4 import backfill_intel
+        result = backfill_intel.run(ctx)
+        summary = result.get("summary", "") if isinstance(result, dict) else ""
+        ctx["audit"].append({"stage": "backfill_intel", "ok": True, "summary": summary})
+        log.info(f"[{TAG}] Backfill intel OK — {summary}")
+    except Exception as e:
+        log.error(f"[{TAG}] Backfill intel FALHOU: {e}", exc_info=True)
+        ctx["audit"].append({"stage": "backfill_intel", "ok": False, "error": str(e)})
 
 
 def _run_tune_incumbents(ctx: dict) -> None:

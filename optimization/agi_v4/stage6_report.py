@@ -81,6 +81,7 @@ def _write_audit(ctx: dict) -> Path:
         "rollover_state": ctx.get("rollover_state", {}),
         "series_sanity": ctx.get("series_sanity", {}),
         "risk_calibration": ctx.get("risk_calibration", {}),
+        "backfill_intel": ctx.get("backfill_intel", {}),
         "stage_audit": ctx.get("audit", []),
     }
     try:
@@ -401,6 +402,28 @@ def _build_telegram_message(ctx: dict) -> str:
             lines.append("🛡️ Risco calibrado pelo AGI (simulação counterfactual):")
             for _l in _rc_lines:
                 lines.append(f"   {_l}")
+    except Exception:
+        pass
+
+    # ── ⏱️ SESSÃO calibrada pelo replay histórico (backfill_intel) ──
+    # Wave AGI-backfill (16/08): contrafactual de time_blocks sobre a
+    # semântica exata do daemon. Horas na escala do ts da barra (gate).
+    try:
+        bi = ctx.get("backfill_intel") or {}
+        _b = bi.get("baseline") or {}
+        if _b.get("n"):
+            lines.append(f"⏱️ Replay {bi.get('window_days')}d (contrafactual): "
+                         f"n={_b['n']} R${_b['pnl']:+.0f} WR {_b['wr']*100:.0f}% "
+                         f"({_b['days']}d)")
+            for _c in (bi.get("candidates") or [])[:4]:
+                _delta = _c.get("delta")
+                _dstr = f"Δ R${_delta:+.0f}" if _delta is not None else "sem cenário"
+                _verdict = ("⛔ BLOQUEIA" if _c.get("apply")
+                            else f"mantém ({'Δ < mínimo' if _delta is not None else _c.get('note', '—')})")
+                lines.append(f"   {_c['root']} {_c['start']}-{_c['end']}h: "
+                             f"{_c['n']}t R${_c['pnl']:+.0f} → {_verdict} ({_dstr})")
+        elif bi.get("status"):
+            lines.append(f"⏱️ Replay sessão: {bi['status']}")
     except Exception:
         pass
 
