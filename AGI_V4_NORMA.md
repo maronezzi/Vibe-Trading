@@ -304,9 +304,19 @@ replay para o AGI decidir sozinho filtros de horário (`time_blocks`).
    bloco manual (manual sempre vence). Blocks próprios são marcados
    `reason="agi_backfill: ..."` — churn controlado.
 
+**STATUS (Bruno 16/08): AUTO-APPLY DESATIVADO — modo análise-only.** Walk-forward
+out-of-sample (descoberta mai-jul vs validação cega de agosto) deu INCONCLUSIVO:
+prometia +R$87, entregou +R$7 sem estragar nada. O default do código é OFF —
+nenhum run do AGI (cron ou manual) aplica blocks. Reativar quando houver
+evidência melhor: `export VT_BACKFILL_INTEL=1` no wrapper do cron (linha
+comentada em `scripts/run_agi_v4_cron.sh`). Análise manual segue disponível:
+`python3 optimization/agi_v4/backfill_intel.py` (sempre dry-run) ou o walker
+direto (`--backfill`, `--config-override`).
+
 **Guardas:** só roda pós-close (≥ 17h ou fim de semana — o do meio-dia pula;
-o walker recusa dia útil 08–17h para não colidir com o cron 09:01). Kill-switch
-`VT_BACKFILL_INTEL=0`. Fail-safe: erro aqui NUNCA derruba o pipeline.
+o walker recusa dia útil 08–17h para não colidir com o cron 09:01). Auto-apply
+é OPT-IN (`VT_BACKFILL_INTEL=1`; default OFF — probação). Fail-safe: erro aqui
+NUNCA derruba o pipeline.
 
 **Invariantes (não quebrar):**
 - Backfill NUNCA escreve em `forward_sim_trades` (sinal shadow do meio-dia é só

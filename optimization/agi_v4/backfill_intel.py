@@ -24,7 +24,12 @@ semântica exata do daemon (forward_walker --backfill) e decide sozinho:
 
 Guardas: só roda pós-close (>= POST_CLOSE_HOUR ou fim de semana — o walker
 recusa dia útil 08-17h e o AGI do meio-dia não deve disputar o Wine);
-kill-switch VT_BACKFILL_INTEL=0; janela via VT_BACKFILL_INTEL_DAYS.
+AUTO-APPLY OFF POR PADRÃO (Bruno 16/08, opção "análise-only": walk-forward
+out-of-sample ficou INCONCLUSIVO — prometia +R$87 na descoberta e entregou
++R$7 na validação cega de agosto; autonomia não se paga nesta amostra).
+Reativar o auto-apply: export VT_BACKFILL_INTEL=1 (ex.: no wrapper do cron).
+Janela de análise: VT_BACKFILL_INTEL_DAYS. O modo manual (__main__) força
+análise em dry-run — é a "ferramenta de análise" da opção 2, nunca aplica.
 Fail-safe: nunca derruba o pipeline.
 """
 from __future__ import annotations
@@ -54,7 +59,15 @@ def _db_path() -> Path:
 
 
 def _enabled() -> bool:
-    return os.environ.get("VT_BACKFILL_INTEL", "1").lower() not in ("0", "false", "no")
+    """Auto-apply é OPT-IN (default OFF — probação Bruno 16/08).
+
+    Racional: o walk-forward out-of-sample (descoberta maio-jul vs validação
+    cega de agosto) deu INCONCLUSIVO — o Δ prometido não se materializa fora
+    da amostra. Até haver evidência melhor, o módulo só roda como ferramenta
+    de análise manual (``python3 optimization/agi_v4/backfill_intel.py``,
+    sempre dry-run) ou com opt-in explícito via VT_BACKFILL_INTEL=1.
+    """
+    return os.environ.get("VT_BACKFILL_INTEL", "0").lower() in ("1", "true", "yes")
 
 
 def _post_close(now: datetime | None = None) -> bool:
@@ -198,7 +211,7 @@ def run(ctx: dict) -> dict:
     dry_run = ctx.get("dry_run", True)
 
     if not _enabled():
-        ctx["backfill_intel"] = {"status": "desligado (VT_BACKFILL_INTEL=0)"}
+        ctx["backfill_intel"] = {"status": "desligado (análise-only; reativar com VT_BACKFILL_INTEL=1)"}
         return {"summary": "desligado por env"}
     if not _post_close():
         # O walker recusa dia útil 08-17h; o AGI do meio-dia pula esta fase
@@ -308,8 +321,11 @@ def run(ctx: dict) -> dict:
 
 if __name__ == "__main__":
     # Execução manual (fim de semana/madrugada): análise + contrafactual,
-    # NUNCA aplica (dry-run) — para aplicar, rode o pipeline do AGI.
+    # NUNCA aplica (dry-run) — é a ferramenta de análise da opção 2. Força o
+    # env local (o default OFF é probação do AUTO-APPLY do cron, não da
+    # ferramenta manual).
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    os.environ["VT_BACKFILL_INTEL"] = "1"
     from core.vt_config_loader import load_config
     _ctx = {"config": load_config(force=True), "dry_run": True}
     out = run(_ctx)

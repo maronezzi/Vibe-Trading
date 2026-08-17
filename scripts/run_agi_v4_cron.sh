@@ -58,6 +58,13 @@ echo "[$(date)] Snapshot: $SNAPSHOT" > "$LOG"
 # workers a 1 (vs 2 do noturno) e encurta o deadline para 2h (vs 8h do 17h10)
 # — o cron do meio-dia não tem a madrugada e não pode monopolizar a CPU.
 # O cron das 17h10 (pós-close, 16:45) roda sem essas restrições.
+# Wave AGI-backfill (Bruno 16/08): backfill_intel (calibração autônoma de
+# time_blocks por replay histórico) está em modo ANÁLISE-ONLY — o auto-apply
+# é OFF por padrão no código. Decisão após walk-forward out-of-sample
+# INCONCLUSIVO (+R$87 prometido na descoberta, +R$7 entregue na validação
+# cega). Para reativar o auto-apply, descomente a linha abaixo:
+# export VT_BACKFILL_INTEL=1
+# Análise manual (sempre dry-run): python3 optimization/agi_v4/backfill_intel.py
 HOUR=$(date +%H)
 if [ "$HOUR" -ge 11 ] && [ "$HOUR" -le 14 ]; then
   export VT_MAX_WORKERS=1
