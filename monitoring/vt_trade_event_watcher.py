@@ -18,11 +18,9 @@ então inotify/polling de 1s é suficiente.
 """
 
 import argparse
-import csv
 import os
 import signal
 import sqlite3
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -90,6 +88,13 @@ def parse_line(line: str) -> dict | None:
                 row[col] = int(val) if val else None
             except ValueError:
                 row[col] = None
+            # FIX 2026-08-21: EA imprime tickets com %i (int32 signed) — valores
+            # >= 2^31 viram negativos (ex: -1786341241 = 2508626055 - 2^32).
+            # Normaliza pra uint32 pra casar com trades.entry_ticket e com o
+            # history(position=) do MT5. Sem isso, joins DB↔broker falham
+            # silenciosamente (incidente 20/08: 21 deals OUT órfãos no broker).
+            if row[col] is not None and row[col] < 0:
+                row[col] += 1 << 32
         elif col in FLOAT_FIELDS:
             try:
                 row[col] = float(val) if val else None
@@ -216,7 +221,7 @@ def tail_watch(conn: sqlite3.Connection):
                 last_reopen_check = time.time()
                 # Verifica se o inode mudou (rotação por rename)
                 try:
-                    st = os.stat(CSV_PATH)
+                    os.stat(CSV_PATH)  # probe de rotação — erro tratado abaixo
                     # Se o arquivo é novo (inode diferente), reset
                     # Simples: se size < file_size, já tratamos acima
                 except OSError:

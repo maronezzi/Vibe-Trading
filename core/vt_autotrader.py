@@ -40,7 +40,7 @@ from core.vt_trade_log import init_db, log_entry, log_exit, import_mt5_history, 
 from mt5.mt5_orchestrator import status, tick, history, _run_wine, EXECUTOR_WIN, close_all
 from mt5.mt5_error_recovery import safe_buy, safe_sell, safe_close
 from core.vt_emergency import safe_modify_sl_with_emergency_close
-from core.vt_config_loader import load_config, load_effective_config
+from core.vt_config_loader import load_effective_config
 from core.vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
 from core.vt_order_validator_v2 import validate_order, validate_pre_send
 from core.vt_calendar import is_trading_day, resolve_all_symbols, get_contract_expiry, _parse_contract_code, is_rollover_contract
@@ -824,9 +824,9 @@ def calculate_atr(bars: list, period: int = 14) -> float:
     tr_sum = 0
     for i in range(period):
         h = data[i]["high"]
-        l = data[i]["low"]
+        lo = data[i]["low"]
         c_prev = data[i + 1]["close"]
-        tr = max(h - l, abs(h - c_prev), abs(l - c_prev))
+        tr = max(h - lo, abs(h - c_prev), abs(lo - c_prev))
         tr_sum += tr
     return tr_sum / period
 
@@ -1531,7 +1531,7 @@ def _symbol_daily_pnl(resolved_symbol: str) -> float:
             return total
         # MT5 sem deals (pós-mercado/instabilidade) → fallback DB
         import sqlite3 as _sqlite3
-        _db = DB_PATH if "DB_PATH" in globals() else None
+        _db = globals().get("DB_PATH")
         try:
             from core.vt_trade_log import DB_PATH as _db
         except Exception:
@@ -1892,7 +1892,7 @@ def check_and_trade():
 
         # Se o config tem symbol resolvido (ex: "WDO": "WDON26"), usa direto
         # Caso contrário, resolve e cacheia no state
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        datetime.now().strftime("%Y-%m-%d")
 
         # Verificar se config tem símbolos resolvidos
         resolved_map = CONFIG.get("resolved_symbols", {})
@@ -2908,6 +2908,39 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
         state_key = f"{symbol}_{tf}"
         sig_key = f"{symbol}_{tf}_{direction}"
 
+        # FIX 2026-08-21 (netting position_id): result.order é o ORDER ticket,
+        # que em conta netting NÃO é o position_id da posição MT5 (ex: 20/08
+        # WDO order 2509240664 → posição real 2509155471). Gravar o order
+        # ticket quebrou history(position=) no EOD ("0 deals — Wine bug") e
+        # o casamento com EA events. Resolve o position_id real via deal IN
+        # do broker (EA events) com retry curto pro watcher ingerir (~1s).
+        try:
+            _et_i32 = _ticket_int - (1 << 32) if _ticket_int >= (1 << 31) else _ticket_int
+            for _attempt in range(4):
+                import sqlite3 as _sq_pos
+                _c_pos = _sq_pos.connect("vt_trades.db", timeout=5.0)
+                _c_pos.execute("PRAGMA busy_timeout=5000")
+                _row = _c_pos.execute(
+                    "SELECT position_ticket FROM mt5_trade_events "
+                    "WHERE trans_type='DEAL_ADD' AND deal_entry='IN' AND order_ticket=? "
+                    "ORDER BY id DESC LIMIT 1", (_et_i32,)).fetchone()
+                _c_pos.close()
+                if _row and _row[0]:
+                    _pos_tk = int(_row[0])
+                    if _pos_tk < 0:
+                        _pos_tk += 1 << 32
+                    if _pos_tk != _ticket_int:
+                        log(f"[POSITION-ID] {symbol} order={_ticket_int} → "
+                            f"position real={_pos_tk} (netting)")
+                    ticket = str(_pos_tk)
+                    break
+                time.sleep(0.8)
+            else:
+                log(f"[POSITION-ID] {symbol}: deal IN não encontrado p/ order="
+                    f"{_ticket_int} (mantendo order ticket como fallback)")
+        except Exception as _pos_err:
+            log(f"[POSITION-ID] falha resolvendo position_id (não-bloqueante): {_pos_err}")
+
         # Trava anti-duplicação
         state.last_signals[sig_key] = {
             "ts": datetime.now(),
@@ -3219,7 +3252,7 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
                         new_remaining = 0.0
                     pos["remaining_volume"] = new_remaining
                     pos["tp1_done"] = True
-                    tp1_profit_pts = actual_close * (
+                    actual_close * (
                         profit_pts / max(0.001, original)
                     )
                     log(
@@ -3600,6 +3633,41 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
     mt5_tickets = [str(p.ticket) for p in _open_pos]
 
     if str(pos["entry_ticket"]) not in mt5_tickets:
+        # FIX 2026-08-21 (netting guard): em conta NETTING, múltiplas entradas do
+        # bot no MESMO símbolo/direção consolidam numa única posição MT5
+        # (position_id da 1ª entrada). Quando uma NOVA entrada do bot some do
+        # positions_get, pode ser só consolidação — a posição NET ainda está
+        # viva. Registrar fechamento aqui inventa trades fantasma com PnL
+        # "fallback local" (incidente 20/08: WSP 3 fantasmas, DB −142 vs
+        # broker −34). Gate: só aceita fechamento server-side se existir DEAL
+        # OUT real do broker (EA events) para a posição desta entrada. Sem
+        # deal OUT = consolidação netting = NÃO registra, mantém rastreando
+        # pela posição MT5 consolidada.
+        _evt_out = _lookup_exit_event_from_db(symbol, direction, pos.get("entry_ticket"))
+        if _evt_out is None:
+            # Sem deal OUT: ou é consolidação netting, ou deal ainda não
+            # chegou ao CSV (watcher ~1s). Re-resolve a posição consolidada:
+            # se alguma posição MT5 aberta do mesmo símbolo/direção contém
+            # este ticket como origem, adota o position_id real e continua
+            # gerindo (a posição não fechou).
+            _consolidated = [
+                p for p in _open_pos
+                if getattr(p, "symbol", "") == symbol
+                and ("BUY" if getattr(p, "type", 0) == 0 else "SELL") == direction
+            ]
+            if _consolidated:
+                _real_id = str(getattr(_consolidated[0], "ticket", "") or "")
+                if _real_id and _real_id != str(pos["entry_ticket"]):
+                    log(f"[NETTING] {symbol} ticket={pos['entry_ticket']} consolidado "
+                        f"na posição {_real_id} — NÃO registra fechamento, re-rastreando")
+                    pos["entry_ticket"] = _real_id  # adota position_id real
+                    return  # posição viva, segue gestão no próximo tick
+            # Sem posição consolidada E sem deal OUT ainda: pode ser latência
+            # do watcher. NÃO registra agora — o próximo tick resolve (deal OUT
+            # chega em ~1s, ou posição reaparece). Defesa contra fantasma.
+            log(f"[NETTING] {symbol} ticket={pos['entry_ticket']} sumiu sem deal OUT "
+                f"e sem consolidação — aguardando broker-truth (não registra)")
+            return
         log(f"[FECHADO PELO SERVIDOR] {symbol} | Ticket {pos['entry_ticket']}")
 
         # Bruno 2026-06-30: pegar PnL REAL do MT5 (broker-truth) ao invés de calcular
@@ -3808,7 +3876,7 @@ def close_all_and_report(close_source: str = "EOD_CLOSE", exit_reason: str = "EO
     for key, pos in list(state.positions.items()):
         parts = key.rsplit("_", 1)
         symbol = parts[0]
-        tf = parts[1] if len(parts) > 1 else "M5"
+        parts[1] if len(parts) > 1 else "M5"
 
         result = safe_close(symbol)
         log(f"Fechei {symbol}: {result}")
@@ -3854,7 +3922,7 @@ def close_all_and_report(close_source: str = "EOD_CLOSE", exit_reason: str = "EO
             log(f"[EOD-SWEEP] close_all() fechou {_sweep_closed} posição(ões) "
                 f"remanescente(s) não rastreadas pelo state (ghost/orphan)")
         else:
-            log(f"[EOD-SWEEP] close_all() OK — nenhuma posição remanescente no MT5")
+            log("[EOD-SWEEP] close_all() OK — nenhuma posição remanescente no MT5")
     except Exception as _e_sweep:
         log(f"[EOD-SWEEP] close_all() falhou (não-crash): {_e_sweep}")
 
@@ -5529,7 +5597,7 @@ def main():
             for key, pos in list(state.positions.items()):
                 parts = key.rsplit("_", 1)
                 symbol = parts[0]
-                tf = parts[1] if len(parts) > 1 else "M5"
+                parts[1] if len(parts) > 1 else "M5"
 
                 result = safe_close(symbol)
                 log(f"Fechei {symbol}: {result}")
