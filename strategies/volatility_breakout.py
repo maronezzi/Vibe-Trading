@@ -44,10 +44,10 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     for i in range(min(atr_period * 2, len(bars) - 1)):
         b = bars[i]
         h = b.get("high", 0)
-        l = b.get("low", 0)
+        lo = b.get("low", 0)
         prev_c = bars[i + 1].get("close", 0) if i + 1 < len(bars) else h
-        if h > 0 and l > 0 and prev_c > 0:
-            tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+        if h > 0 and lo > 0 and prev_c > 0:
+            tr = max(h - lo, abs(h - prev_c), abs(lo - prev_c))
             atr_values.append(tr)
 
     if len(atr_values) < atr_period:

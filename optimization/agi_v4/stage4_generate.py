@@ -34,7 +34,6 @@ import importlib.util
 import logging
 import random
 import re
-import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -196,7 +195,7 @@ def _generate_and_validate_one(
     """
     pair = hypothesis.get("pair", "UNKNOWN")
     description = hypothesis.get("description", "")
-    justification = hypothesis.get("justification", "")
+    hypothesis.get("justification", "")
 
     # Nome único baseado no par + timestamp
     ts_compact = datetime.now().strftime("%H%M%S")
@@ -278,7 +277,7 @@ def _generate_and_validate_one(
             )
             return _reject_strategy(
                 strat_name, pending_path, "no_trades_generated",
-                f"simulação 30d gerou 0 trades — estratégia não tem edge",
+                "simulação 30d gerou 0 trades — estratégia não tem edge",
             )
         log.info(f"{strat_name} simulação não passou: {sim_result.get('reason','')}")
         return _approved_strategy(

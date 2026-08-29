@@ -21,7 +21,7 @@ STRATEGY_NAME = "EMA_PULLBACK"
 def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     """
     Verifica sinal de entrada EMA_PULLBACK.
-    
+
     Returns:
         None (sem sinal) ou {"direction": "BUY"/"SELL", "sl_pts": int, "info": {...}}
     """
@@ -68,7 +68,7 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     # For downtrend: price pulled back toward EMA slow (but still below)
 
     # Get recent high/low for pullback detection
-    recent_prices = [float(b["close"]) for b in bars[:5]]
+    [float(b["close"]) for b in bars[:5]]
 
     if is_uptrend:
         # Pullback: recent high was higher, now price is lower (pulling back)

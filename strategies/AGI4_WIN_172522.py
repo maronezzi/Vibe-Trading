@@ -45,7 +45,7 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     calculate_ema = utils["calculate_ema"]
     calculate_rsi = utils["calculate_rsi"]
     calculate_adx = utils["calculate_adx"]
-    calculate_bollinger = utils["calculate_bollinger"]
+    utils["calculate_bollinger"]
     calc_sl = utils["calc_sl"]
 
     # --- Params (sempre com default defensivo) ---
@@ -57,7 +57,7 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     rsi_overbought = params.get("rsi_overbought", 70)
     rsi_oversold = params.get("rsi_oversold", 30)
     bb_period = params.get("bb_period", 20)
-    bb_std = params.get("bb_std", 2.0)
+    params.get("bb_std", 2.0)
     allow_pullback_buy = params.get("allow_pullback_buy", True)
 
     # --- Guardas de warmup ---

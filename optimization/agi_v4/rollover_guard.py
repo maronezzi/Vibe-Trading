@@ -77,7 +77,6 @@ def _days_util_until(d: date) -> int:
     try:
         from core.vt_calendar import is_trading_day
     except Exception:
-        from datetime import date as _d
         return max((d - date.today()).days, 0)
     n = 0
     check = date.today()

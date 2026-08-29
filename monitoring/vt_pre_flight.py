@@ -330,7 +330,10 @@ def test_params_lookup(cfg: dict) -> tuple[bool, str]:
 # ── Telegram ─────────────────────────────────────────────────
 def send_telegram_report(results: list[tuple[str, bool, str]]) -> None:
     section("10. NOTIFICAÇÃO TELEGRAM")
-    icon = lambda ok: "✅" if ok else "❌"
+
+    def icon(ok: bool) -> str:
+        return "✅" if ok else "❌"
+
     overall_ok = all(r[1] for r in results if r[0] not in ("LLM",))  # LLM degraded é aceitável
     title = "✅ PRE-FLIGHT OK — AUTOTRADER LIBERADO" if overall_ok else "❌ PRE-FLIGHT FALHOU"
     lines = [f"🛫 {title}", f"📅 {date.today().isoformat()} {datetime.now().strftime('%H:%M')}"]

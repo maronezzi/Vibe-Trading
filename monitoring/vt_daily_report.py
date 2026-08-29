@@ -358,12 +358,18 @@ def format_report(report: dict, close_info: dict, events_validation=None) -> str
                 try:
                     sd = json.loads(sig) if isinstance(sig, str) else sig
                     parts = []
-                    if 'rsi' in sd: parts.append(f"RSI={sd['rsi']:.1f}")
-                    if 'vwap' in sd: parts.append(f"VWAP={sd['vwap']:.2f}")
-                    if 'bb_upper' in sd: parts.append(f"BB={sd.get('bb_lower',0):.0f}/{sd.get('bb_mid',0):.0f}/{sd.get('bb_upper',0):.0f}")
-                    if 'atr' in sd: parts.append(f"ATR={sd['atr']:.1f}")
-                    if 'adx' in sd: parts.append(f"ADX={sd['adx']:.1f}")
-                    if 'ema_fast' in sd: parts.append(f"EMA={sd.get('ema_fast',0):.0f}/{sd.get('ema_slow',0):.0f}")
+                    if 'rsi' in sd:
+                        parts.append(f"RSI={sd['rsi']:.1f}")
+                    if 'vwap' in sd:
+                        parts.append(f"VWAP={sd['vwap']:.2f}")
+                    if 'bb_upper' in sd:
+                        parts.append(f"BB={sd.get('bb_lower',0):.0f}/{sd.get('bb_mid',0):.0f}/{sd.get('bb_upper',0):.0f}")
+                    if 'atr' in sd:
+                        parts.append(f"ATR={sd['atr']:.1f}")
+                    if 'adx' in sd:
+                        parts.append(f"ADX={sd['adx']:.1f}")
+                    if 'ema_fast' in sd:
+                        parts.append(f"EMA={sd.get('ema_fast',0):.0f}/{sd.get('ema_slow',0):.0f}")
                     if parts:
                         lines.append(f"   📐 {' | '.join(parts)}")
                 except Exception:

@@ -42,7 +42,7 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     adx_threshold = params.get("adx_threshold", 20)
     pullback_lookback = params.get("pullback_lookback", 8)
     pullback_tolerance_atr = params.get("pullback_tolerance_atr", 0.5)
-    rsi_period = params.get("rsi_period", 14)
+    params.get("rsi_period", 14)
 
     min_bars = max(ema_slow_period, adx_period * 2, pullback_lookback) + 5
     if not bars or len(bars) < min_bars:

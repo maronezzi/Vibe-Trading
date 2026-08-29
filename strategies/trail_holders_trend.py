@@ -53,7 +53,7 @@ def _bar_dt_brt(bar_ts):
 
 def _atr_ratio(bars, atr_period, atr_avg_period):
     """ATR atual / ATR médio = medida de expansão de volatilidade."""
-    atr_current = bars[0].get("atr", 0) if isinstance(bars[0], dict) else 0
+    bars[0].get("atr", 0) if isinstance(bars[0], dict) else 0
     # Fallback: calcular via calculate_atr
     return None
 

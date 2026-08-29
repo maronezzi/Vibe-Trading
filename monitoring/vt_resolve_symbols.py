@@ -19,9 +19,7 @@ Notas:
       save_full_config livremente.
 """
 import argparse
-import json
 import sys
-from datetime import datetime
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).parent.parent

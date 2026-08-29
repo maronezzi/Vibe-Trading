@@ -620,7 +620,7 @@ def main():
                 # Show the least-bad one
                 least_bad_strat = results[0][0]  # already sorted by PnL desc
                 least_bad = results[0][1]
-                least_bad_params = results[0][2]
+                results[0][2]
                 emoji = "❌"
                 print(f"{pair_key:<12} {least_bad_strat:<30} {least_bad['pnl']:>10.2f} {least_bad['n_trades']:>7d} {least_bad['wr']:>6.1f}% {emoji}")
                 disabled_pairs.append((pair_key, f"No profitable strategy (best: {least_bad_strat} PnL={least_bad['pnl']:.2f}R)"))

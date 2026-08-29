@@ -113,7 +113,7 @@ def _validate_sl_locally(order_data: dict) -> list:
     sl_pts = order_data.get("sl_pts", 0)
     atr = order_data.get("atr", 0)
     entry_price = order_data.get("entry_price", 0)
-    strategy = order_data.get("strategy", "")
+    order_data.get("strategy", "")
 
     # Determinar base do símbolo
     base = "WDO" if "WDO" in symbol else "WIN" if "WIN" in symbol else \

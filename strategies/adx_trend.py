@@ -24,7 +24,7 @@ STRATEGY_NAME = "ADX_TREND"
 def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     """
     Verifica sinal de entrada ADX_TREND.
-    
+
     Returns:
         None (sem sinal) ou {"direction": "BUY"/"SELL", "sl_pts": int, "info": {...}}
     """

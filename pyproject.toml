@@ -117,6 +117,8 @@ extend-exclude = [
     "agent_project",              # redundante com archive/ mas explícito
     "tests.snapshot_*",           # snapshot dirs (gitignored, but ruff may walk them)
     "data",                       # data lake — not source
+    "strategies/_pending",        # sandbox gerado pelo AGI (churna a cada run; ast_gate valida na promoção)
+    "strategies/_archive",        # cemitério manual de estratégias mortas (não é código vivo)
 ]
 
 [tool.coverage.run]
@@ -147,3 +149,12 @@ ignore = ["E501"]
 # to match research-paper formulas. F401 (unused-import) is noise here;
 # F841 (unused-local-variable) stays active to catch real formula bugs.
 "agent/src/factors/zoo/**/*.py" = ["F401"]
+# Módulos que fazem self-bootstrap de sys.path (ou import tardio para evitar
+# circular import) antes de importar libs locais — E402 é intencional aqui.
+"core/vt_autotrader.py" = ["E402"]
+"monitoring/vt_copilot.py" = ["E402"]
+"monitoring/vt_weekly_report.py" = ["E402"]
+"optimization/agi_bayesian_optimizer.py" = ["E402"]
+"optimization/experiment_runner.py" = ["E402"]
+"optimization/agi_v4/stage2_intel.py" = ["E402"]
+"optimization/agi_v4/stage3_exhaustive.py" = ["E402"]

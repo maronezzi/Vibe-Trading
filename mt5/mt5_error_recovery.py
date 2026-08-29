@@ -853,6 +853,6 @@ def _verify_position_after_reject(symbol: str, direction: str, expected_volume: 
                     "_recovered_from_reject": True,
                 }
         return None
-    except Exception as e:
+    except Exception:
         # Se não consegue verificar, retorna None (fail-safe)
         return None

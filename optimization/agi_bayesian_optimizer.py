@@ -414,7 +414,7 @@ def _simulate_trades_with_params(
     rsi_ob = params.get("rsi_overbought", 70)
     rsi_os = params.get("rsi_oversold", 30)
     adx_thresh = params.get("adx_threshold", 20)
-    cooldown = params.get("cooldown_seconds", 300)
+    params.get("cooldown_seconds", 300)
 
     for t in trades:
         pnl = t.get("net_pnl", 0)

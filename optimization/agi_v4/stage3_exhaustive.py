@@ -32,7 +32,6 @@ log = logging.getLogger("agi_v4.stage3")
 from optimization.exhaustive_strategy_search import (
     ALL_STRATEGIES,
     _generate_param_combos,
-    merge_params_by_tf_into_config,
 )
 
 

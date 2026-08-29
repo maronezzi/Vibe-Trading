@@ -212,7 +212,6 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
             return None
 
     # Filtro de volatilidade mínima (ATR floor)
-    min_atr_symbol = 0
     if calculate_atr is not None:
         atr_calc = calculate_atr(bars, p["atr_period"])
         if atr_calc > 0 and atr_calc < atr * 0.5:

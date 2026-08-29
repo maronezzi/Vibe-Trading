@@ -46,7 +46,7 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     Returns:
         None (sem sinal) ou {"direction": "BUY"/"SELL", "sl_pts": int, "info": {...}}
     """
-    calculate_ema = utils["calculate_ema"]
+    utils["calculate_ema"]
     calculate_rsi = utils["calculate_rsi"]
     calculate_adx = utils["calculate_adx"]
     calculate_bollinger = utils["calculate_bollinger"]

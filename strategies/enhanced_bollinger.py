@@ -111,7 +111,7 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
         candle_range = float(candle["high"]) - float(candle["low"])
 
         if candle_range > 0:
-            body_ratio = candle_body / candle_range
+            candle_body / candle_range
 
             # For BUY: look for bullish rejection (lower wick)
             if direction == "BUY":

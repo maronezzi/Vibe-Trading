@@ -150,3 +150,18 @@ vt_config.json.snapshot_*
 
 # Archive docs (sepultura)
 archive/docs/
+
+# Sandbox do AGI (churna a cada run; os 3 stand-ins rastreados permanecem)
+strategies/_pending/
+
+# Sepultura manual de estratégias superseded
+strategies/_archive/
+
+# Estado runtime do AGI (journal auto-resemeável dos snapshots, NORMA §12)
+optimization/agi_v4/state/
+
+# Runs do super_agi_v5 (artefatos de dados, ~GBs)
+data/super_agi_v5_*/
+
+# Debug leftover (importa o daemon/MT5 se executado — não versionar)
+tmp_bitcheck.py

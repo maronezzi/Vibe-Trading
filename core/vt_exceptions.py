@@ -31,7 +31,7 @@ da Lei 3/Lei 4 é garantida SEM quebrar o contrato nem o bot.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 # ── Exceções de domínio (Lei 3 + Lei 4) ─────────────────────────────────────

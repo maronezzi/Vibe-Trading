@@ -276,9 +276,9 @@ def calc_atr(bars):
     tr_sum = 0
     n = min(14, len(bars) - 1)
     for i in range(n):
-        h, l = bars[i]["high"], bars[i]["low"]
+        h, lo = bars[i]["high"], bars[i]["low"]
         c_prev = bars[i + 1]["close"]
-        tr_sum += max(h - l, abs(h - c_prev), abs(l - c_prev))
+        tr_sum += max(h - lo, abs(h - c_prev), abs(lo - c_prev))
     return tr_sum / n
 
 

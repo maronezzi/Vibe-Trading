@@ -24,7 +24,7 @@ STRATEGY_NAME = "MACD_MOMENTUM"
 def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     """
     Verifica sinal de entrada MACD_MOMENTUM v2.
-    
+
     Returns:
         None (sem sinal) ou {"direction": "BUY"/"SELL", "sl_pts": int, "info": {...}}
     """

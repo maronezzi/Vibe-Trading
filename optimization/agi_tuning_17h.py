@@ -416,7 +416,7 @@ def diagnose_issues(perf: dict) -> list:
     for sym, data in perf.get("by_symbol", {}).items():
         n = data["n_trades"]
         wr = data["win_rate"]
-        pnl = data["total_pnl"]
+        data["total_pnl"]
 
         # Muito poucos trades — não há dados suficientes
         if n < 3:
@@ -474,7 +474,7 @@ def diagnose_issues(perf: dict) -> list:
 
     # ── Signal-based diagnostics ──
     for sym, sa in perf.get("signal_analysis", {}).items():
-        rsi_win = sa.get("avg_rsi_win")
+        sa.get("avg_rsi_win")
         rsi_loss = sa.get("avg_rsi_loss")
         atr_win = sa.get("avg_atr_win")
         atr_loss = sa.get("avg_atr_loss")
@@ -1946,7 +1946,7 @@ def build_evolution_summary(
             continue
         else:
             # DELTA = 0 — sem mudança efetiva (clipped, etc)
-            line += f" | (sem mudança efetiva — clipped/inalterado)"
+            line += " | (sem mudança efetiva — clipped/inalterado)"
             no_change.append(line)
 
     # Saída: só progressos. Se nada melhorou, mensagem honesta.
@@ -2262,8 +2262,6 @@ def check_convergence(current_perf: dict, baseline_snapshot: dict,
 
     if mode == "sharpe_ratio":
         # v3.0: Sharpe-based convergence gate
-        MIN_SHARPE = 1.0
-        MIN_PF = 1.2
         failing = []
         for key, data in (current_perf.get("by_symbol_tf") or {}).items():
             n = data.get("n_trades", 0)
@@ -2817,7 +2815,7 @@ def run_exhaustive_search(config: dict, days: int = 7, max_workers: int = 0) -> 
 
 def notify_exhaustive_search_results(exhaustive_results: dict):
     """Send exhaustive search results summary to Telegram.
-    
+
     Shows which strategies were tested per pair, why a specific strategy was chosen,
     and if a pair is disabled, shows that all 27 strategies were tested.
     """
@@ -3075,16 +3073,16 @@ def compare_live_vs_shadow(live_audit: dict, shadow_audit: dict) -> dict:
     live_only, shadow_only = [], []
 
     for sym in sorted(all_syms):
-        l = live_changes.get(sym, [{}])[-1] if live_changes.get(sym) else {}
+        lo = live_changes.get(sym, [{}])[-1] if live_changes.get(sym) else {}
         s = shadow_changes.get(sym, [{}])[-1] if shadow_changes.get(sym) else {}
-        if not l and s:
+        if not lo and s:
             shadow_only.append({"symbol": sym, "shadow": s})
-        elif l and not s:
-            live_only.append({"symbol": sym, "live": l})
-        elif l == s:
-            agreements.append({"symbol": sym, "params": l})
+        elif lo and not s:
+            live_only.append({"symbol": sym, "live": lo})
+        elif lo == s:
+            agreements.append({"symbol": sym, "params": lo})
         else:
-            disagreements.append({"symbol": sym, "live": l, "shadow": s})
+            disagreements.append({"symbol": sym, "live": lo, "shadow": s})
 
     live_iters = live_audit.get("iterations", [])
     shadow_iters = shadow_audit.get("iterations", [])

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
 from . import web_search
 
@@ -46,7 +45,6 @@ _STRATEGY_LABELS = {
     "STRONG_TREND": "ADX-based trend following",
     "MACD_MOMENTUM": "MACD Momentum",
     "SMART_EMA": "Smart EMA",
-    "BOLLINGER": "Bollinger Bands",
 }
 
 

@@ -509,8 +509,8 @@ def reconcile_orphans():
             net_pnl = pnl_pts * multiplier * (trade["volume"] if trade["volume"] is not None else 1)
 
             conn.execute("""
-                UPDATE trades 
-                SET exit_time=?, exit_price=?, net_pnl=?, 
+                UPDATE trades
+                SET exit_time=?, exit_price=?, net_pnl=?,
                     exit_reason='ORFAO_FECHADO', exit_ticket='reconciled'
                 WHERE id=?
             """, (exit_time, current_price, net_pnl, trade["id"]))
@@ -1187,7 +1187,7 @@ def _restore_pauses_if_needed():
     if not active_pauses:
         return
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    datetime.now().strftime("%Y-%m-%d")
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     # Só restaurar se as pausas são de ontem

@@ -345,7 +345,7 @@ def _ask_llm_http_direct(prompt: str, provider: str, model: str, timeout: int,
         },
         method="POST",
     )
-    t0 = time.time()
+    time.time()
     try:
         with urllib.request.urlopen(req, timeout=max(timeout, 10)) as r:
             data = _json.loads(r.read().decode("utf-8"))

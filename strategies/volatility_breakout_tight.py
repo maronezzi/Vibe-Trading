@@ -79,8 +79,8 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     range_low = min(bars[i].get("low", 0) for i in range(1, lookback + 1))
 
     close_now = bars[0].get("close", 0)
-    high_now = bars[0].get("high", 0)
-    low_now = bars[0].get("low", 0)
+    bars[0].get("high", 0)
+    bars[0].get("low", 0)
 
     # 4) Volume climax
     vol_avg = params.get("volume_avg_period", 20)

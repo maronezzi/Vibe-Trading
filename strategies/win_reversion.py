@@ -25,7 +25,7 @@ STRATEGY_NAME = "WIN_REVERSION"
 def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     """
     Verifica sinal de entrada WIN_REVERSION.
-    
+
     Returns:
         None (sem sinal) ou {"direction": "BUY"/"SELL", "sl_pts": int, "info": {...}}
     """

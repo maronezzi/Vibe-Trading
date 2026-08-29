@@ -29,11 +29,11 @@ def _compute_heikin_ashi(bars, n=10):
 
     for i in range(1, len(raw)):
         b = raw[i]
-        o, h, l, c = b.get("open", 0), b.get("high", 0), b.get("low", 0), b.get("close", 0)
-        ha_close_new = (o + h + l + c) / 4.0
+        o, h, lo, c = b.get("open", 0), b.get("high", 0), b.get("low", 0), b.get("close", 0)
+        ha_close_new = (o + h + lo + c) / 4.0
         ha_open_new = (ha_candles[-1]["open"] + ha_candles[-1]["close"]) / 2.0
         ha_high = max(h, ha_open_new, ha_close_new)
-        ha_low = min(l, ha_open_new, ha_close_new)
+        ha_low = min(lo, ha_open_new, ha_close_new)
         ha_candles.append({"open": ha_open_new, "close": ha_close_new,
                            "high": ha_high, "low": ha_low})
 
@@ -78,9 +78,9 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     bearish_count = 0
 
     for ha in ha_candles[:ha_period]:
-        o, c, h, l = ha["open"], ha["close"], ha["high"], ha["low"]
+        o, c, h, lo = ha["open"], ha["close"], ha["high"], ha["low"]
         body = abs(c - o)
-        total_range = h - l if h > l else 1
+        total_range = h - lo if h > lo else 1
 
         if c > o and body / total_range > 0.5:  # Strong green candle
             bullish_count += 1

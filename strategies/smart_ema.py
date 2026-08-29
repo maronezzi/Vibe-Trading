@@ -27,7 +27,7 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     Comportamento varia por timeframe:
       M5 → EMA_PULLBACK (conservador)
       M15 → STRONG_TREND (agressivo)
-    
+
     Returns:
         None (sem sinal) ou {"direction": "BUY"/"SELL", "sl_pts": int, "info": {...}}
     """

@@ -194,7 +194,7 @@ def reconcile_with_mt5(mt5_positions: list, log_fn=None) -> dict:
         multiplier = MULTIPLIER.get(root, 1.0)
 
         try:
-            cur = conn.execute(
+            conn.execute(
                 """
                 INSERT INTO trades
                 (symbol, direction, volume, entry_time, entry_price,
@@ -228,7 +228,7 @@ def reconcile_with_mt5(mt5_positions: list, log_fn=None) -> dict:
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             entry_price = float(db_row["entry_price"] or 0)
-            symbol_root = _symbol_root(db_row["symbol"] or "")
+            _symbol_root(db_row["symbol"] or "")
             direction = db_row["direction"] or "BUY"
             volume = float(db_row["volume"] or 1.0)
 

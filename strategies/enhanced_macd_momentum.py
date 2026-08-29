@@ -75,8 +75,8 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     cur_hist = histogram[-1]
     prev_hist = histogram[-2]
     prev2_hist = histogram[-3]
-    prev3_hist = histogram[-4]
-    prev4_hist = histogram[-5]
+    histogram[-4]
+    histogram[-5]
 
     # STRONGER MACD signals — require sustained momentum
     # v2: accepted single-bar momentum
@@ -149,7 +149,7 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
                 return None
 
     # ENHANCED: Price position relative to EMA slow — tighter filter
-    ema_dist_pct = abs(price - ema_slow_val) / ema_slow_val * 100
+    abs(price - ema_slow_val) / ema_slow_val * 100
     if direction == "BUY" and price < ema_slow_val * 0.998:  # Tighter than v2 (was 0.995)
         return None
     if direction == "SELL" and price > ema_slow_val * 1.002:  # Tighter than v2 (was 1.005)

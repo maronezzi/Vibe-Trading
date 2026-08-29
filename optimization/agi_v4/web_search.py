@@ -21,8 +21,6 @@ from __future__ import annotations
 import logging
 import re
 from html import unescape
-from typing import Any
-from urllib.parse import quote_plus
 
 log = logging.getLogger("agi_v4.web_search")
 
