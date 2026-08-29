@@ -2693,6 +2693,62 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
     except Exception:
         pass
 
+    # Volume (Wave Per-TF, Bruno 2026-07-07): prioridade volume_by_tf >
+    # volume_by_symbol > volume. Cada (symbol, tf) pode ter volume proprio
+    # via CONFIG["volume_by_tf"]["WDO_M5"] etc.
+    # Wave N+2B (2026-07-08): sizing extraído para core/vt_sizing.resolve_volume
+    # com suporte a vol-scaled (mode="vol_scaled" + sizing.atr_baseline).
+    # Wave 880.II (26/08): resolvido ANTES do governador de risco — ele
+    # precisa do volume planejado para orçar o pior caso.
+    from core.vt_sizing import resolve_volume as _resolve_volume_new
+    _vol = _resolve_volume_new(
+        symbol, tf,
+        config=CONFIG,
+        current_atr=atr,
+        bars_count=None,
+    )
+
+    # ===== Wave 880.II (Bruno 26/08): GOVERNADOR DE RISCO POR SÍMBOLO-ROOT =====
+    # Incidente 26/08: WDO M15+M30+H1 empilharam 4 contratos SELL na MESMA
+    # posição netting em 9 minutos; o SL único fechou tudo (-R$285) e
+    # estourou o stop diário (-R$250) no primeiro trade do dia. Cada par
+    # arriscava ~R$50 sozinho — a conta arriscou R$285.
+    # O governador soma o pior caso em aberto do root + risco da nova
+    # entrada contra o orçamento diário do símbolo. Fail-open: erro interno
+    # NUNCA segura uma entrada. VT_RISK_GOVERNOR=0 desativa.
+    _gov_prior_pos = None
+    try:
+        from core import vt_risk_governor as _gov
+        _gov_positions = []
+        try:
+            _st = status()
+            _gov_positions = (_st or {}).get("positions") or []
+        except Exception as _st_err:
+            log(f"[RISK-GOV] status() falhou ({_st_err}) — fail-open segue")
+        _gov_res = _gov.check_entry_risk_budget(
+            symbol, direction, sl_pts, _vol, CONFIG, _gov_positions)
+        # Guarda posição atual do MESMO contrato p/ tightest-SL pós-fill
+        for _p in _gov_res.get("positions", []):
+            if _p.get("symbol") == symbol:
+                _gov_prior_pos = _p
+                break
+        if not _gov_res.get("ok"):
+            log(f"🛑 [RISK-GOV] {symbol} {tf} {direction} BLOQUEADO: "
+                f"{_gov_res.get('detail')}")
+            try:
+                from core.vt_signal_journal import log_blocked_signal
+                log_blocked_signal(symbol, tf, strategy, direction=direction,
+                                   block_reason="RISK_BUDGET",
+                                   sl_pts=sl_pts, atr_pts=atr)
+            except Exception:
+                pass
+            return {"status": "BLOCKED", "reason": "RISK_BUDGET",
+                    "detail": _gov_res.get("detail", ""), "symbol": symbol}
+        elif _gov_res.get("detail"):
+            log(f"[RISK-GOV] {symbol} {tf} {direction}: {_gov_res['detail']}")
+    except Exception as _gov_err:
+        log(f"[RISK-GOV] falha ({_gov_err}) — fail-open segue")
+
     # Log
     detail_parts = [f"{strategy}"]
     if strategy == "VWAP":
@@ -2705,19 +2761,7 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
         detail_parts.append(f"BB=[{kwargs.get('bb_lower', 0):.0f}|{kwargs.get('bb_mid', 0):.0f}|{kwargs.get('bb_upper', 0):.0f}]")
     log(f"[SINAL] {symbol} {tf}: {direction} @ {price:.2f} | {' | '.join(detail_parts)}")
 
-    # Volume (Wave Per-TF, Bruno 2026-07-07): prioridade volume_by_tf >
-    # volume_by_symbol > volume. Cada (symbol, tf) pode ter volume proprio
-    # via CONFIG["volume_by_tf"]["WDO_M5"] etc.
-    # Wave N+2B (2026-07-08): sizing extraído para core/vt_sizing.resolve_volume
-    # com suporte a vol-scaled (mode="vol_scaled" + sizing.atr_baseline).
-    # bars_count não está em scope aqui; warmup via vt_pre_flight snapshot.
-    from core.vt_sizing import resolve_volume as _resolve_volume_new
-    _vol = _resolve_volume_new(
-        symbol, tf,
-        config=CONFIG,
-        current_atr=atr,
-        bars_count=None,
-    )
+    # Volume já resolvido acima (Wave 880.II) — antes do governador de risco.
     if direction == "BUY":
         result = safe_buy(symbol, _vol, sl_pts=sl_pts, strategy=strategy)
     else:
@@ -2760,6 +2804,37 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             # A verdade final continua sendo o MT5 (reconcile_positions_with_mt5).
             print(f"[TRACKER] aviso: falha ao registrar ticket={_ticket_int}: "
                   f"{_tracker_err} (não bloqueia ordem)")
+
+        # ===== Wave 880.II (26/08): TIGHTEST-SL-WINS sob netting =====
+        # Incidente 26/08: cada entrada nova SOBRESCREVIA o SL da posição
+        # consolidada (5154 → 5154.5 → 5162.5 → 5157.5) — o SL vigente era
+        # o do ÚLTIMO TF a entrar, não o mais apertado. Se esta entrada
+        # largou o SL que já existia, restaura o anterior (mais apertado)
+        # via safe_modify_sl_with_emergency_close (Lei: SL funcional sempre).
+        try:
+            if _gov_prior_pos is not None:
+                _ptype = _gov_prior_pos.get("type", 1)
+                _prior_dir = "BUY" if _ptype in (0, "BUY", "buy") else "SELL"
+                if _prior_dir == direction:
+                    from core.vt_risk_governor import should_restore_prev_sl
+                    _new_sl = float(result.get("sl", 0) or 0)
+                    _prev_sl = float(_gov_prior_pos.get("sl", 0) or 0)
+                    if should_restore_prev_sl(direction, _prev_sl, _new_sl):
+                        from core.vt_risk_governor import _point_for, symbol_root
+                        _pt = _point_for(symbol_root(symbol))
+                        _restore_pts = max(
+                            1, int(round(abs(_prev_sl - exec_price) / _pt)))
+                        from core.vt_emergency import (
+                            safe_modify_sl_with_emergency_close)
+                        _mod = safe_modify_sl_with_emergency_close(
+                            symbol, _gov_prior_pos.get("ticket"),
+                            _restore_pts, exec_price, direction)
+                        log(f"🛡️ [TIGHTEST-SL] {symbol} {tf}: entrada largou "
+                            f"SL {_prev_sl} → {_new_sl}; SL apertado restaurado "
+                            f"({_restore_pts}pts) mod={_mod.get('status', _mod)}")
+        except Exception as _ts_err:
+            log(f"[TIGHTEST-SL] falha ao restaurar SL ({_ts_err}) — "
+                f"fail-safe segue (trailing segue gerindo)")
 
         # Wave 1111 (Bruno 2026-08-11): notifica abertura de posição no Telegram.
         # Antes a abertura só logava [SINAL]/[TRACKER] — Bruno não via a ordem
@@ -4650,6 +4725,9 @@ def reconcile_positions_with_mt5():
 
         # Indexar MT5 por ticket (string) — magia + comment
         mt5_by_ticket = {}
+        # Wave 880.II (26/08): índices por símbolo p/ netting-aware reconcile
+        _mt5_open_symbols = set()
+        _mt5_pos_by_symbol = {}
         for p in mt5_positions:
             if not isinstance(p, dict):
                 continue
@@ -4667,6 +4745,11 @@ def reconcile_positions_with_mt5():
             tk = str(p.get("ticket", ""))
             if tk:
                 mt5_by_ticket[tk] = p
+                # Wave 880.II: registra contrato aberto (p/ hold/settle netting)
+                _sym_open = p.get("symbol", "") or ""
+                if _sym_open:
+                    _mt5_open_symbols.add(_sym_open)
+                    _mt5_pos_by_symbol[_sym_open] = p
 
         # Indexar state por ticket (entry_ticket dentro do dict)
         state_by_ticket = {}
@@ -4831,6 +4914,127 @@ def reconcile_positions_with_mt5():
         # direction e entry_price=100). Agora: ticket vazio/zumbi → só
         # remove do state (não polui DB). entry_price<=0 → skip + warn.
         ghosts = 0
+
+        # ── Wave 880.II (26/08): settle de grupo netting ──────────────────
+        # Quando a posição consolidada de um contrato FECHA (SL/trailing/EOD),
+        # reparte o PnL do broker entre TODAS as sub-entradas (uma por TF).
+        # Cada linha recebe (preço_saída − sua_entrada) × vol × mult × direção;
+        # o "pai" (dono do ticket da posição) recebe o resíduo p/ Σ linhas ==
+        # broker truth. Só roda com ≥2 slots no state do mesmo contrato —
+        # símbolo com 1 posição segue 100% no caminho legado.
+        def _settle_netting_group(symbol_grp: str) -> list:
+            try:
+                from core.vt_netting import settle_netting_group
+                members_state = [
+                    (k, v) for k, v in state.positions.items()
+                    if (v.get("symbol") == symbol_grp
+                        or (("_" in k) and k.rsplit("_", 1)[0] == symbol_grp))
+                ]
+                if len(members_state) < 2:
+                    return []
+                # Broker truth do fechamento: último DEAL_ADD OUT do dia
+                out_deal = None
+                try:
+                    _ev = conn.execute(
+                        """SELECT deal_price, deal_profit, deal_commission,
+                                  deal_swap, event_time, position_ticket
+                           FROM mt5_trade_events
+                           WHERE trans_type = 'DEAL_ADD' AND deal_entry = 'OUT'
+                             AND symbol = ?
+                             AND date(event_time) = date('now', 'localtime')
+                           ORDER BY event_time DESC LIMIT 1""",
+                        (symbol_grp,)).fetchone()
+                    if _ev and float(_ev["deal_price"] or 0) > 0:
+                        out_deal = {
+                            "price": float(_ev["deal_price"]),
+                            "profit": float(_ev["deal_profit"] or 0),
+                            "commission": float(_ev["deal_commission"] or 0),
+                            "swap": float(_ev["deal_swap"] or 0),
+                            "fee": 0.0,
+                            "position_ticket": str(_ev["position_ticket"] or ""),
+                            "time": _ev["event_time"],
+                        }
+                except Exception:
+                    out_deal = None
+                if not out_deal:
+                    return []
+                # Dados de cada membro (DB primeiro; state como fallback)
+                members = []
+                for k, v in members_state:
+                    row = None
+                    _tlid = v.get("trade_log_id")
+                    if _tlid:
+                        try:
+                            row = conn.execute(
+                                """SELECT id, entry_price, volume, multiplier,
+                                          fees, direction, symbol
+                                   FROM trades
+                                   WHERE id = ? AND exit_time IS NULL""",
+                                (_tlid,)).fetchone()
+                        except Exception:
+                            row = None
+                    if row:
+                        members.append({
+                            "trade_log_id": row["id"],
+                            "ticket": str(v.get("entry_ticket", "")),
+                            "direction": row["direction"],
+                            "entry_price": float(row["entry_price"] or 0),
+                            "volume": float(row["volume"] or 0),
+                            "multiplier": float(row["multiplier"] or 0),
+                            "symbol": row["symbol"], "fees": float(row["fees"] or 0),
+                        })
+                    else:
+                        members.append({
+                            "trade_log_id": None,
+                            "ticket": str(v.get("entry_ticket", "")),
+                            "direction": v.get("direction", "BUY"),
+                            "entry_price": float(v.get("entry_price", 0) or 0),
+                            "volume": float(v.get("volume", 0) or 0),
+                            "multiplier": 0.0,
+                            "symbol": symbol_grp, "fees": 0.0,
+                        })
+                updates = settle_netting_group(members, out_deal)
+                _now_settle = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                for u in updates:
+                    if not u.get("trade_log_id"):
+                        continue
+                    conn.execute(
+                        """UPDATE trades SET
+                               exit_time = ?,
+                               exit_price = ?,
+                               exit_reason = 'BROKER_CLOSE',
+                               exit_ticket = COALESCE(exit_ticket, ?),
+                               gross_pnl = ?,
+                               net_pnl = ?,
+                               notes = COALESCE(notes, '') || ?,
+                               updated_at = datetime('now', 'localtime'),
+                               close_source = ?
+                           WHERE id = ? AND exit_time IS NULL""",
+                        (out_deal.get("time") or _now_settle,
+                         u["exit_price"],
+                         f"netting_{out_deal.get('position_ticket', '')}",
+                         u["gross_pnl"], u["net_pnl"],
+                         f" | {u['note']} | settled_at {_now_settle}",
+                         "RECONCILE_NETTING" if u.get("is_parent")
+                         else "RECONCILE_NETTING_SPLIT",
+                         u["trade_log_id"]))
+                conn.commit()
+                settled_keys = [k for k, _ in members_state]
+                for k in settled_keys:
+                    state.positions.pop(k, None)
+                _bnet = (out_deal["profit"] + out_deal["commission"]
+                         + out_deal["swap"] + out_deal["fee"])
+                log(f"[RECONCILE-NETTING] {symbol_grp}: {len(members_state)} "
+                    f"sub-entrada(s) settled @ {out_deal['price']} "
+                    f"(broker R${_bnet:+.2f}) — PnL repartido por entrada")
+                return settled_keys
+            except Exception as _e_ns:
+                log(f"[RECONCILE-NETTING] settle de {symbol_grp} falhou "
+                    f"({_e_ns}) — segue caminho legado por ticket")
+                return []
+
+        _netting_settled = set()
+
         try:
             conn = sqlite3.connect("vt_trades.db", timeout=30.0)
             conn.execute("PRAGMA journal_mode=WAL")
@@ -4840,6 +5044,17 @@ def reconcile_positions_with_mt5():
                 for ticket_str, (state_key, pos) in list(state_by_ticket.items()):
                     if ticket_str in mt5_by_ticket:
                         continue  # ainda aberta no MT5
+                    # FIX 2026-08-28 (P0 UnboundLocalError): `symbol`/`direction`
+                    # eram extraídos SÓ mais abaixo (branch do ghost DB), mas o
+                    # bloco netting-hold logo abaixo já usava `symbol` — primeira
+                    # iteração com ticket órfão derrubava a seção inteira do
+                    # reconcile ("erro na seção ghost: cannot access local
+                    # variable 'symbol'") e as linhas do DB ficavam abertas para
+                    # sempre (spam de MODIFY_SL/CLOSE "sem posições abertas").
+                    # Agora: extrai antes de QUALQUER uso.
+                    direction = pos.get("direction", "?")
+                    _symbol_from_key = state_key.rsplit("_", 1)[0] if "_" in state_key else ""
+                    symbol = _symbol_from_key or pos.get("symbol") or "UNKNOWN"
                     # FIX 2026-07-26 (P0 GHOST race — Qwen Code + Hermes):
                     # Grace period de 60s — se a posição entrou há menos de 60s,
                     # o manage_position pode não ter tido tempo de processar o
@@ -4854,6 +5069,47 @@ def reconcile_positions_with_mt5():
                                 f"tem {_age_s:.0f}s (< 60s) — pulando ghost check"
                             )
                             continue
+                    # ── Wave 880.II (26/08): NETTING-AWARE (hold ou settle) ──
+                    # A B3 é netting: entradas de vários TFs no mesmo contrato
+                    # viram UMA posição com o ticket da 1ª entrada. Incidente
+                    # 26/08: sub-tickets eram marcados GHOST (PnL 0) enquanto
+                    # a posição consolidada seguia viva — o que também sumia
+                    # com o slot do state e DEFEATAVA o guard anti-duplicação
+                    # (empilhamento de 4 contratos). Agora:
+                    #   posição do contrato AINDA ABERTA → HOLD (segue aberto);
+                    #   posição FECHOU → settle do grupo (PnL repartido).
+                    if symbol in _mt5_open_symbols:
+                        _parent_tk = str(
+                            (_mt5_pos_by_symbol.get(symbol) or {}).get("ticket", "?"))
+                        pos["netting_parent"] = _parent_tk
+                        _hold_log_id = pos.get("trade_log_id")
+                        if _hold_log_id:
+                            try:
+                                _now_hold = datetime.now().strftime(
+                                    "%Y-%m-%d %H:%M:%S")
+                                conn.execute(
+                                    """UPDATE trades
+                                       SET notes = CASE WHEN notes LIKE '%NETTING_CHILD%'
+                                                        THEN notes
+                                                        ELSE COALESCE(notes, '') || ? END,
+                                           updated_at = datetime('now', 'localtime')
+                                       WHERE id = ? AND exit_time IS NULL""",
+                                    (f" | NETTING_CHILD | pos consolidada "
+                                     f"{_parent_tk} aberta | {_now_hold}",
+                                     _hold_log_id))
+                                conn.commit()
+                            except Exception as _e_hold:
+                                log(f"[RECONCILE] netting-hold DB falhou: {_e_hold}")
+                        log(f"[RECONCILE] Netting-hold: {state_key} "
+                            f"ticket={ticket_str} é sub-entrada da posição "
+                            f"consolidada {_parent_tk} de {symbol} — segue aberto")
+                        continue
+                    if state_key in _netting_settled:
+                        continue  # já settled pelo grupo neste mesmo loop
+                    _netting_settled.update(_settle_netting_group(symbol))
+                    if state_key in _netting_settled:
+                        continue
+
                     # FIX: NÃO confiar em pos.get("direction") como symbol.
                     # Sem um symbol real do state/MT5, não inventamos.
                     direction = pos.get("direction", "?")
