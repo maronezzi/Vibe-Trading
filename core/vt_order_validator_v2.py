@@ -346,42 +346,61 @@ def historical_setup_stats(symbol: str, tf: str, strategy: str, direction: str =
         }
     """
     if not DB_PATH.exists():
-        return {"n_trades": 0, "win_rate": 0.0}
+        return {"n_trades": 0, "win_rate": 0.0, "source": "exact", "symbol_used": symbol}
 
     base = _get_base(symbol)
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    try:
-        conn = sqlite3.connect(str(DB_PATH))
-        conn.row_factory = sqlite3.Row
+    def _query(sym_pattern: str, exact: bool):
+        """Consulta trades fechadas do setup. exact=True → símbolo exato (contrato atual)."""
+        op = "=" if exact else "LIKE"
+        param = symbol if exact else f"{base}%"
         if direction:
-            rows = conn.execute("""
+            return conn.execute(f"""
                 SELECT net_pnl, exit_reason,
                        (julianday(exit_time) - julianday(entry_time)) * 24 * 60 as dur
                 FROM trades
-                WHERE symbol LIKE ?
+                WHERE symbol {op} ?
                   AND timeframe = ?
                   AND strategy = ?
                   AND direction = ?
                   AND entry_time >= ?
                   AND exit_time IS NOT NULL
-            """, (f"{base}%", tf, strategy, direction, cutoff)).fetchall()
-        else:
-            rows = conn.execute("""
-                SELECT net_pnl, exit_reason,
-                       (julianday(exit_time) - julianday(entry_time)) * 24 * 60 as dur
-                FROM trades
-                WHERE symbol LIKE ?
-                  AND timeframe = ?
-                  AND strategy = ?
-                  AND entry_time >= ?
-                  AND exit_time IS NOT NULL
-            """, (f"{base}%", tf, strategy, cutoff)).fetchall()
+            """, (param, tf, strategy, direction, cutoff)).fetchall()
+        return conn.execute(f"""
+            SELECT net_pnl, exit_reason,
+                   (julianday(exit_time) - julianday(entry_time)) * 24 * 60 as dur
+            FROM trades
+            WHERE symbol {op} ?
+              AND timeframe = ?
+              AND strategy = ?
+              AND entry_time >= ?
+              AND exit_time IS NOT NULL
+        """, (param, tf, strategy, cutoff)).fetchall()
+
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
+
+        # 1) SÍMBOLO EXATO primeiro (contrato atual) — corrige 13/08/2026:
+        #    histórico por root (WIN%) misturava contrato VENCIDO (ex: WINQ26 com
+        #    PnL do dia do vencimento) no setup do contrato novo (WINV26), fazendo
+        #    o validator reportar "0% WR, PnL -114" para um contrato sem histórico.
+        rows = _query(symbol, exact=True)
+        source = "exact"
+        symbol_used = symbol
+        if not rows:
+            # 2) Fallback: root (contratos anteriores) — sinalizado pro LLM
+            rows = _query(f"{base}%", exact=False)
+            source = "root"
+            symbol_used = base
+
         conn.close()
 
         n = len(rows)
         if n == 0:
-            return {"n_trades": 0, "win_rate": 0.0, "total_pnl": 0.0}
+            return {"n_trades": 0, "win_rate": 0.0, "total_pnl": 0.0,
+                    "source": source, "symbol_used": symbol_used}
 
         wins = sum(1 for r in rows if r["net_pnl"] > 0)
         losses = n - wins
@@ -398,10 +417,12 @@ def historical_setup_stats(symbol: str, tf: str, strategy: str, direction: str =
             "avg_pnl": avg,
             "total_pnl": total,
             "avg_duration_min": avg_dur,
+            "source": source,
+            "symbol_used": symbol_used,
         }
     except Exception as e:
         _log(f"[WARN] historical_setup_stats falhou: {e}")
-        return {"n_trades": 0, "win_rate": 0.0}
+        return {"n_trades": 0, "win_rate": 0.0, "source": "exact", "symbol_used": symbol}
 
 
 class ValidatorV2:
@@ -437,9 +458,9 @@ class ValidatorV2:
         direction = order_data.get("direction", "UNKNOWN")
         tf = order_data.get("tf", order_data.get("timeframe", "?"))
         strategy = order_data.get("strategy", "UNKNOWN")
-        sl_pts = order_data.get("sl_pts", 0)
-        atr = order_data.get("atr", 0)
-        entry_price = order_data.get("entry_price", 0)
+        order_data.get("sl_pts", 0)
+        order_data.get("atr", 0)
+        order_data.get("entry_price", 0)
         base = _get_base(symbol)
 
         # ── NÍVEL 1: Validação local (rápida, sem custo) ──
@@ -583,9 +604,15 @@ class ValidatorV2:
         atr_mult = native_sl / native_atr if native_atr > 0 else 0
 
         h = context["historical_setup"]
-        hist_section = f"""Histórico do setup (30d):
+        hist_symbol = h.get("symbol_used", symbol)
+        hist_note = ""
+        if h.get("source") == "root":
+            hist_note = ("\n  ⚠️ Histórico do ROOT (contratos ANTERIORES, ex: vencidos) — pode incluir "
+                         "período de vencimento anômalo; NÃO reflete o contrato atual. "
+                         "Tratar com cautela, não como evidência forte.")
+        hist_section = f"""Histórico do setup (30d, símbolo {hist_symbol}):
   - Trades: {h.get('n_trades', 0)} | WR: {h.get('win_rate', 0):.1f}% | PnL médio: R$ {h.get('avg_pnl', 0):.2f}
-  - Total: R$ {h.get('total_pnl', 0):.2f} | Duração média: {h.get('avg_duration_min', 0):.0f}min"""
+  - Total: R$ {h.get('total_pnl', 0):.2f} | Duração média: {h.get('avg_duration_min', 0):.0f}min{hist_note}"""
 
         ctx_lines = [
             f"Hora: {context['hora']} | Fase: {context['trading_phase']}",

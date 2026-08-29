@@ -42,7 +42,6 @@ Uso
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 import subprocess
 import sys
@@ -274,7 +273,17 @@ def _check_mt5_margin() -> Optional[HealthIssue]:
 
 
 def _check_mt5_tick_freshness() -> Optional[HealthIssue]:
-    """Check #2b: último tick dos símbolos ativos < 5min (dados frescos)."""
+    """Check #2b: ticks dos símbolos ativos frescos (dados de mercado reais).
+
+    Correção 2026-08-17 (falso positivo "Tick WIN stale 180min"):
+    - O campo `tick.time` do executor vem **defasado ~3h** para TODOS os
+      símbolos (epoch em hora local UTC-3 sem correção), mesmo com preço ao
+      vivo. Não é um sinal confiável de feed morto.
+    - Sinal real de feed quebrado (Pitfall #11 do vibe-trading-mt5-visual-
+      monitoring): `bid`/`ask` == 0/None — preço ausente = conexão fantasma.
+    - Antes amostrava SÓ o primeiro símbolo resolvido (`next(resolved)`),
+      o que pintava só WINV26 como problema. Agora amostra todos os ativos.
+    """
     try:
         from core.vt_config_loader import load_config
         cfg = load_config()
@@ -284,36 +293,50 @@ def _check_mt5_tick_freshness() -> Optional[HealthIssue]:
         from mt5.mt5_orchestrator import tick as mt5_tick
     except Exception:
         return None
-    # Testa o primeiro símbolo resolvido (amostra — não todos, p/ não pesar)
-    sample_sym = next(iter(resolved.values()), None)
-    if not sample_sym:
-        return None
-    try:
-        tk = mt5_tick(sample_sym)
-    except Exception as e:
-        return HealthIssue("mt5_tick_error", SEV_LOW,
-                           f"tick({sample_sym}) falhou: {e}")
-    if not tk or not isinstance(tk, dict):
-        return None
-    # tick pode trazer 'time' (epoch) — se ausente, não conseguimos validar
-    t = tk.get("time")
-    if t is None:
-        return None
-    try:
-        age_min = (time.time() - float(t)) / 60
-    except (ValueError, TypeError):
-        return None
-    if age_min > MT5_TICK_STALE_MINUTES:
-        # Wave VPS-prep: não alertar tick stale fora do pregão (B3 09:00-17:00)
-        from datetime import datetime as _dt
-        _now = _dt.now()
-        _h = _now.hour + _now.minute / 60
-        if _h < 9.0 or _h >= 17.5:
-            return None  # pós-mercado — tick parado é normal
+    stale = []
+    for root, full_sym in list(resolved.items()):
+        if root == "IND":
+            continue  # IND ignorado (Lei 2 / hard-kill)
+        try:
+            tk = mt5_tick(full_sym)
+        except Exception as e:
+            stale.append(f"{full_sym}(tick err {e})")
+            continue
+        if not isinstance(tk, dict):
+            continue
+        bid = tk.get("bid")
+        ask = tk.get("ask")
+        # Sinal primário: preço ao vivo. bid/ask > 0 ⇒ feed ativo (time pode
+        # vir defasado por timezone mas o mercado manda price real).
+        has_price = (
+            isinstance(bid, (int, float)) and bid > 0
+            and isinstance(ask, (int, float)) and ask > 0
+        )
+        if has_price:
+            continue
+        # Sem preço: usa time como backstop (feed possivelmente morto).
+        t = tk.get("time")
+        if t is None:
+            stale.append(f"{full_sym}(sem price e sem time)")
+            continue
+        try:
+            age_min = (time.time() - float(t)) / 60
+        except (ValueError, TypeError):
+            stale.append(f"{full_sym}(sem price, time inválido)")
+            continue
+        if age_min > MT5_TICK_STALE_MINUTES:
+            # Wave VPS-prep: não alertar tick stale fora do pregão (B3 09:00-17:00)
+            from datetime import datetime as _dt
+            _now = _dt.now()
+            _h = _now.hour + _now.minute / 60
+            if _h < 9.0 or _h >= 17.5:
+                return None  # pós-mercado — tick parado é normal
+            stale.append(f"{full_sym}(bid={bid} ask={ask}, {age_min:.0f}min)")
+    if stale:
         return HealthIssue(
             "mt5_tick_stale", SEV_HIGH,
-            f"Tick {sample_sym} stale ({age_min:.0f}min). Dados de mercado "
-            f"desatualizados — pode ser feed quebrado.",
+            f"Símbolos sem price fresco: {'; '.join(stale)}. "
+            f"Dados de mercado ausentes — pode ser feed quebrado.",
         )
     return None
 
@@ -487,7 +510,7 @@ def _heal_autotrader_dead(issue: HealthIssue) -> HealResult:
                 ["bash", str(START_AUTOTRADER_SH)],
                 capture_output=True, timeout=30,
             )
-            action = f"start_autotrader.sh executado"
+            action = "start_autotrader.sh executado"
         else:
             # fallback: pkill + start direto (caminho CORRETO core/vt_autotrader.py)
             subprocess.run(["pkill", "-9", "-f", "core/vt_autotrader.py"],

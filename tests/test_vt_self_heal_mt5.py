@@ -38,25 +38,56 @@ class TestMt5Margin:
 
 
 class TestMt5TickFreshness:
-    def test_stale_tick_alerts(self):
-        """Tick com time > 5min atrás → mt5_tick_stale HIGH."""
+    def test_stale_tick_alerts_no_price(self):
+        """Sem preço (bid=0) + time > 5min atrás → mt5_tick_stale HIGH."""
         old_time = time.time() - 600  # 10min
         with patch("core.vt_config_loader.load_config",
                    return_value={"resolved_symbols": {"WIN": "WINQ26"}}), \
              patch("mt5.mt5_orchestrator.tick",
-                   return_value={"time": old_time, "bid": 175000}):
+                   return_value={"time": old_time, "bid": 0, "ask": 0}):
             issue = sh._check_mt5_tick_freshness()
         assert issue is not None
         assert issue.type == "mt5_tick_stale"
         assert issue.severity == sh.SEV_HIGH
+
+    def test_bid_alive_ignores_stale_time(self):
+        """Preço ao vivo (bid/ask > 0) ≠ feed morto, mesmo com `time` defasado.
+
+        Regressão 2026-08-17: o campo `time` do executor vem ~3h defasado
+        (timezone UTC-3) para TODOS os símbolos, mas o mercado manda price
+        real. Antes isso gerava falso HIGH 'Tick WIN stale 180min' no WINV.
+        """
+        old_time = time.time() - 18000  # 5h (defeito de timezone)
+        with patch("core.vt_config_loader.load_config",
+                   return_value={"resolved_symbols": {"WIN": "WINQ26"}}), \
+             patch("mt5.mt5_orchestrator.tick",
+                   return_value={"time": old_time, "bid": 175000, "ask": 175005}):
+            assert sh._check_mt5_tick_freshness() is None
 
     def test_fresh_tick_no_issue(self):
         recent = time.time() - 30  # 30s atrás
         with patch("core.vt_config_loader.load_config",
                    return_value={"resolved_symbols": {"WIN": "WINQ26"}}), \
              patch("mt5.mt5_orchestrator.tick",
-                   return_value={"time": recent, "bid": 175000}):
+                   return_value={"time": recent, "bid": 175000, "ask": 175005}):
             assert sh._check_mt5_tick_freshness() is None
+
+    def test_one_stale_symbol_flags_issue(self):
+        """Amplia amostra: se QUALQUER símbolo ativo estiver sem preço, alerta."""
+        old_time = time.time() - 600
+        cfg = {"resolved_symbols": {"WIN": "WINQ26", "BIT": "BITQ26"}}
+
+        def fake_tick(sym):
+            if sym == "WINQ26":
+                return {"time": old_time, "bid": 175000, "ask": 175005}  # vivo
+            return {"time": old_time, "bid": 0, "ask": 0}               # morto
+
+        with patch("core.vt_config_loader.load_config", return_value=cfg), \
+             patch("mt5.mt5_orchestrator.tick", side_effect=fake_tick):
+            issue = sh._check_mt5_tick_freshness()
+        assert issue is not None
+        assert issue.type == "mt5_tick_stale"
+        assert "BITQ26" in issue.detail
 
     def test_no_resolved_symbols_skips(self):
         with patch("core.vt_config_loader.load_config",
