@@ -224,3 +224,58 @@ class TestProfitTargetVariavel:
             live, shadow + [{"root": "W", "tf": "M15", "pnl": 100.0,
                              "day": "z"}], cur_target=100.0)
         assert sum(days2["z"]) == pytest.approx(50.0, abs=0.1)
+
+
+class TestCalibrateLockActivation:
+    """Wave 883.B3 (29/08): sintonia da trava de lucro (número sem chute)."""
+
+    @staticmethod
+    def _dias_devolucao(n_dias: int = 6) -> list[dict]:
+        """Dias que motivaram a trava: lucro de manhã, devolução à tarde.
+        Cada dia: +60 +60 +20 (sobe a ~140) então -40 -40 -40 (devolve)."""
+        seq = (60.0, 60.0, 20.0, -40.0, -40.0, -40.0)
+        return [{"root": "WIN", "tf": "M15", "pnl": p, "day": f"d{i}"}
+                for i in range(n_dias) for p in seq]
+
+    def test_dia_de_devolucao_prefere_travar_cedo(self):
+        # per_lot=200, dia: cum 60→120→140 (pico) → devolve até +20.
+        # Ativação 0.7 arma exatamente no pico (140) → 140/dia; 0.8+ nunca
+        # arma → +20/dia; 0.4-0.6 travam em 120. Ótimo: 0.7.
+        cfg = {"trailing_target_per_lot": 200.0, "trailing_activation_pct": 1.0}
+        r = rc.calibrate_lock_activation(cfg, self._dias_devolucao(), None)
+        assert r["status"] == "calibrado"
+        assert r["best_raw"] == 0.7
+        assert r["best"] == 0.7          # dentro do clamp [0.7, 1.3] de 1.0
+        assert r["apply"] is True
+        assert r["gain"] == pytest.approx(720.0)   # (140-20)×6 dias
+
+    def test_histerese_limita_passo(self):
+        # dia: cum 50→100→110 → devolve até -10. Níveis 80/100 truncam em
+        # +100/dia (empate → menor=0.4); atual 1.0 → clamp 0.7× limita o
+        # passo único a 0.7 (variável sem salto)
+        seq = (50.0, 50.0, 10.0, -40.0, -40.0, -40.0)
+        live = [{"root": "WIN", "tf": "M15", "pnl": p, "day": f"h{i}"}
+                for i in range(6) for p in seq]
+        cfg = {"trailing_target_per_lot": 200.0, "trailing_activation_pct": 1.0}
+        r = rc.calibrate_lock_activation(cfg, live, None)
+        assert r["best_raw"] == 0.4
+        assert r["best"] == 0.7
+
+    def test_dia_de_tendencia_nao_aptado_a_travar_cedo(self):
+        # dia que só sobe: travar cedo CORTA ganho → ótimo = ativação alta
+        seq = (20.0, 20.0, 20.0, 20.0, 20.0, 20.0)
+        live = [{"root": "WIN", "tf": "M15", "pnl": p, "day": f"u{i}"}
+                for i in range(6) for p in seq]
+        cfg = {"trailing_target_per_lot": 100.0, "trailing_activation_pct": 0.5}
+        r = rc.calibrate_lock_activation(cfg, live, None)
+        # com per_lot 100: níveis 40..100; dia soma 120 → só trava em 100
+        # (ou nunca); score de 0.4=80 < 1.0=100 → ótimo 1.0, mas clamp
+        # 1.3× de 0.5 = 0.65 → melhor célula do grid dentro do clamp
+        assert r["status"] == "calibrado"
+        assert r["best"] >= 0.6
+
+    def test_dados_insuficientes_mantem(self):
+        r = rc.calibrate_lock_activation(
+            {"trailing_target_per_lot": 200.0, "trailing_activation_pct": 0.5},
+            [{"root": "W", "tf": "M5", "pnl": 5.0, "day": "d1"}], None)
+        assert r["status"] == "dados_insuficientes" and r["keep"] == 0.5

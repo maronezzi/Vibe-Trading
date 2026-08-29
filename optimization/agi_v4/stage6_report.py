@@ -409,6 +409,17 @@ def _build_telegram_message(ctx: dict) -> str:
             else:
                 _rc_lines.append(f"🎯 Alvo diário: mantém {_tg.get('current'):.0f} "
                                  f"(ótimo {_tg.get('best')}, ganho R${_tg.get('gain', 0):.0f} < mínimo)")
+        _lk = rc.get("lock_activation") or {}
+        if _lk.get("status") == "calibrado":
+            if _lk.get("apply"):
+                _rc_lines.append(f"🔒 Trava lucro: {_lk.get('current'):.2f}→{_lk.get('best'):.2f} "
+                                 f"(arma em R${_lk.get('level_current', 0):.0f}→R${_lk.get('level_best', 0):.0f}, "
+                                 f"{_lk.get('days')}d, +R${_lk.get('gain', 0):.0f})")
+            else:
+                _rc_lines.append(f"🔒 Trava lucro: mantém {_lk.get('current'):.2f} "
+                                 f"(ótimo {_lk.get('best')}, ganho R${_lk.get('gain', 0):.0f} < mínimo)")
+        elif _lk.get("status"):
+            _rc_lines.append(f"🔒 Trava lucro: mantém (só {_lk.get('days', 0)}d de histórico)")
         _sl_parts = []
         for _root, _r in sorted((rc.get("slippage") or {}).items()):
             if isinstance(_r, dict) and _r.get("status") == "calibrado":

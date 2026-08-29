@@ -16,6 +16,12 @@ PnL, com evidência mínima para mexer (anti-churn):
      Escolhe o alvo que maximiza o PnL preservado (trava no pico certo vs
      deixa o dia continuar rendendo).
 
+  2b. trailing_activation_pct (Wave 883.B3, Bruno 29/08: "a trava fica, o AGI
+     sintoniza — número sem chute"). Nível em que o ratchet diário arma e
+     bloqueia novas entradas, como fração do trailing_target_per_lot. Mesmo
+     contrafactual do alvo; empate → trava mais cedo (o motivo da trava
+     existir é lucro de manhã devolvido à tarde).
+
   3. execution_guards.max_slippage_pts_by_symbol (tolerância de entrada)
      Estatística dos gaps inter-bar do perpétuo M15 (movimento "normal" da
      fita) + ATR de referência: slip = clamp(p90(gaps)×1.25, 0.35×ATR, 1.2×ATR).
@@ -37,6 +43,12 @@ log = logging.getLogger("agi_v4.risk_calibrator")
 
 STOP_GRID = [-100, -125, -150, -175, -200, -250, -300, -400, -500]
 TARGET_GRID = [100, 150, 200, 250, 300, 400, 500, 650, 800, 1000]
+# Wave 883.B3 (Bruno 29/08): sintonia da TRAVA de lucro (ratchet diário do
+# trailing_profit_lock). A trava EXISTE porque o sistema repetidamente
+# lucrava de manhã e devolvia tudo (Bruno 29/08: "mantemos, mas o AGI sintoniza,
+# número sem chute"). O grid é a fração do trailing_target_per_lot em que a
+# trava arma e bloqueia novas entradas do dia.
+ACTIVATION_GRID = [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 MIN_DAYS = 5          # dias mínimos de histórico p/ calibrar
 MIN_TRADES_DAY = 3    # dias com menos trades não contam
 MIN_GAIN_R = 15.0     # ganho mínimo acumulado (R$) p/ trocar o valor
@@ -291,6 +303,61 @@ def calibrate_profit_target(config: dict, trades: list[dict],
     }
 
 
+def calibrate_lock_activation(config: dict, trades: list[dict],
+                              shadow: list[dict] | None = None) -> dict:
+    """Wave 883.B3 (Bruno 29/08): sintonia da trava de lucro diária
+    (trailing_activation_pct) via counterfactual — "número sem chute".
+
+    A trava arma em activation × trailing_target_per_lot e bloqueia novas
+    entradas no resto do dia (ratchet + floor protegem o acumulado). O
+    contrafactual reusa o simulador do alvo: _sim_with_target(dia, nível de
+    armação) aproxima o dia travado no nível dado. A favor da aproximação
+    ser conservadora: ignorar o piso do ratchet SUBESTIMA o valor de travar
+    cedo (o modelo não credita o floor segurando o pico), então o ótimo
+    encontrado tende ao lado de proteger primeiro.
+
+    Desempate: score igual → ativação MENOR (trava cedo), alinhado ao motivo
+    da trava existir ("lucro de manhã devolvido à tarde").
+    """
+    per_lot = float(config.get("trailing_target_per_lot", 250.0) or 250.0)
+    cur_pct = float(config.get("trailing_activation_pct", 0.5) or 0.5)
+    cur_level = cur_pct * per_lot
+    days, meta = _merge_with_shadow(trades, shadow or [], cur_level)
+    days = {d: v for d, v in days.items() if len(v) >= MIN_TRADES_DAY}
+    if len(days) < MIN_DAYS:
+        return {"status": "dados_insuficientes", "days": len(days), "keep": cur_pct,
+                "shadow_meta": meta}
+    scores = {}
+    for a in ACTIVATION_GRID:
+        scores[a] = sum(_sim_with_target(v, a * per_lot) for v in days.values())
+    no_lock = sum(sum(v) for v in days.values())
+    best_raw = max(ACTIVATION_GRID, key=lambda a: (scores[a], -a))
+    # Histerese: um ajuste move no máximo [0.7x, 1.3x] do valor atual —
+    # régua W880 de blast-battery (variável sem salto, anti-churn).
+    best = min(max(best_raw, round(cur_pct * 0.7, 2)), round(cur_pct * 1.3, 2))
+    best = min(ACTIVATION_GRID, key=lambda a: abs(a - best))
+    cur_in_grid = any(abs(a - cur_pct) < 1e-9 for a in ACTIVATION_GRID)
+    cur_score = scores.get(cur_pct) if cur_in_grid else None
+    gain = scores[best] - (cur_score if cur_score is not None else no_lock)
+    apply = (not cur_in_grid) or (gain >= MIN_GAIN_R and best != cur_pct)
+    return {
+        "status": "calibrado",
+        "days": len(days),
+        "best": best,
+        "best_raw": best_raw,
+        "level_best": round(best * per_lot, 2),
+        "level_current": round(cur_level, 2),
+        "score_best": round(scores[best], 2),
+        "score_current": round(cur_score, 2) if cur_score is not None else None,
+        "score_no_lock": round(no_lock, 2),
+        "gain": round(gain, 2),
+        "current": cur_pct,
+        "apply": bool(apply and best != cur_pct),
+        "shadow_meta": meta,
+        "grid": {str(k): round(v, 2) for k, v in scores.items()},
+    }
+
+
 def calibrate_slippage(config: dict) -> dict:
     """Tolerância de slippage por símbolo: p90 dos gaps M15 vs ATR (perpétua)."""
     out = {}
@@ -369,6 +436,9 @@ def run(ctx: dict) -> dict:
 
     stops = calibrate_daily_stops(config, trades)
     target = calibrate_profit_target(config, trades, shadow)
+    # Wave 883.B3: sintonia da trava de lucro (ratchet diário) — mesma
+    # janela/shadow contrafactual do alvo.
+    lock_act = calibrate_lock_activation(config, trades, shadow)
     slips = calibrate_slippage(config)
 
     # ── Log humano ──
@@ -388,13 +458,23 @@ def run(ctx: dict) -> dict:
                  f"shadow ratio {sm.get('ratio')} com "
                  f"{sm.get('n_reconstructed_days', 0)} dia(s) reconstruído(s)) "
                  f"{'APLICA' if target['apply'] else 'mantém'}")
+    if lock_act.get("status") == "calibrado":
+        log.info(f"risk_calibrator: TRAVA lucro: ativação {lock_act['current']:.2f} "
+                 f"→ {lock_act['best']:.2f} (nível R${lock_act['level_current']:.0f}→"
+                 f"R${lock_act['level_best']:.0f}, ganho R${lock_act['gain']:+.2f}, "
+                 f"{lock_act['days']} dias) "
+                 f"{'APLICA' if lock_act['apply'] else 'mantém'}")
+    else:
+        log.info(f"risk_calibrator: TRAVA lucro: {lock_act.get('status')} "
+                 f"({lock_act.get('days', 0)} dias) — mantém {lock_act.get('keep')}")
     for root, r in slips.items():
         if r.get("status") == "calibrado":
             log.info(f"risk_calibrator: SLIP {root}: p90_gap={r['p90_gap_pts']}pts "
                      f"ATR={r['atr_m15_pts']}pts → ótimo {r['best']}pts "
                      f"(atual {r['current']}) {'APLICA' if r['apply'] else 'mantém'}")
 
-    result = {"daily_stops": stops, "profit_target": target, "slippage": slips}
+    result = {"daily_stops": stops, "profit_target": target,
+              "lock_activation": lock_act, "slippage": slips}
     ctx["risk_calibration"] = result
 
     # ── Aplicação (só produção, só com evidência) ──
@@ -413,6 +493,9 @@ def run(ctx: dict) -> dict:
             if target.get("apply") and target.get("status") == "calibrado":
                 cfg["profit_lock_min_target"] = float(target["best"])
                 changes.append(f"target: {target['current']}→{target['best']}")
+            if lock_act.get("apply") and lock_act.get("status") == "calibrado":
+                cfg["trailing_activation_pct"] = float(lock_act["best"])
+                changes.append(f"trava ativação: {lock_act['current']:.2f}→{lock_act['best']:.2f}")
             guards = dict(cfg.get("execution_guards", {}) or {})
             slips_cfg = dict(guards.get("max_slippage_pts_by_symbol", {}) or {})
             for root, r in slips.items():
@@ -440,6 +523,7 @@ def run(ctx: dict) -> dict:
     result["applied"] = changes
     summary = (f"stops: {sum(1 for r in stops.values() if r.get('status') == 'calibrado')} calibrados, "
                f"target {'ok' if target.get('status') == 'calibrado' else 'insuficiente'}, "
+               f"trava {'ok' if lock_act.get('status') == 'calibrado' else 'insuficiente'}, "
                f"slips: {sum(1 for r in slips.values() if r.get('status') == 'calibrado')} calibrados"
                f"{', aplicou: ' + '; '.join(changes) if changes else ', nada aplicado'}")
     return {"summary": summary}
