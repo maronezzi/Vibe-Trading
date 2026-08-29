@@ -81,6 +81,7 @@ def _write_audit(ctx: dict) -> Path:
         "rollover_state": ctx.get("rollover_state", {}),
         "series_sanity": ctx.get("series_sanity", {}),
         "risk_calibration": ctx.get("risk_calibration", {}),
+        "swap_scorecard": ctx.get("swap_scorecard", {}),
         "backfill_intel": ctx.get("backfill_intel", {}),
         "stage_audit": ctx.get("audit", []),
     }
@@ -472,6 +473,17 @@ def _build_telegram_message(ctx: dict) -> str:
                          f"{k.get('n_trades',0)}t/{k.get('days',10)}d "
                          f"(quarentena {k.get('quarantine_days',
                           'VT_AGI_LIVE_QUARANTINE_DAYS')}d sem reativação por sim)")
+    except Exception:
+        pass
+
+    # ── Scorecard de trocas (Wave 883.B2, Bruno 29/08): entregue vs alegado ──
+    # Modo observação: só reporta. O pnl_claimed dos swaps nunca era cobrado —
+    # agora o Telegram mostra o ratio entrega/alegado a cada run.
+    try:
+        from optimization.agi_v4 import swap_scorecard as _sc
+        _line = _sc.telegram_line(ctx.get("swap_scorecard") or {})
+        if _line:
+            lines.append(f"• {_line}")
     except Exception:
         pass
 

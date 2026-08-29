@@ -373,6 +373,10 @@ def run(days: int = 7,
     # saem do ar mesmo com sim positiva (incidente WDO_M15 -R$337/14d).
     _run_live_kill_switch(ctx)
 
+    # Wave 883.B2 (Bruno 29/08): scorecard de entregas dos swaps (modo
+    # observação — confere pnl_claimed vs live+shadow na janela da troca).
+    _run_swap_scorecard(ctx)
+
     # Wave AGI-backfill (16/08): inteligência de sessão pelo replay histórico
     # do forward_walker — propõe/valida/aplica time_blocks contrafactual.
     # Só age no cron pós-close (17h10); o do meio-dia pula (guarda interna).
@@ -542,6 +546,27 @@ def _run_live_kill_switch(ctx: dict) -> None:
         log.error(f"[{TAG}] Kill-switch live FALHOU: {e}", exc_info=True)
         ctx["audit"].append({"stage": "live_kill_switch", "ok": False,
                              "error": str(e)})
+
+
+def _run_swap_scorecard(ctx: dict) -> None:
+    """Wave 883.B2 (Bruno 29/08): conferidor de recibos — para cada swap do
+    journal com idade >= 5 pregões, compara o PnL entregue (live+shadow na
+    janela da troca) contra o pnl_claimed. MODO OBSERVAÇÃO: só reporta
+    (Stage 6 + audit); nenhum gate/quarentena nasce daqui ainda. Fail-safe.
+    """
+    try:
+        from optimization.agi_v4 import swap_scorecard
+        result = swap_scorecard.run(ctx)
+        ctx["swap_scorecard"] = result
+        agg = result.get("aggregate", {})
+        summary = (f"{result.get('n_scored', 0)} swap(s) conferidos, "
+                   f"alegado R${agg.get('claimed', 0):+.0f} → entregue "
+                   f"R${agg.get('delivered', 0):+.0f}")
+        ctx["audit"].append({"stage": "swap_scorecard", "ok": True, "summary": summary})
+        log.info(f"[{TAG}] Swap scorecard OK — {summary}")
+    except Exception as e:
+        log.error(f"[{TAG}] Swap scorecard FALHOU: {e}", exc_info=True)
+        ctx["audit"].append({"stage": "swap_scorecard", "ok": False, "error": str(e)})
 
 
 def _run_backfill_intel(ctx: dict) -> None:
