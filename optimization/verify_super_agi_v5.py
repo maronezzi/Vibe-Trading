@@ -20,7 +20,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import logging
 import sys
@@ -124,7 +123,7 @@ def main(argv=None) -> int:
     # Compara cada par
     print()
     print("=" * 110)
-    print(f"  VERIFICAÇÃO SUPER-AGI v5 — comparando candidatos vs config ATUAL")
+    print("  VERIFICAÇÃO SUPER-AGI v5 — comparando candidatos vs config ATUAL")
     print(f"  Config version: {config.get('_version')}")
     print(f"  Report: {args.report}")
     print("=" * 110)
@@ -240,7 +239,7 @@ def main(argv=None) -> int:
     if not args.apply:
         print()
         print("⚠️  MODO DRY-RUN — nenhuma alteração feita.")
-        print(f"   Para aplicar: --apply")
+        print("   Para aplicar: --apply")
         return 0
 
     # MODO APPLY

@@ -57,7 +57,39 @@ def run(ctx: dict) -> dict:
     applied = []
     rejected = []
 
+    # ── Wave 880.I (Bruno 19/08): régua de não-regressão no pipeline ──
+    # 1) id de sessão estável (mesmo valor em todas as chamadas do stage5
+    #    desta execução — o journal distingue iteração interna de churn
+    #    entre sessões distintas do cron);
+    # 2) P&L live por par (10 pregões) calculado 1x por run — alimenta a
+    #    proteção de live-winner no _apply_one sem query por candidato;
+    # 3) teto de trocas por execução (VT_AGI_MAX_SWAPS, default 4) — blast
+    #    radius limitado, mesma régua do apply noturno W880.
+    ctx.setdefault("_nr_session", f"run_{os.getpid()}_{id(ctx):x}")
+    if "_nr_live_pnl" not in ctx:
+        try:
+            try:
+                from optimization.agi_v4 import non_regression
+            except ImportError:
+                from . import non_regression
+            ctx["_nr_live_pnl"] = non_regression.live_pair_pnl(config)
+        except Exception as _lp_err:
+            log.warning(f"live_pair_pnl falhou ({_lp_err}) — gates vivem "
+                        f"sem evidência live nesta run")
+            ctx["_nr_live_pnl"] = {}
+    try:
+        max_swaps = int(os.environ.get("VT_AGI_MAX_SWAPS", "4"))
+    except ValueError:
+        max_swaps = 4
+
     for cand in candidates:
+        n_written = len(ctx.get("all_applied_changes", []) or [])
+        if max_swaps > 0 and n_written >= max_swaps:
+            rejected.append(_reject(
+                cand, "max_swaps_run",
+                f"teto de {max_swaps} troca(s) de estratégia/params por "
+                f"execução atingido (régua W880 — blast radius limitado)"))
+            continue
         result = _apply_one(cand, config, thresholds, dry_run, ctx)
         (applied if result["applied"] else rejected).append(result)
 
@@ -163,6 +195,47 @@ def _reactivate_profitable_pairs(ctx: dict) -> list[str]:
     reactivated = []
     for pair in profitable:
         was_blocked = pair in disabled or not dti.get(pair, False)
+        if not was_blocked:
+            continue
+        # Wave 880.I (Bruno 19/08): anti-U-turn — BIT_H1 foi
+        # ligado 18/08 12h → desligado 18/08 17h → ligado 19/08 17h.
+        # Reativar par LUCRATIVO segue sendo a direção segura (norma §4),
+        # mas U-turn dentro de VT_AGI_FLIP_DAYS (default 5d) sem virada de
+        # janela é churn — suprimido. Fail-open (erro no gate não impede
+        # reativar lucrativo; a norma manda nunca manter lucrativo bloqueado).
+        try:
+            try:
+                from optimization.agi_v4 import non_regression
+            except ImportError:
+                from . import non_regression
+            flip_ok, flip_reason = non_regression.allow_flip(
+                pair, "enable", ctx.get("_nr_session", ""))
+            if not flip_ok:
+                log.info(f"⏭️ AGI-SOBERANO: reativação de {pair} suprimida — "
+                         f"{flip_reason}")
+                continue
+        except Exception as _flip_err:
+            log.warning(f"allow_flip(enable/{pair}) falhou ({_flip_err}) — "
+                        f"fail-open: segue reativação")
+        # Wave 880.II (26/08): QUARENTENA do kill-switch live. Par desativado
+        # por sangramento REAL não é reativado pela simulação bonita antes de
+        # VT_AGI_LIVE_QUARANTINE_DAYS (a sim que o live contradisse não é
+        # evidência suficiente para religar). Fail-open: erro no gate não
+        # impede reativação (norma §4 — lucrativo nunca fica bloqueado).
+        try:
+            try:
+                from optimization.agi_v4 import live_kill_switch, non_regression
+            except ImportError:
+                from . import live_kill_switch, non_regression
+            quarantined, q_reason = live_kill_switch.is_quarantined(
+                pair, non_regression.load_journal())
+            if quarantined:
+                log.info(f"⏭️ AGI-SOBERANO: reativação de {pair} suprimida — "
+                         f"{q_reason}")
+                continue
+        except Exception as _q_err:
+            log.warning(f"live_kill quarantine(enable/{pair}) falhou "
+                        f"({_q_err}) — fail-open: segue reativação")
         if pair in disabled:
             disabled = [x for x in disabled if x != pair]
             changed = True
@@ -175,6 +248,18 @@ def _reactivate_profitable_pairs(ctx: dict) -> list[str]:
         fresh["disabled_timeframes"] = disabled
         fresh["day_trade_intent"] = dti
         save_full_config(fresh, updated_by="agi_v4_stage5")
+        # Wave 880.I: journal de não-regressão (best-effort pós-escrita)
+        try:
+            try:
+                from optimization.agi_v4 import non_regression
+            except ImportError:
+                from . import non_regression
+            for p in reactivated:
+                non_regression.append_journal({
+                    "kind": "enable", "pair": p,
+                    "session": ctx.get("_nr_session", "")})
+        except Exception:
+            pass
         # Sincroniza config em memória do ctx
         cfg = ctx.get("config", {}) or {}
         cfg.clear()
@@ -224,6 +309,26 @@ def _deactivate_failing_pairs(ctx: dict) -> list[str]:
     deactivated = []
     for pair in failing_pairs:
         was_active = pair not in disabled and dti.get(pair, False)
+        if not was_active:
+            continue
+        # Wave 880.I (Bruno 19/08): anti-U-turn simétrico ao da reativação —
+        # desligar par que foi ligado há < VT_AGI_FLIP_DAYS é churn (caso
+        # BIT_H1 18–19/08). Fail-open: erro no gate não segura a desativação
+        # (proteção de capital vem primeiro).
+        try:
+            try:
+                from optimization.agi_v4 import non_regression
+            except ImportError:
+                from . import non_regression
+            flip_ok, flip_reason = non_regression.allow_flip(
+                pair, "disable", ctx.get("_nr_session", ""))
+            if not flip_ok:
+                log.info(f"⏭️ AGI-SOBERANO: desativação de {pair} suprimida — "
+                         f"{flip_reason}")
+                continue
+        except Exception as _flip_err:
+            log.warning(f"allow_flip(disable/{pair}) falhou ({_flip_err}) — "
+                        f"fail-open: segue desativação")
         if pair not in disabled:
             disabled = disabled + [pair]
             changed = True
@@ -236,6 +341,18 @@ def _deactivate_failing_pairs(ctx: dict) -> list[str]:
         fresh["disabled_timeframes"] = disabled
         fresh["day_trade_intent"] = dti
         save_full_config(fresh, updated_by="agi_v4_stage5")
+        # Wave 880.I: journal de não-regressão (best-effort pós-escrita)
+        try:
+            try:
+                from optimization.agi_v4 import non_regression
+            except ImportError:
+                from . import non_regression
+            for p in deactivated:
+                non_regression.append_journal({
+                    "kind": "disable", "pair": p,
+                    "session": ctx.get("_nr_session", "")})
+        except Exception:
+            pass
         # Sincroniza config em memória do ctx
         cfg = ctx.get("config", {}) or {}
         cfg.clear()
@@ -244,6 +361,83 @@ def _deactivate_failing_pairs(ctx: dict) -> list[str]:
         log.info(f"🔒 AGI-SOBERANO (stage5): desativou {len(deactivated)} "
                  f"par(es) failing: {deactivated}")
     return deactivated
+
+
+def live_kill_switch_pass(ctx: dict) -> list[str]:
+    """Wave 880.II (26/08): kill-switch LIVE — desativa pares com sangramento
+    real persistente (tabela `trades`), independente da simulação.
+
+    Duas regras (ver optimization/agi_v4/live_kill_switch.py):
+      - live_bleed: n≥10 trades e PnL ≤ -R$200 na janela de 10 pregões;
+      - live_churn: n≥30 trades e PnL ≤ -R$20 (morte por comissão).
+    Env-tunable; VT_AGI_LIVE_KILL=0 desativa. O WRITE mora aqui (stage5 é o
+    único writer autorizado); a decisão é módulo puro. Fail-open: erro
+    NUNCA derruba o pipeline e NUNCA desativa sem evidência.
+    """
+    killed: list[str] = []
+    try:
+        try:
+            from optimization.agi_v4 import live_kill_switch, non_regression
+        except ImportError:
+            from . import live_kill_switch, non_regression
+        from core.vt_config_loader import load_config, save_full_config
+
+        fresh = load_config(force=True)
+        decisions = live_kill_switch.evaluate(fresh)
+        ctx["live_kill_switch"] = decisions
+        if not decisions:
+            log.info("kill-switch live: nenhum par com sangramento "
+                     "persistente — nada a fazer")
+            return killed
+
+        disabled = fresh.get("disabled_timeframes", []) or []
+        dti = fresh.setdefault("day_trade_intent", {})
+        changed = False
+        for d in decisions:
+            pair = d.get("pair", "")
+            if not pair or pair in disabled:
+                continue
+            disabled = disabled + [pair]
+            dti[pair] = False
+            changed = True
+            killed.append(pair)
+            log.info(f"🔴 KILL-SWITCH LIVE: {pair} DESATIVADO — regra "
+                     f"{d['rule']}: R$ {d['pnl']:.2f} em {d['n_trades']} "
+                     f"trades/{d['days']}d (sim não representa a execução)")
+        if changed:
+            fresh["disabled_timeframes"] = disabled
+            fresh["day_trade_intent"] = dti
+            save_full_config(fresh, updated_by="agi_v4_stage5_live_kill")
+            # Journal (best-effort pós-escrita) — alimenta a quarentena
+            try:
+                for d in decisions:
+                    if d.get("pair") in killed:
+                        non_regression.append_journal({
+                            "kind": "live_kill", "pair": d["pair"],
+                            "rule": d.get("rule"),
+                            "pnl": d.get("pnl"),
+                            "n_trades": d.get("n_trades"),
+                            "session": ctx.get("_nr_session", "")})
+            except Exception:
+                pass
+            # Sincroniza config em memória do ctx
+            cfg = ctx.get("config", {}) or {}
+            cfg.clear()
+            cfg.update(fresh)
+            ctx["config"] = cfg
+            try:
+                from core.vt_hermes_helper import hermes_send
+                hermes_send(
+                    "telegram:-1004284773048:1",
+                    f"🔴 KILL-SWITCH LIVE desativou {len(killed)} par(es): "
+                    f"{', '.join(killed)} — sangramento real persistente "
+                    f"(detalhes no log/audit)")
+            except Exception:
+                pass
+    except Exception as _ks_err:
+        log.warning(f"kill-switch live falhou ({_ks_err}) — fail-open, "
+                    f"pipeline segue")
+    return killed
 
 
 def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: dict) -> dict:
@@ -344,6 +538,35 @@ def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: d
                        f"(cand 30d R${cand_pnl:.2f}/hoje R${cand.get('full', {}).get('today_pnl', 0):.2f}, "
                        f"base 30d R${baseline_pnl:.2f}/hoje R${baseline.get('today_pnl', 0):.2f}) — mantém atual")
 
+    # ── Wave 880.I (Bruno 19/08): GATES DE NÃO-REGRESSÃO ──
+    # "O AGI não pode piorar." Porta a régua do apply noturno W880 para
+    # dentro do pipeline: walk-forward >= 75% (>=3 janelas positivas), fator
+    # mínimo sobre o baseline (1.3x; 2.0x para pares lucrando live), WF 100%
+    # para live-winners, e anti-churn (par trocado em sessão recente exige
+    # 2x a evidência anterior). Incidentes que motivaram (18–19/08): WIN_M30
+    # trocado ao meio-dia após +R$57 live de manhã; trocas marginais de sim.
+    # Fail-closed: se o gate falhar, o candidato é REJEITADO — nunca
+    # aplicado sem exame.
+    try:
+        try:
+            from optimization.agi_v4 import non_regression
+        except ImportError:
+            from . import non_regression
+        nr_ok, nr_gate, nr_reason = non_regression.gate_swap(
+            pair, cand, baseline_pnl, cand_score, base_score,
+            ctx.get("_nr_session", ""),
+            live_pnl_by_pair=ctx.get("_nr_live_pnl"))
+        if not nr_ok:
+            return _reject(cand, nr_gate, nr_reason)
+    except Exception as _nr_err:
+        return _reject(cand, "non_regression_error",
+                       f"gate de não-regressão falhou ({_nr_err}) — "
+                       f"fail-closed: candidato não aplicado sem exame")
+
+    # Estratégia vigente ANTES da escrita (o config em memória é sincronizado
+    # pós-write; capturar aqui garante o from→to correto no journal).
+    prev_strategy = (config.get("strategy_by_tf", {}) or {}).get(pair)
+
     change = _build_change(pair, strategy, params, cand.get("full", {}))
     change["baseline_simulated_pnl"] = baseline_pnl
 
@@ -418,8 +641,27 @@ def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: d
         change["written"] = False
         log.info(f"[DRY-RUN] {pair}: aplicaria {strategy} (score cand R${cand_score:.2f} > score base R${base_score:.2f})")
 
+    # Wave 880.I: registra a troca no journal de não-regressão (alimenta os
+    # gates de churn/flip das próximas sessões). Best-effort: falha aqui NÃO
+    # invalida a escrita já persistida no config.
+    if not dry_run:
+        try:
+            try:
+                from optimization.agi_v4 import non_regression
+            except ImportError:
+                from . import non_regression
+            non_regression.append_journal({
+                "kind": "swap", "pair": pair,
+                "from": prev_strategy, "to": strategy,
+                "pnl_claimed": round(cand_pnl, 2),
+                "session": ctx.get("_nr_session", "")})
+        except Exception as _j_err:
+            log.warning(f"journal swap {pair} falhou ({_j_err}) — escrita "
+                        f"já persistida, seguindo")
+
     return {"applied": True, "candidate": cand, "change": change,
-            "gates_passed": ["profitability", "walk_forward", "regra1_simulated"]}
+            "gates_passed": ["profitability", "walk_forward", "regra1_simulated",
+                             "non_regression"]}
 
 
 def _build_change(pair, strategy, params, full):

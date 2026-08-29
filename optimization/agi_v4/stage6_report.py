@@ -443,6 +443,21 @@ def _build_telegram_message(ctx: dict) -> str:
         mais = f" (+{len(deactivated)-6})" if len(deactivated) > 6 else ""
         lines.append(f"• 🔒 DESATIVOU {len(deactivated)} par(es) failing: {pairs_str}{mais}")
 
+    # ── Kill-switch LIVE (Wave 880.II, 26/08) ──
+    # Par desativado por sangramento REAL (tabela trades), não por sim.
+    # Primeira execução: 26/08 17:10 desativou WDO_M15 (-R$405/11t/10d).
+    try:
+        kills = [k for k in (ctx.get("live_kill_switch") or [])
+                 if isinstance(k, dict) and k.get("pair")]
+        for k in kills[:4]:
+            lines.append(f"• 🔴 KILL-SWITCH LIVE: {k['pair']} DESATIVADO — "
+                         f"{k.get('rule','live')}: R$ {k.get('pnl',0):.0f} em "
+                         f"{k.get('n_trades',0)}t/{k.get('days',10)}d "
+                         f"(quarentena {k.get('quarantine_days',
+                          'VT_AGI_LIVE_QUARANTINE_DAYS')}d sem reativação por sim)")
+    except Exception:
+        pass
+
     # ── Estratégias geradas (Stage 4) + cross-pair salvages (2b) ──
     generated = ctx.get("generated_strategies", []) or []
     if generated:

@@ -221,6 +221,15 @@ ALLOWED_WRITERS = (
     # scripts/w_roll_bit_q26_20260731.py: rolagem BITN26→BITQ26 (vencimento 31/07).
     # Autorizado Bruno 2026-07-31. Rodar com autotrader PAUSADO.
     "scripts/w_roll_bit_q26_20260731.py",
+    # scripts/w880_nightly_super_agi_apply_20260818.py: apply noturna AUTÔNOMA
+    # dos candidatos do super_agi_v5 (walk-forward 4 janelas) que superarem a
+    # estratégia atual NAS MESMAS BARRAS com gates conservadores: PF>1.05,
+    # n>=15, PnL >= 1.3x o atual (>=2x para live-winners tipo WIN_M15),
+    # WF >= 0.75 com >=3/4 janelas, máx 4 trocas/noite, só pares JÁ ativos
+    # (nunca reativa desabilitados), janela <08:30, daemon parado, backup
+    # snapshot pré-escrita e conferência pós-escrita. Resumo via Telegram.
+    # Autorizado Bruno 2026-08-18 ("pode executar sozinho" p/ pregão 19/08).
+    "scripts/w880_nightly_super_agi_apply_20260818.py",
 )
 
 # Cache
@@ -657,8 +666,8 @@ def save_full_config(cfg: dict, updated_by: str = "optimizer"):
         assert_write_unlocked()
     if not acquire_write_lock(updated_by, reason="save_full_config"):
         raise RuntimeError(
-            f"Config locked by another writer — save_full_config abortou "
-            f"para proteger contra race."
+            "Config locked by another writer — save_full_config abortou "
+            "para proteger contra race."
         )
     try:
         cfg["_version"] = cfg.get("_version", 0) + 1

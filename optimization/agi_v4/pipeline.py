@@ -198,6 +198,7 @@ def run(days: int = 7,
         _run_sweep_pending(ctx)
         _run_tune_incumbents(ctx)
         _run_risk_calibrator(ctx)
+        _run_live_kill_switch(ctx)
         _safe_run_stage(ctx, 6, "report", "stage6_report")
         ctx["ended_at"] = datetime.now().isoformat()
         ctx["duration_s"] = time.time() - start_ts
@@ -368,6 +369,10 @@ def run(days: int = 7,
     # diário por símbolo, alvo de lucro, slippage) — simulação counterfactual.
     _run_risk_calibrator(ctx)
 
+    # Wave 880.II (Bruno 26/08): kill-switch live — pares sangrando no real
+    # saem do ar mesmo com sim positiva (incidente WDO_M15 -R$337/14d).
+    _run_live_kill_switch(ctx)
+
     # Wave AGI-backfill (16/08): inteligência de sessão pelo replay histórico
     # do forward_walker — propõe/valida/aplica time_blocks contrafactual.
     # Só age no cron pós-close (17h10); o do meio-dia pula (guarda interna).
@@ -517,6 +522,26 @@ def _run_risk_calibrator(ctx: dict) -> None:
     except Exception as e:
         log.error(f"[{TAG}] Risk calibrator FALHOU: {e}", exc_info=True)
         ctx["audit"].append({"stage": "risk_calibrator", "ok": False, "error": str(e)})
+
+
+def _run_live_kill_switch(ctx: dict) -> None:
+    """Wave 880.II (Bruno 26/08): kill-switch LIVE — desativa pares com
+    sangramento real persistente (tabela trades), independente da sim.
+    Decide em optimization/agi_v4/live_kill_switch (puro); aplica em
+    stage5_apply.live_kill_switch_pass (único writer autorizado). Fail-safe.
+    """
+    try:
+        from optimization.agi_v4 import stage5_apply
+        killed = stage5_apply.live_kill_switch_pass(ctx)
+        summary = (f"{len(killed)} par(es) desativado(s)"
+                   if killed else "nenhum par sangrando")
+        ctx["audit"].append({"stage": "live_kill_switch", "ok": True,
+                             "summary": summary})
+        log.info(f"[{TAG}] Kill-switch live OK — {summary}")
+    except Exception as e:
+        log.error(f"[{TAG}] Kill-switch live FALHOU: {e}", exc_info=True)
+        ctx["audit"].append({"stage": "live_kill_switch", "ok": False,
+                             "error": str(e)})
 
 
 def _run_backfill_intel(ctx: dict) -> None:

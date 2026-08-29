@@ -82,6 +82,110 @@ def _load_trades(config: dict) -> list[dict]:
         return []
 
 
+def _load_shadow_trades(config: dict) -> list[dict]:
+    """Trades do forward_walker (forward_sim_trades) na janela.
+
+    Wave 880.I (Bruno 19/08): o walker replica a entrada do daemon MAS NÃO
+    arma o profit lock diário — logo sua sequência por dia é NÃO-CENSURADA.
+    É a "super informação" que faltava à calibração do alvo: hoje (19/08) o
+    live travou em +R$90 às 10:06 (target 100) enquanto o shadow fez +R$395
+    — calibrar o target só no live é viesado para BAIXO (o lock corta os
+    trades que provariam que um alvo maior renderia mais).
+
+    Limitação conhecida (norma §11): o walker usa multiplier uniforme
+    (escala relativa ≠ escala live). A calibração reescala por dia (ver
+    _merge_with_shadow) antes de usar.
+    """
+    db = _db_path(config)
+    if not db or not Path(db).exists():
+        return []
+    cutoff = (datetime.now() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    try:
+        conn = sqlite3.connect(str(db))
+        rows = conn.execute(
+            """SELECT symbol, timeframe, net_pnl_brl, entry_time
+               FROM forward_sim_trades
+               WHERE entry_time >= ?
+               ORDER BY entry_time""",
+            (cutoff,),
+        ).fetchall()
+        conn.close()
+        return [
+            {"root": r[0][:3], "tf": r[1], "pnl": float(r[2] or 0),
+             "day": str(r[3])[:10]}
+            for r in rows
+        ]
+    except Exception as e:
+        log.warning(f"risk_calibrator: carga do shadow falhou: {e}")
+        return []
+
+
+def _merge_with_shadow(trades: list[dict], shadow: list[dict],
+                       cur_target: float) -> tuple[dict[str, list[float]], dict]:
+    """Dias para a calibração do alvo, reconstruindo dias censurados pelo lock.
+
+    Método (Wave 880.I):
+      1. Razão de escala dia-a-dia live/shadow nos dias com ambos (clamp
+         [0.2, 2.0]); fator global = mediana. Sem pares suficientes →
+         live puro (status shadow_sem_escala).
+      2. Dia "censurado" = PnL live do dia cruzou o alvo atual (lock armado
+         e sequência truncada). Para esses dias usa-se a sequência do
+         shadow REESCALADA (contrafactual em escala live do que teria
+         acontecido sem travar).
+      3. Dias não-censurados ficam com a sequência live real.
+
+    Returns:
+        (days: {dia: [pnls em ordem]}, meta: {"ratio", "n_shadow_days", ...})
+    """
+    live_days: dict[str, list[dict]] = {}
+    for t in trades:
+        live_days.setdefault(t["day"], []).append(t)
+    shadow_days: dict[str, list[dict]] = {}
+    for t in shadow:
+        shadow_days.setdefault(t["day"], []).append(t)
+
+    ratios = []
+    for d, sh in shadow_days.items():
+        lv = live_days.get(d)
+        if not lv or len(sh) < MIN_TRADES_DAY:
+            continue
+        s_sum = sum(t["pnl"] for t in sh)
+        l_sum = sum(t["pnl"] for t in lv)
+        if abs(s_sum) < 1.0:
+            continue
+        ratios.append(min(max(l_sum / s_sum, 0.2), 2.0))
+    ratios.sort()
+    ratio = ratios[len(ratios) // 2] if ratios else None
+
+    days: dict[str, list[float]] = {}
+    n_reconstructed = 0
+    for d in sorted(set(live_days) | set(shadow_days)):
+        lv = live_days.get(d, [])
+        sh = shadow_days.get(d, [])
+        cum = 0.0
+        peak = 0.0
+        for t in lv:
+            cum += t["pnl"]
+            peak = max(peak, cum)
+        censored = bool(lv) and ratio is not None and len(sh) >= MIN_TRADES_DAY \
+            and peak >= cur_target * 0.95
+        if censored:
+            days[d] = [t["pnl"] * ratio for t in sh]
+            n_reconstructed += 1
+        elif lv:
+            days[d] = [t["pnl"] for t in lv]
+        else:
+            # dia só-shadow (live não operou): reescala também — shadow está
+            # em escala do walker, não em escala live da conta
+            days[d] = [t["pnl"] * (ratio or 1.0) for t in sh]
+    meta = {"ratio": round(ratio, 3) if ratio else None,
+            "n_ratio_days": len(ratios),
+            "n_reconstructed_days": n_reconstructed,
+            "n_live_days": len(live_days),
+            "n_shadow_days": len(shadow_days)}
+    return days, meta
+
+
 def _sim_with_stop(pnls: list[float], stop: float) -> float:
     cum = 0.0
     for p in pnls:
@@ -139,20 +243,35 @@ def calibrate_daily_stops(config: dict, trades: list[dict]) -> dict:
     return out
 
 
-def calibrate_profit_target(config: dict, trades: list[dict]) -> dict:
-    """Alvo de lucro diário da conta (profit_lock_min_target) via counterfactual."""
-    days: dict[str, list[float]] = {}
-    for t in trades:  # conta inteira: todos os símbolos, ordem de entrada
-        days.setdefault(t["day"], []).append(t["pnl"])
-    days = {d: v for d, v in days.items() if len(v) >= MIN_TRADES_DAY}
+def calibrate_profit_target(config: dict, trades: list[dict],
+                            shadow: list[dict] | None = None) -> dict:
+    """Alvo de lucro diário da conta (profit_lock_min_target) via counterfactual.
+
+    Wave 880.I (Bruno 19/08 — "profit lock variável, ajustável no AGI"):
+    além do grid contrafactual, agora (1) reconstrói dias censurados pelo
+    lock com o shadow NÃO-CENSURADO do forward_walker reescalado (ver
+    _merge_with_shadow), e (2) aplica histerese de movimento — o alvo novo
+    fica clamped em [0.5x, 2.0x] do atual (variável sem salto, anti-churn
+    de risco).
+    """
     cur = float(config.get("profit_lock_min_target", 250) or 250)
+    days, meta = _merge_with_shadow(trades, shadow or [], cur)
+    days = {d: v for d, v in days.items() if len(v) >= MIN_TRADES_DAY}
+    meta["n_days_used"] = len(days)
     if len(days) < MIN_DAYS:
-        return {"status": "dados_insuficientes", "days": len(days), "keep": cur}
+        return {"status": "dados_insuficientes", "days": len(days), "keep": cur,
+                "shadow_meta": meta}
     scores = {}
     for tg in TARGET_GRID:
         scores[tg] = sum(_sim_with_target(v, tg) for v in days.values())
     no_lock = sum(sum(v) for v in days.values())
     best = max(scores, key=lambda t: (scores[t], -t))  # empate → alvo menor (trava cedo)
+    # Histerese: alvo é VARIÁVEL, mas move no máximo ±50%/2x por ajuste —
+    # nunca salta de 100 p/ 1000 numa sessão só (régua W880: blast radius).
+    best_clamped = int(min(max(best, round(cur * 0.5)), round(cur * 2.0)))
+    if best_clamped not in scores:
+        best_clamped = min(TARGET_GRID, key=lambda t: abs(t - best_clamped))
+    best = best_clamped
     cur_score = scores.get(int(cur)) if cur in TARGET_GRID else None
     gain = scores[best] - (cur_score if cur_score is not None else no_lock)
     apply = (cur not in TARGET_GRID) or (gain >= MIN_GAIN_R and best != cur)
@@ -160,12 +279,14 @@ def calibrate_profit_target(config: dict, trades: list[dict]) -> dict:
         "status": "calibrado",
         "days": len(days),
         "best": best,
+        "best_raw": max(scores, key=lambda t: (scores[t], -t)),
         "score_best": round(scores[best], 2),
         "score_current": round(cur_score, 2) if cur_score is not None else None,
         "score_no_lock": round(no_lock, 2),
         "gain": round(gain, 2),
         "current": cur,
         "apply": bool(apply and best != cur),
+        "shadow_meta": meta,
         "grid": {str(k): round(v, 2) for k, v in scores.items()},
     }
 
@@ -242,8 +363,12 @@ def run(ctx: dict) -> dict:
         ctx["risk_calibration"] = {"error": "sem trades"}
         return {"summary": "sem trades na janela"}
 
+    # Wave 880.I: shadow do forward_walker (não-censurado pelo lock) para a
+    # calibração VARIÁVEL do alvo diário.
+    shadow = _load_shadow_trades(config)
+
     stops = calibrate_daily_stops(config, trades)
-    target = calibrate_profit_target(config, trades)
+    target = calibrate_profit_target(config, trades, shadow)
     slips = calibrate_slippage(config)
 
     # ── Log humano ──
@@ -256,9 +381,12 @@ def run(ctx: dict) -> dict:
             log.info(f"risk_calibrator: STOP {root}: {r.get('status')} "
                      f"({r.get('days', 0)} dias) — mantém {r.get('keep')}")
     if target.get("status") == "calibrado":
+        sm = target.get("shadow_meta", {}) or {}
         log.info(f"risk_calibrator: TARGET conta: atual {target['current']} → "
-                 f"ótimo {target['best']} (ganho R${target['gain']:+.2f}, "
-                 f"{target['days']} dias) "
+                 f"ótimo {target['best']} (bruto {target.get('best_raw')}, "
+                 f"ganho R${target['gain']:+.2f}, {target['days']} dias, "
+                 f"shadow ratio {sm.get('ratio')} com "
+                 f"{sm.get('n_reconstructed_days', 0)} dia(s) reconstruído(s)) "
                  f"{'APLICA' if target['apply'] else 'mantém'}")
     for root, r in slips.items():
         if r.get("status") == "calibrado":
@@ -313,5 +441,5 @@ def run(ctx: dict) -> dict:
     summary = (f"stops: {sum(1 for r in stops.values() if r.get('status') == 'calibrado')} calibrados, "
                f"target {'ok' if target.get('status') == 'calibrado' else 'insuficiente'}, "
                f"slips: {sum(1 for r in slips.values() if r.get('status') == 'calibrado')} calibrados"
-               f"{f', aplicou: ' + '; '.join(changes) if changes else ', nada aplicado'}")
+               f"{', aplicou: ' + '; '.join(changes) if changes else ', nada aplicado'}")
     return {"summary": summary}

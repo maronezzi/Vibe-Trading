@@ -329,3 +329,155 @@ NUNCA derruba o pipeline.
 - Limitação conhecida (v1): replay é in-sample p/ params de estratégia (o AGI os
   afinou no mesmo período) — por isso valida GESTÃO e FILTROS, não estratégia.
   Multiplier do walker (0.20) é uniforme p/ todos os símbolos (escala relativa).
+
+---
+
+## 12. Gates de não-regressão + profit lock variável (Wave 880.I, 19/08/2026)
+
+**Diretiva Bruno 19/08:** "o AGI não pode piorar; precisa ter todas as super
+informações e garantir um sistema ideal". Porta para DENTRO do pipeline a
+régua validada no apply noturno W880 (18/08 — `scripts/
+w880_nightly_super_agi_apply_20260818.py`, que em seu 1º dia validou
+forward +R$395/PF 2.42 e foi verde live +R$90.60).
+
+**Incidentes que motivaram (18–19/08):**
+1. WIN_M30 trocado pelo AGI 12h logo após fazer +R$57 LIVE de manhã —
+   o pipeline não olhava histórico live multiday do par;
+2. BIT_H1 ligado 18/08 12h → desligado 18/08 17h → ligado 19/08 17h —
+   churn de soberania em U-turn sem evidência nova;
+3. Trocas aplicadas com melhoria marginal de simulação (sem fator mínimo).
+
+### Módulo novo: `optimization/agi_v4/non_regression.py`
+- **Gate A (walk_forward):** consistência ≥ `VT_AGI_WF_MIN_CONSISTENCY`
+  (0.75) E ≥3 janelas positivas (janela com <3 trades não é julgada).
+  Régua do super_agi_v5 — MAIS dura que a do evaluator (0.65);
+- **Gate B (fator):** baseline positivo exige `cand_score ≥ 1.3x baseline`
+  (`VT_AGI_FACTOR`; regra Wave 877 "<30% não troca");
+- **Gate C (live_winner):** par com ≥ R$100 live em 10 pregões (tabela
+  `trades`, `VT_AGI_LIVE_WINNER_MIN`) exige fator **2.0x** E WF **100%**;
+- **Gate D (churn):** par trocado em SESSÃO anterior há < `VT_AGI_CHURN_DAYS`
+  (2d) exige evidência ≥ 2x a alegada na troca anterior. Iterações internas
+  da mesma execução são isentas (session id em `ctx["_nr_session"]`);
+- **Gate E (flip):** U-turn enable↔disable há < `VT_AGI_FLIP_DAYS` (5d) é
+  suprimido na soberania (`_reactivate`/`_deactivate_failing_pairs`).
+
+**Journal** `optimization/agi_v4/state/pair_change_journal.json`: toda
+troca/enable/disable registra ts, from→to e PnL alegado. Primeira carga
+AUTO-SEMEIA diffs dos snapshots `vt_config.json.snapshot_pre_cron_*`
+(19/08: 116 eventos; BIT_H1 já nasce com o histórico do U-turn para o
+gate E agir). Não deletar à mão — é a memória de churn do AGI.
+
+### Wiring no Stage 5 (`stage5_apply.py`)
+- `_apply_one`: gates A–D logo após o gate de baseline existente.
+  **Fail-closed**: erro no módulo REJEITA o candidato (nunca aplica sem
+  exame). Sucesso → `append_journal` (best-effort pós-escrita);
+- `run()`: teto de `VT_AGI_MAX_SWAPS` (default **4**) trocas de
+  estratégia/params por EXECUÇÃO (blast radius, régua W880). Rejeita com
+  gate `max_swaps_run`. Soberania (enable/disable) NÃO conta no teto;
+- Soberania: gate E fail-open (reativar lucrativo segue sempre possível —
+  norma §4; desativar failing também — proteção de capital primeiro).
+
+### Profit lock VARIÁVEL (`risk_calibrator.py`)
+Problema: calibrar `profit_lock_min_target` só no live é **autocensurado**
+— o lock corta os trades que provariam que um alvo maior renderia mais
+(19/08: live travou +R$90 às 10:06 com target 100; shadow fez +R$395).
+Agora:
+1. `_load_shadow_trades` lê `forward_sim_trades` (walker NÃO arma o lock
+   → sequência não-censurada);
+2. `_merge_with_shadow` reescala shadow→live pela razão mediana
+   live/shadow dos dias comparáveis (clamp [0.2, 2.0]) e RECONSTRÓI os
+   dias censurados (pico live ≥ 0.95× target) com o shadow reescalado —
+   contrafactual honesto em escala live;
+3. Histerese: alvo novo clamped em [0.5x, 2x] do atual (variável sem
+   salto) + `MIN_GAIN_R` de sempre.
+Primeira calibração real (19/08): ótimo bruto 300, clamp leva 100→200
+(ganho +R$84 na janela, ratio 0.613, 5 dias reconstruídos).
+
+### Invariantes (não quebrar)
+- Gates A–D são fail-closed POR CANDIDATO; gates de soberania são fail-open;
+- O journal é acumulativo (append-only na prática); re-semar só se o arquivo
+  sumir (auto-seed é idempotente por construção — diffs de snapshot);
+- Live-winner usa a tabela `trades` (broker-truth do DB), nunca simulação;
+- `VT_AGI_MAX_SWAPS=0` desliga o teto (não recomendado em produção);
+- Testes: `tests/test_agi_v4_non_regression.py` (19 casos, herméticos).
+
+---
+
+## 13. Wave 880.II — netting-aware: exposição, SL e kill-switch live (26/08/2026)
+
+**Incidentes 24–26/08 (motivação):**
+1. **26/08 (o grave):** WDO M15+M30+H1 entraram SELL em WDOU26 em 9 min.
+   A conta é netting → UMA posição de 4 contratos; o SL (last-writer-wins,
+   terminou no do ÚLTIMO TF a entrar) fechou tudo: **-R$285 num único
+   stop**, estourando o stop diário de WDO (-R$250) no primeiro trade do
+   dia. Cada par "arriscava" ~R$50 sozinho.
+2. O reconcile marcava as sub-entradas como GHOST (PnL 0) ENQUANTO a
+   posição consolidada seguia viva — o que (a) distorcia toda estatística
+   por par e (b) **sumia com o slot do state e derrotava o guard
+   anti-duplicação** (por isso o M30 entrou 2×). A perda inteira caía
+   numa linha só (close_source `RECONCILE_HISTORY`).
+3. **Soberania cega ao live:** WDO_M15/ADX_TREND com sim 30d +R$450 e
+   live **-R$337/14d** — nenhum mecanismo desativava; o gate `live_reality`
+   congela MUDANÇAS no dia do sangramento, mas o par segue operando.
+
+### Módulos novos (26/08)
+- **`core/vt_risk_governor.py`** (puro) — governador de risco por
+  símbolo-root: antes de enviar entrada, soma pior caso em aberto do root
+  (posições do bot, `|entry−sl| × mult × vol`) + risco da nova entrada; se
+  passar do orçamento (`|max_daily_loss_by_symbol[root]|` com buffer de
+  slippage `execution_guards.risk_buffer`, default 25%), BLOQUEIA
+  (`reason=RISK_BUDGET`, sinal vai pro `signal_blocked_log`). Entrada que
+  REDUZ exposição líquida (hedge) é liberada. Posição sem SL = orçamento
+  inteiro consumido. **Fail-open** (erro nunca segura entrada).
+  Kill-switch: env `VT_RISK_GOVERNOR=0` ou
+  `execution_guards.risk_budget_enabled=false`.
+  Também exporta `should_restore_prev_sl` (tightest-SL-wins).
+- **`core/vt_netting.py`** (puro) — split do PnL da posição consolidada:
+  cada sub-entrada recebe `(preço_saída − sua_entrada) × vol × mult ×
+  direção`; o "pai" (dono do ticket da posição) recebe o resíduo para
+  Σ linhas == broker truth. Testes reproduzem o incidente (4 SELLs
+  5149/5149.5/5150.5/5152.5 fechados @5157.5 = −85/−80/−70/−50).
+- **`optimization/agi_v4/live_kill_switch.py`** (puro) — decisões do
+  kill-switch live: **live_bleed** (n≥10 E PnL ≤ −R$200 em 10 pregões) e
+  **live_churn** (n≥30 E PnL ≤ −R$20 — morte por comissão). Lê a tabela
+  `trades` (sem GHOSTs, espelho do risk_calibrator). Env: `VT_AGI_LIVE_KILL`
+  (default 1), `VT_AGI_LIVE_KILL_DAYS/_MIN_TRADES/_PNL`,
+  `VT_AGI_LIVE_CHURN_MIN_TRADES/_PNL`, `VT_AGI_LIVE_QUARANTINE_DAYS`.
+
+### Wiring (não regredir)
+- `_execute_entry` (vt_autotrader): volume resolvido ANTES do governador;
+  após FILLED, se a entrada LARGOU o SL da posição (netting
+  last-writer-wins), o SL anterior mais apertado é restaurado via
+  `safe_modify_sl_with_emergency_close` (só mesma direção).
+- Reconcile (`reconcile_positions_with_mt5`): índices
+  `_mt5_open_symbols`/`_mt5_pos_by_symbol`; **netting-hold** (contrato
+  ainda aberto → sub-ticket segue aberto no state/DB com nota
+  `NETTING_CHILD`; NUNCA mais GHOST em posição viva) e
+  **netting-settle** (posição fechou + ≥2 slots no state do contrato →
+  reparte PnL via `settle_netting_group`, close_source
+  `RECONCILE_NETTING`/`_SPLIT`). Símbolo com 1 posição segue 100% no
+  caminho legado. Erro no settle → cai no legado por ticket (fail-safe).
+- Pipeline: `_run_live_kill_switch(ctx)` roda pós-loop (ambos os ramos),
+  depois do risk_calibrator. O WRITE mora em
+  `stage5_apply.live_kill_switch_pass` (stage5 continua o ÚNICO writer
+  autorizado; `updated_by="agi_v4_stage5_live_kill"`).
+- **Quarentena:** `_reactivate_profitable_pairs` suprime reativação de par
+  com `kind="live_kill"` no journal há < `VT_AGI_LIVE_QUARANTINE_DAYS`
+  (default 10d) — a sim que o live contradisse não religa sozinha.
+  Fail-open (norma §4 preservada: lucrativo nunca fica bloqueado por BUG).
+- Testes: `tests/test_wave880_2_risk_netting.py` (21 casos, herméticos —
+  incidente reproduzido em 3 níveis: governador, split, kill-switch).
+
+### Verificação com dado real (26/08)
+`live_kill_switch.evaluate()` sobre o DB real (leitura): decidiria
+**WDO_M15 live_bleed (-R$405, 11t/10d)** — dispara sozinho no cron 17:10.
+
+### Invariantes (não quebrar)
+- O governador e o kill-switch são FAIL-OPEN: erro interno deles NUNCA
+  segura entrada legítima nem derruba o pipeline;
+- kill-switch NÃO é treino com trades passados (house rule intacta): é
+  gestão de risco — mesmo princípio do risk_calibrator que já lia `trades`;
+- netting-settle nunca reabre linha fechada (`WHERE exit_time IS NULL` em
+  todo UPDATE) e Σ das linhas == broker truth;
+- `close_source` novos: `RECONCILE_NETTING` (pai) e
+  `RECONCILE_NETTING_SPLIT` (filhos) — não alterar os existentes.

@@ -26,20 +26,17 @@ Wave 12 (Bruno 2026-07-12, Sunday optimization sprint).
 from __future__ import annotations
 
 import argparse
-import copy
-import gc
+import importlib.util
 import itertools
 import json
 import logging
 import math
-import multiprocessing as mp
 import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 # Garantir raiz do projeto no sys.path (libs locais: backtest, optimization)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -413,29 +410,51 @@ def _generate_param_combos(strat_name: str, grid_size: int = 60) -> list[dict]:
     keys = sorted(combined.keys())
     values_lists = [combined[k] for k in keys]
 
-    all_combos = []
-    for combo in itertools.product(*values_lists):
-        all_combos.append(dict(zip(keys, combo)))
+    total = 1
+    for vs in values_lists:
+        total *= len(vs)
+    if total == 0:
+        return [{}]
 
-    if len(all_combos) <= grid_size:
-        return all_combos
+    if total <= grid_size:
+        return [dict(zip(keys, c)) for c in itertools.product(*values_lists)]
 
     # Subsample. Manter índices representativos + extremos.
-    step = len(all_combos) / grid_size
+    # (fix OOM 2026-08-18: total calculado aritmeticamente + product iterado
+    #  lazy — antes materializava o produto cartesiano inteiro em dicts
+    #  (milhões de combos, ~GBs por worker) e o pool morria no OOM killer.
+    #  Mesmos índices amostrados, resultado idêntico ao anterior.)
+    step = total / grid_size
     sampled_indices = sorted({int(i * step) for i in range(grid_size)})
 
     # Garante inclusão de extremos
     if 0 not in sampled_indices:
         sampled_indices.insert(0, 0)
-    if len(all_combos) - 1 not in sampled_indices:
-        sampled_indices.append(len(all_combos) - 1)
+    if total - 1 not in sampled_indices:
+        sampled_indices.append(total - 1)
     # Garante inclusão do "central"
-    median_idx = len(all_combos) // 2
+    median_idx = total // 2
     if median_idx not in sampled_indices:
         sampled_indices.append(median_idx)
 
     sampled_indices = sorted(set(sampled_indices))[:grid_size]
-    return [all_combos[i] for i in sampled_indices]
+
+    # Decodifica índice → combo direto (radix misto, mesma ordem do
+    # itertools.product) — O(k) por combo, sem enumerar o produto inteiro.
+    radix = [len(v) for v in values_lists]
+    weights = [1] * len(radix)
+    for i in range(len(radix) - 2, -1, -1):
+        weights[i] = weights[i + 1] * radix[i + 1]
+
+    out = []
+    for idx in sampled_indices:
+        rem = idx
+        vals = []
+        for i, (r, w) in enumerate(zip(radix, weights)):
+            d, rem = divmod(rem, w)
+            vals.append(values_lists[i][d])
+        out.append(dict(zip(keys, vals)))
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -587,10 +606,8 @@ def search_pair(args) -> dict:
     """
     pair_key, sym, tf, config, grid_size = args
 
-    # 1. Fetch bars (1x)
-    try:
-        from optimization.vt_forward_backtest import fetch_bars_for_backtest
-    except ImportError:
+    # 1. Fetch bars (1x) — gate de disponibilidade do módulo (sem importar)
+    if importlib.util.find_spec("optimization.vt_forward_backtest") is None:
         return {"pair": pair_key, "error": "no vt_forward_backtest", "top_k": []}
 
     resolved = config.get("resolved_symbols", {})
@@ -620,7 +637,7 @@ def search_pair(args) -> dict:
             n_tested += 1
             try:
                 result = evaluate_candidate(df, sym, tf, strat, params)
-            except Exception as e:
+            except Exception:
                 continue
             if result["passed"]:
                 n_passed += 1
@@ -951,7 +968,7 @@ def main(argv=None) -> int:
     print(f"💰 Projeção 30d: R$ {total_pnl:+,.0f} ({total_trades} trades)")
     print()
     if failed_pairs:
-        print(f"⚠️  Pares SEM edge (gates não aprovaram nenhum candidato):")
+        print("⚠️  Pares SEM edge (gates não aprovaram nenhum candidato):")
         for p in failed_pairs:
             print(f"    - {p}")
         print()
