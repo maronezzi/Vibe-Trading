@@ -264,6 +264,50 @@ _ASK_LLM_PROVIDERS = [
 MIN_VALID_RESPONSE_CHARS = 50
 
 
+# Wave 883.B1 (Bruno 29/08): saúde do ask_llm num arquivo em /tmp para o
+# Stage 6 do AGI ALERTAR quando os stages 2/4 ficam sem LLM. Motivo: de
+# 24-28/08 TODOS os providers falharam HTTP em todos os runs (0 hipóteses,
+# 0 código gerado) e o fail-safe escondeu a falha — o relatório seguia
+# normal, como se "0 geradas" fosse resultado. Observabilidade, não
+# controle: falha de leitura/escrita aqui nunca afeta a cascata em si.
+_LLM_HEALTH_PATH = _Path("/tmp/vt_llm_health.json")
+
+
+def write_llm_health(ok: bool, detail: str = "") -> None:
+    """Registra o desfecho terminal de um ask_llm (best-effort, nunca levanta)."""
+    try:
+        import json as _json
+
+        state: dict = {}
+        try:
+            if _LLM_HEALTH_PATH.exists():
+                state = _json.loads(_LLM_HEALTH_PATH.read_text())
+        except Exception:
+            state = {}
+        if ok:
+            state["consecutive_all_failed"] = 0
+            state["last_ok_ts"] = time.time()
+        else:
+            state["consecutive_all_failed"] = int(state.get("consecutive_all_failed", 0)) + 1
+            state["last_all_failed_ts"] = time.time()
+            state["last_error"] = (detail or "todos os provedores falharam")[:200]
+        _LLM_HEALTH_PATH.write_text(_json.dumps(state))
+    except Exception:
+        pass
+
+
+def read_llm_health() -> dict:
+    """Lê o estado de saúde do ask_llm (vazio se indisponível — fail-safe)."""
+    try:
+        import json as _json
+
+        if _LLM_HEALTH_PATH.exists():
+            return _json.loads(_LLM_HEALTH_PATH.read_text())
+    except Exception:
+        pass
+    return {}
+
+
 # ── Wave AGI-rollover (Bruno 2026-08-13): TRANSPORTE HTTP DIRETO ──
 # Em 13/08 o CLI do hermes quebrou para a cadeia do AGI ("Unknown provider
 # 'zenmux'/'alibaba-token-plan'" após mudança de schema do config.yaml) e a
@@ -393,6 +437,7 @@ def ask_llm(
     hermes_bin = find_hermes()
     if not hermes_bin:
         ask_log.debug("ask_llm: hermes não encontrado no PATH")
+        write_llm_health(False, "hermes ausente no PATH")
         return None
 
     deadline = time.time() + timeout
@@ -423,6 +468,7 @@ def ask_llm(
                 ask_log.debug(
                     f"ask_llm: {label} OK http ({len(_http_resp)} chars)"
                 )
+                write_llm_health(True)
                 return _http_resp
             ask_log.debug(f"ask_llm: {label} http falhou — próximo provider")
             continue
@@ -480,6 +526,7 @@ def ask_llm(
             ask_log.debug(
                 f"ask_llm: {label} OK ({elapsed:.1f}s, {len(resp)} chars)"
             )
+            write_llm_health(True)
             return resp
         stderr_snip = (result.stderr or "")[:200]
         ask_log.debug(
@@ -488,4 +535,5 @@ def ask_llm(
         )
 
     ask_log.debug("ask_llm: todos os provedores falharam")
+    write_llm_health(False, "todos os provedores falharam (zenmux/alibaba/qwen)")
     return None

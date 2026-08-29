@@ -109,6 +109,48 @@ _LLM_PROVIDERS = [
 ]
 MAX_TOTAL_LLM_TIMEOUT = 60  # hard cap: 12+12+15+15=54 + margem
 
+# Wave 883.B1 (Bruno 29/08): circuit-breaker por modelo. Após N falhas
+# consecutivas do mesmo modelo, ele entra em cooldown e a cascata pula direto.
+# Sem isso, cada entrada queimava 15-20s na pós-validação tentando provedores
+# mortos (provider zenmux inexistente + HTTP 403 — incidente 24-28/08),
+# engordando o ciclo do daemon e atrasando a detecção dos próximos sinais.
+_LLM_FAIL_STRIKES = 2
+_LLM_COOLDOWN_S = 600  # 10 min
+_LLM_HEALTH: dict = {}  # model -> {"fails": int, "until": float}
+
+# Wave 883.B1: o hermes CLI devolve rc=0 com o TEXTO DO ERRO no stdout
+# (ex.: "HTTP 403: Access to model denied", "agent failed: Unknown provider").
+# Sem este gate, o erro virava llm_analysis e o daemon logava
+# "[VALIDATOR] LLM OK ... HTTP 403" — máscara de falha (65x em 24-28/08).
+_LLM_ERROR_SIGNATURES = (
+    "http 4", "http 5", "access to model denied", "agent failed",
+    "unknown provider", "rate limit", "insufficient", "unauthorized",
+    "invalid api key", "quota exceeded", "credit",
+)
+
+
+def _looks_like_llm_error(text: str) -> bool:
+    low = (text or "").strip().lower()
+    return any(sig in low for sig in _LLM_ERROR_SIGNATURES)
+
+
+def _llm_in_cooldown(model: str) -> bool:
+    st = _LLM_HEALTH.get(model)
+    return bool(st and st.get("until", 0.0) > time.time())
+
+
+def _llm_note_failure(model: str) -> None:
+    st = _LLM_HEALTH.setdefault(model, {"fails": 0, "until": 0.0})
+    st["fails"] += 1
+    if st["fails"] >= _LLM_FAIL_STRIKES:
+        st["until"] = time.time() + _LLM_COOLDOWN_S
+        _log(f"[LLM] {model}: {st['fails']} falhas consecutivas → cooldown de "
+             f"{_LLM_COOLDOWN_S // 60}min (circuit-breaker Wave 883.B1)")
+
+
+def _llm_note_success(model: str) -> None:
+    _LLM_HEALTH.pop(model, None)
+
 # Wave 880.D (Bruno 06/08): transporte HTTP direto (OpenAI-compatible) como
 # caminho primário. Medido 06/08: CLI hermes = 46-54s (overhead de sessão),
 # HTTP direto = 3.5-13s. Mesmos endpoints/keys do ~/.hermes/config.yaml
@@ -214,6 +256,11 @@ def _ask_llm_cli(prompt: str, provider: str, model: str, timeout: int) -> Option
         elapsed = time.time() - t0
         if result.returncode == 0 and result.stdout.strip():
             resp = result.stdout.strip()
+            # Wave 883.B1: rc=0 com erro no stdout NÃO é resposta válida.
+            if _looks_like_llm_error(resp):
+                _log(f"[LLM] {model} cli devolveu mensagem de erro com rc=0 "
+                     f"({elapsed:.1f}s): {resp[:150]}")
+                return None
             _log(f"[LLM] {model} OK cli ({elapsed:.1f}s, {len(resp)} chars)")
             return resp
         _log(f"[LLM] {model} cli falhou em {elapsed:.1f}s rc={result.returncode} "
@@ -254,15 +301,25 @@ def _ask_llm_with_fallback(prompt: str, timeout: int = 60) -> Optional[str]:
     Timeout total limitado a MAX_TOTAL_LLM_TIMEOUT (72s). Cada provedor tem seu
     próprio timeout; o deadline global garante que a soma nunca ultrapasse o
     limite aceitável para validação de trade.
+
+    Wave 883.B1: modelos em cooldown (falhas consecutivas recentes) são
+    pulados sem custo de timeout; se TODOS estiverem em cooldown, retorna
+    None imediatamente — a validação local continua sendo a guardiã.
     """
     from core.vt_hermes_helper import find_hermes
     if not find_hermes():
         _log("[LLM] hermes não encontrado no PATH — pulando validação LLM")
         return None
 
+    eligible = [p for p in _LLM_PROVIDERS if not _llm_in_cooldown(p["model"])]
+    if not eligible:
+        cooling = ", ".join(p["model"] for p in _LLM_PROVIDERS)
+        _log(f"[LLM] todos os modelos em cooldown — cascata pulada (0s): {cooling}")
+        return None
+
     deadline = time.time() + min(timeout, MAX_TOTAL_LLM_TIMEOUT)
 
-    for idx, prov in enumerate(_LLM_PROVIDERS):
+    for idx, prov in enumerate(eligible):
         remaining = deadline - time.time()
         if remaining <= 2:
             _log(f"[LLM] sem tempo restante para tentar {prov['model']}")
@@ -272,9 +329,11 @@ def _ask_llm_with_fallback(prompt: str, timeout: int = 60) -> Optional[str]:
 
         resp = _ask_llm_provider(prompt, prov["provider"], prov["model"], per_timeout)
         if resp:
+            _llm_note_success(prov["model"])
             return resp
+        _llm_note_failure(prov["model"])
 
-        next_prov = _LLM_PROVIDERS[idx + 1] if idx + 1 < len(_LLM_PROVIDERS) else None
+        next_prov = eligible[idx + 1] if idx + 1 < len(eligible) else None
         if next_prov:
             _log(f"[LLM] {prov['model']} falhou, tentando {next_prov['model']}...")
 

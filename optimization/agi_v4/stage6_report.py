@@ -307,6 +307,23 @@ def _build_telegram_message(ctx: dict) -> str:
     except Exception:
         pass
 
+    # ── 🔴 SAÚDE DO LLM (Wave 883.B1, Bruno 29/08) ──
+    # De 24-28/08 TODOS os providers do ask_llm falharam HTTP em TODOS os
+    # runs e o fail-safe escondeu: stages 2/4 produziam zero sem alerta —
+    # o "AGI" virou só busca em grade e ninguém sabia. Este banner usa o
+    # estado de /tmp/vt_llm_health.json (escrito pelo vt_hermes_helper).
+    try:
+        from core.vt_hermes_helper import read_llm_health
+        _h = read_llm_health()
+        _fails = int(_h.get("consecutive_all_failed", 0))
+        if _fails >= 2:
+            lines.append(f"• 🔴 LLM INDISPONÍVEL ({_fails}x consecutivas): stages 2/4 "
+                         f"sem hipóteses/geração — {_h.get('last_error', 'erro desconhecido')[:120]}")
+        elif _fails == 1:
+            lines.append("• 🟡 LLM falhou na última chamada (falha isolada)")
+    except Exception:
+        pass
+
     # ── Estado de rolagem (Wave AGI-rollover 13/08): vencimentos à vista ──
     try:
         _rs = ctx.get("rollover_state") or {}
