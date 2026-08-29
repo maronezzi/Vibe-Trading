@@ -47,7 +47,7 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     atr_pct = atr_val / price
     if atr_pct > atr_pct_max:
         return None
-    
+
     if adx_val < adx_min or adx_val > adx_max:
         return None
 
