@@ -1,8 +1,8 @@
 {
-  "_version": 1287,
-  "_updated_at": "2026-08-13T21:26:31.964199",
-  "_updated_by": "agi_v4_risk_calibrator",
-  "_notes": "auto-resolve vencimento: WIN: WINQ26 → WINV26",
+  "_version": 1332,
+  "_updated_at": "2026-08-27T17:21:11.873527",
+  "_updated_by": "agi_v4_stage5",
+  "_notes": "auto-resolve vencimento: WIN: WINV26 → WINZ26",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
   "start_minute": 5,
@@ -102,7 +102,7 @@
   "check_interval": 30,
   "bars_count": 45,
   "resolved_symbols": {
-    "WIN": "WINV26",
+    "WIN": "WINZ26",
     "BIT": "BITQ26",
     "WSP": "WSPU26",
     "WDO": "WDOU26"
@@ -113,20 +113,20 @@
   "strategy_by_tf": {
     "WIN_M5": "AGI4_WIN_061355",
     "WIN_M15": "AGI4_WIN_121815",
-    "WIN_M30": "AGI4_BIT_173517",
+    "WIN_M30": "AGI4_WDO_223241",
     "WIN_H1": "ENHANCED_RSI_REVERSION",
     "BIT_M5": "BOLLINGER",
     "BIT_M15": "DIVERGENCE_RSI",
     "BIT_M30": "AGI4_BIT_121102",
     "BIT_H1": "ADX_TREND",
-    "WSP_M5": "AGI4_WIN_121815",
+    "WSP_M5": "AGI4_BIT_171647",
     "WSP_M15": "AGI4_WSP_134734",
-    "WSP_M30": "EMA_PULLBACK",
+    "WSP_M30": "RSI_REVERSION",
     "WSP_H1": "EMA_PULLBACK",
     "WDO_M5": "EMA_SLOPE_MOMENTUM",
     "WDO_M15": "ADX_TREND",
-    "WDO_M30": "AGI4_WIN_201350",
-    "WDO_H1": "RSI_REVERSION"
+    "WDO_M30": "AGI4_WSP_172807",
+    "WDO_H1": "TRIPLE_EMA"
   },
   "contract_specs": {
     "WIN$": {
@@ -232,11 +232,11 @@
     "IND"
   ],
   "disabled_timeframes": [
-    "WDO_H1",
     "WIN_H1",
-    "BIT_H1",
     "BIT_M5",
-    "WIN_M5"
+    "WIN_M5",
+    "WDO_M15",
+    "WDO_M30"
   ],
   "max_daily_loss": -500,
   "global_max_daily_trades": 999,
@@ -248,22 +248,23 @@
       "trail_distance": 0.4
     },
     "WIN_M15": {
+      "atr_min_pct": 0.0,
       "cooldown_seconds": 60,
-      "halt_duration_minutes": 45,
-      "max_consecutive_losses": 3,
-      "profit_lock_r": 0.7,
-      "sl_atr_mult": 1.8,
-      "adx_min": 22,
-      "trail_activate": 0.8,
-      "trail_distance": 0.4
+      "halt_duration_minutes": 60,
+      "max_consecutive_losses": 4,
+      "profit_lock_r": 0.5,
+      "session_only": true,
+      "sl_atr_mult": 1.0,
+      "volume_min_ratio": 0.0
     },
     "WIN_M30": {
       "cooldown_seconds": 60,
       "adx_period": 10,
-      "adx_threshold": 18,
-      "sl_atr_mult": 2.5,
+      "adx_threshold": 30,
+      "sl_atr_mult": 0.8,
       "trail_activate": 0.8,
-      "trail_distance": 0.4
+      "trail_distance": 0.4,
+      "range_lookback": 12
     },
     "WIN_H1": {
       "rsi_oversold": 20,
@@ -343,11 +344,8 @@
     "WSP_M5": {
       "cooldown_seconds": 60,
       "sl_atr_mult": 0.8,
-      "bb_period": 30,
-      "bb_std": 2.0,
-      "adx_period": 14,
-      "rsi_period": 7,
-      "adx_min": 25
+      "ema_fast": 5,
+      "ema_slow": 15
     },
     "WSP_M15": {
       "ema_fast": 9,
@@ -357,24 +355,17 @@
       "bb_std": 1.4
     },
     "WSP_M30": {
-      "sl_atr_mult": 1.8,
-      "cooldown_seconds": 180,
-      "max_daily_trades": 999,
-      "donchian_period": 14,
-      "adx_period": 10,
-      "adx_threshold": 15,
-      "rsi_period": 22,
-      "rsi_overbought": 74,
-      "rsi_oversold": 35,
-      "trail_activate": 3.0,
-      "min_confluence_score": 1,
-      "profit_lock_r": 0.5,
+      "atr_min_pct": 0.0,
+      "cooldown_seconds": 60,
+      "halt_duration_minutes": 45,
       "max_consecutive_losses": 3,
-      "halt_duration_minutes": 60,
-      "ema_fast": 5,
-      "ema_slow": 15,
-      "pullback_pct": 0.15,
-      "trail_distance": 1.5
+      "profit_lock_r": 0.3,
+      "rsi_overbought": 70,
+      "rsi_oversold": 20,
+      "rsi_period": 7,
+      "session_only": false,
+      "sl_atr_mult": 2.0,
+      "volume_min_ratio": 0.8
     },
     "WSP_H1": {
       "sl_atr_mult": 1.0,
@@ -402,11 +393,8 @@
       "adx_min": 25
     },
     "WDO_M15": {
-      "sl_atr_mult": 1.0,
-      "cooldown_seconds": 180,
-      "adx_threshold": 15,
-      "ema_fast": 5,
-      "ema_slow": 35,
+      "sl_atr_mult": 1.2,
+      "cooldown_seconds": 120,
       "trail_activate": 0.001,
       "trail_distance": 0.0006,
       "max_daily_trades": 10,
@@ -414,7 +402,9 @@
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
       "halt_duration_minutes": 60,
-      "adx_period": 20
+      "rsi_period": 14,
+      "adx_period": 20,
+      "adx_threshold": 18
     },
     "WDO_M30": {
       "cooldown_seconds": 600,
@@ -424,26 +414,24 @@
       "profit_lock_r": 0.5,
       "max_consecutive_losses": 3,
       "halt_duration_minutes": 60,
-      "trail_distance": 0.0006
-    },
-    "WDO_H1": {
-      "sl_atr_mult": 1.0,
+      "trail_distance": 0.0006,
       "ema_fast": 5,
       "ema_slow": 21,
       "adx_period": 14,
-      "adx_threshold": 20,
-      "pullback_pct": 0.1,
-      "max_daily_trades": 999,
-      "cooldown_seconds": 120,
-      "rsi_overbought": 80,
-      "rsi_oversold": 20,
-      "rsi_period": 10,
-      "trail_activate": 0.001,
-      "min_confluence_score": 1,
-      "profit_lock_r": 0.5,
-      "max_consecutive_losses": 3,
-      "halt_duration_minutes": 60,
-      "trail_distance": 0.0006
+      "rsi_period": 21,
+      "boll_period": 10
+    },
+    "WDO_H1": {
+      "atr_min_pct": 0.0,
+      "cooldown_seconds": 60,
+      "ema_fast": 12,
+      "ema_slow": 30,
+      "halt_duration_minutes": 90,
+      "max_consecutive_losses": 5,
+      "profit_lock_r": 0.7,
+      "session_only": true,
+      "sl_atr_mult": 2.0,
+      "volume_min_ratio": 0.8
     }
   },
   "max_daily_trades": 999,
@@ -574,14 +562,15 @@
     "WIN_M30": true,
     "WIN_H1": false,
     "BIT_M30": true,
-    "BIT_H1": false,
+    "BIT_H1": true,
     "WSP_M5": true,
     "WSP_M15": true,
     "WSP_M30": true,
     "WSP_H1": true,
     "WDO_M5": true,
-    "WDO_M15": true,
-    "WDO_M30": true
+    "WDO_M15": false,
+    "WDO_M30": false,
+    "WDO_H1": true
   },
   "loss_cooldown": {
     "enabled": true,
@@ -596,7 +585,7 @@
     "degrade_disable_breakouts": true
   },
   "profit_lock_enabled": true,
-  "profit_lock_min_target": 300.0,
+  "profit_lock_min_target": 250.0,
   "profit_lock_target_mult": 1.0,
   "profit_lock_lookback_days": 7,
   "trailing_profit_lock_enabled": true,
@@ -632,10 +621,10 @@
   },
   "_rollover_log": {
     "WIN": {
-      "from": "WINQ26",
-      "to": "WINV26",
-      "changed_at": "2026-08-13T09:42:56",
-      "changed_by": "backfill_incidente_20260813"
+      "from": "WINV26",
+      "to": "WINZ26",
+      "changed_at": "2026-08-24T08:55:07",
+      "changed_by": "calendar_resolve"
     }
   }
 }
