@@ -552,6 +552,27 @@ teste negativo (ativo errado) bloqueia. Nível (diff_pct) segue no audit
 como diagnóstico, rotulado "basis (normal)". Testes:
 `tests/test_rollover_series_returns.py` (5 casos herméticos).
 
+### Wave 884 (30/08): projeto sob medida para 2 pares — resultado honesto
+Bruno pediu 2 estratégias "super lucrativas" para pares específicos. Escolha
+pela única evidência que importa (sim E live concordando positivos):
+WIN_M15 e WDO_H1. Diagnóstico live: lucro do WIN_M15 concentra 09-10h e sai
+em trailing; WDO_H1 idem. Duas teses construídas (`strategies/_pending/`):
+- **W884_RECLAIM_PRO** (reclaim NO cruzamento + EMA50 mãe): o dado REJEITOU
+  a variação no alvo WIN_M15 (PF 0,57) — a condição da incumbente (preço já
+  >= mid) É o edge ali; entradas mais cedo pioram. Brilhou em WDO_M30
+  (+R$715/17t, PF 16,7 — near-miss do gate n>=20) e WIN_M5 (+R\$256/22t,
+  falhou walk-forward 2/4).
+- **W884_TREND_RIDER** (pullback rejeitado na EMA21 com slope real): ✅ único
+  aprovado nos gates COMPLETOS — WDO_M5 +R\$476/55t PF 1,69 (defaults). No
+  alvo WDO_H1 positivo mas 9t < gate n>=20 (H1 seletivo não dá 20 trades/30d
+  — limitação estrutural do gate p/ TFs altos, candidato a revisão futura).
+Lição: "super lucrativa garantida" não existe — sim 30d ≠ live (WDO_M30:
+sim +R\$2.049 vs live −R\$200). O processo certo é este: tese com evidência →
+gates completos → incumbente 1,3× → kill-switch vigiando. RIDER WDO_M5 não
+será promovido enquanto o incumbente (sim +R\$1.074) for melhor — fica no
+sandbox como sucessor pronto se o titular decair. Armadilha nova documentada:
+janela do engine de backtest = 61 barras (guardas de warmup > 61 = 0 trades).
+
 ### Dívidas conhecidas desta wave (não feitas — decidir depois)
 - WSP cooldown herdado 1800s (chaves mortas `wsp_m30`/`wdo_m15` no config);
 - volume 2 no WIN_M15 (governador comporta; precisa OK do Bruno);
