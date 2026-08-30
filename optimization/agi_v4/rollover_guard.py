@@ -169,9 +169,11 @@ def allow_changes(pair: str, config: dict) -> tuple[bool, str]:
     Bloqueios (nesta ordem):
       1. freeze — contrato a ≤ FREEZE_DAYS dias úteis do vencimento
       2. grace — rolagem há ≤ GRACE_DAYS dias (sem histórico live)
-      3. series_divergence — série perpétua (base do backtest) diverge >1%
-         do contrato live: a simulação NÃO representa o que é operado
-         (incidente 05-12/08: WIN$=V26 e live=Q26 com 2.500-4.000pts de base).
+      3. series_divergence — MOVIMENTO da série perpétua (base do backtest)
+         diverge do contrato live (retorno diário mediano >1%): a simulação
+         NÃO representa o que é operado. Wave 883.B5: antes comparava NÍVEL
+         e blockava o WIN eternamente pelo basis de rolagem (estrutural);
+         agora compara movimento — basis constante some da conta.
     """
     try:
         st = contract_state(pair_root(pair), config)
@@ -190,11 +192,11 @@ def allow_changes(pair: str, config: dict) -> tuple[bool, str]:
                 _series_cache[root] = {}
         se = _series_cache.get(root) or {}
         if se.get("divergent"):
-            return False, (f"series_divergence: {root} perpétua "
-                           f"{se.get('perp_last', 0):.0f} vs live "
-                           f"{se.get('live_contract', '?')} {se.get('live_last', 0):.0f} "
-                           f"(Δ {se.get('diff_pct', '?')}%) — backtest não "
-                           f"representa o contrato operado")
+            return False, (f"series_divergence: {root} movimento divergente — "
+                           f"retorno diário mediano {se.get('ret_diff_med_pct')}% "
+                           f"({se.get('n_days')}d comuns, perpétua {se.get('perp_last', 0):.0f} "
+                           f"vs {se.get('live_contract', '?')} {se.get('live_last', 0):.0f}) — "
+                           f"backtest não representa o contrato operado")
         return True, ""
     except Exception as e:
         log.warning(f"rollover_guard: allow_changes falhou ({e}) — fail-safe libera")
@@ -282,68 +284,119 @@ def all_symbols_state(config: dict) -> dict:
 # ── Sanidade da série perpétua vs contrato live ──
 # Incidente 05-12/08: o AGI otimizava WIN na WIN$ (= WINV26) enquanto o bot
 # operava WINQ26, 2.500-4.000 pts abaixo (carry). A simulação não representava
-# a execução. Este check compara o último close da perpétua com o último tick
-# do contrato resolvido; divergência > SERIES_DIVERGENCE_PCT vira alerta.
-SERIES_DIVERGENCE_PCT = float(os.environ.get("VT_AGI_SERIES_DIVERGENCE_PCT", "0.01"))
+# a execução.
+#
+# Wave 883.B5 (Bruno 30/08): a comparação por NÍVEL de preço blockava o WIN
+# PARA SEMPRE — perpétua costurada carrega basis de rolagem estrutural
+# (WIN$ 177.805 vs WINZ26 181.790 = Δ2,19% > 1%), então o gate rejeitava
+# candidato bom 5×/run mesmo com as séries descrevendo o MESMO mercado.
+# Correção: comparar MOVIMENTO (retorno diário close-a-close), não nível.
+# Séries do mesmo ativo com basis constante têm retornos idênticos — o basis
+# some da conta. Divergência real (fonte de dados errada, ativo trocado)
+# aparece como retorno diário médio diferente → continua bloqueando.
+# Freeze e grace (vencimento/rolagem) permanecem intocados.
+# Calibração com dado real (24d, 30/08): legítimos ≤0,085% (WIN 0,085;
+# BIT/WSP/WDO 0,0) vs ativo ERRADO ≥0,694% (WIN$×WDOU26 0,694; WIN$×BITQ26
+# 1,875). Default 0,25% = 3x folga acima do pior legítimo e 2,8x abaixo do
+# ativo errado mais sutil. Env sobrepõe.
+SERIES_DIVERGENCE_PCT = float(os.environ.get("VT_AGI_SERIES_DIVERGENCE_PCT", "0.0025"))
+# Mínimo de dias comuns p/ julgar movimento (menos que isso = sem opinião)
+_SERIES_MIN_DAYS = 3
+
+
+def _daily_returns(df) -> dict:
+    """Retorno diário (close-a-close, fração) por data: {date: ret}.
+
+    Usa o ÚLTIMO close de cada dia (série intradiária M15). Sort primeiro —
+    bt.load_csv não garante ordem.
+    """
+    chrono = df.sort_index()
+    last_close: dict = {}
+    for ts, row in zip(chrono.index, chrono["close"].values):
+        last_close[ts.date()] = float(row)
+    dates = sorted(last_close)
+    out: dict = {}
+    for prev, cur in zip(dates, dates[1:]):
+        if last_close[prev] > 0:
+            out[cur] = last_close[cur] / last_close[prev] - 1.0
+    return out
+
+
+def _series_comparison(dperp, dlive, contract: str) -> dict:
+    """Compara perpétua vs contrato: nível (informativo) + movimento (gate).
+
+    divergent = mediana do |Δretorno diário| > SERIES_DIVERGENCE_PCT, com
+    >= _SERIES_MIN_DAYS dias comuns. Menos dias → sem opinião (fail-open).
+    """
+    e: dict = {"perp_last": None, "live_last": None, "live_contract": contract,
+               "diff_pts": None, "diff_pct": None, "n_days": None,
+               "ret_diff_med_pct": None, "ret_diff_max_pct": None,
+               "divergent": False}
+    if dperp is None or dlive is None or not len(dperp) or not len(dlive):
+        return e
+    e["perp_last"] = float(dperp["close"].iloc[-1])
+    e["live_last"] = float(dlive["close"].iloc[-1])
+    # Nível: informativo (basis de rolagem é ESPERADO, não é divergência)
+    diff = e["perp_last"] - e["live_last"]
+    if e["live_last"]:
+        e["diff_pts"] = round(diff, 1)
+        e["diff_pct"] = round(abs(diff) / e["live_last"] * 100, 2)
+    # Movimento: o gate de verdade
+    try:
+        rp = _daily_returns(dperp)
+        rl = _daily_returns(dlive)
+        common = sorted(set(rp) & set(rl))
+        if len(common) < _SERIES_MIN_DAYS:
+            return e  # janela pequena (férias/feriados) → sem opinião
+        diffs = sorted(abs(rp[d] - rl[d]) * 100 for d in common)
+        e["n_days"] = len(common)
+        e["ret_diff_med_pct"] = round(diffs[len(diffs) // 2], 3)
+        e["ret_diff_max_pct"] = round(diffs[-1], 3)
+        e["divergent"] = diffs[len(diffs) // 2] > SERIES_DIVERGENCE_PCT * 100
+    except Exception as err:
+        e["error_returns"] = str(err)[:120]
+    return e
 
 
 def series_sanity(config: dict) -> dict:
     """Compara perpétua ({root}$) vs contrato resolvido para cada símbolo.
 
-    Returns: {root: {"perp_last", "live_last", "diff_pts", "diff_pct",
-                     "divergent"} }. Fail-safe por símbolo.
+    Wave 883.B5: gate por MOVIMENTO (retorno diário mediano); nível fica
+    como diagnóstico. Barras M15 de ambas as séries (mesma fonte/TF) —
+    sem tick, que misturava instantes diferentes.
+
+    Returns: {root: entry de _series_comparison}. Fail-safe por símbolo.
     """
     out: dict = {}
     resolved = (config.get("resolved_symbols") or {}) if config else {}
     for root in (config.get("symbols") or []):
-        entry: dict = {"symbol": root, "perp_last": None, "live_last": None,
-                       "diff_pts": None, "diff_pct": None, "divergent": False}
         try:
             from backtest import backtest_v944 as bt
-            path = bt.fetch(f"{root}$", "M15", 60)
-            df = bt.load_csv(path) if path else None
-            if df is not None and len(df):
-                entry["perp_last"] = float(df["close"].iloc[-1])
-        except Exception as e:
-            entry["error_perp"] = str(e)[:120]
-        try:
-            from mt5.mt5_orchestrator import tick as _tick
             contract = resolved.get(root, "")
+            dperp = dlive = None
             if contract:
-                tk = _tick(contract)
-                if tk and tk.get("bid", 0) > 0:
-                    entry["live_last"] = float(tk["bid"])
-                    entry["live_contract"] = contract
-                else:
-                    # Pós-mercado: tick pode vir vazio → última barra do
-                    # contrato resolvido (copy_rates funciona p/ histórico).
-                    from backtest import backtest_v944 as bt
-                    p2 = bt.fetch(contract, "M15", 30)
-                    df2 = bt.load_csv(p2) if p2 else None
-                    if df2 is not None and len(df2):
-                        entry["live_last"] = float(df2["close"].iloc[-1])
-                        entry["live_contract"] = contract
+                p1 = bt.fetch(f"{root}$", "M15", 900)
+                dperp = bt.load_csv(p1) if p1 else None
+                p2 = bt.fetch(contract, "M15", 900)
+                dlive = bt.load_csv(p2) if p2 else None
+            out[root] = {"symbol": root, **_series_comparison(dperp, dlive, contract)}
         except Exception as e:
-            entry["error_live"] = str(e)[:120]
-        if entry["perp_last"] and entry["live_last"]:
-            diff = entry["perp_last"] - entry["live_last"]
-            entry["diff_pts"] = round(diff, 1)
-            entry["diff_pct"] = round(abs(diff) / entry["live_last"] * 100, 2)
-            entry["divergent"] = abs(diff) / entry["live_last"] > SERIES_DIVERGENCE_PCT
-        out[root] = entry
+            out[root] = {"symbol": root, "error": str(e)[:120], "divergent": False}
     return out
 
 
 def format_series_line(entry: dict) -> str:
     """Linha humana do series sanity p/ log."""
     if entry.get("divergent"):
-        return (f"  ⚠️ {entry['symbol']}: perpétua {entry.get('perp_last'):.0f} vs "
-                f"live {entry.get('live_contract')} {entry.get('live_last'):.0f} — "
-                f"Δ {entry.get('diff_pts'):+.0f}pts ({entry.get('diff_pct')}%) "
+        return (f"  ⚠️ {entry['symbol']}: movimento DIVERGE — retorno diário "
+                f"mediano {entry.get('ret_diff_med_pct')}% "
+                f"(máx {entry.get('ret_diff_max_pct')}%, {entry.get('n_days')}d) "
                 f"> {SERIES_DIVERGENCE_PCT*100:.0f}% — SIMULAÇÃO NÃO REPRESENTA O LIVE")
-    if entry.get("perp_last") and entry.get("live_last"):
-        return (f"  ✅ {entry['symbol']}: perpétua≈live "
-                f"(Δ {entry.get('diff_pts'):+.0f}pts)")
+    if entry.get("ret_diff_med_pct") is not None:
+        basis = f", basis {entry.get('diff_pct')}% (normal)" if entry.get("diff_pct") else ""
+        return (f"  ✅ {entry['symbol']}: movimento alinhado "
+                f"(Δret mediano {entry.get('ret_diff_med_pct')}%, "
+                f"{entry.get('n_days')}d{basis})")
     return f"  ❓ {entry['symbol']}: sem dados para comparar série"
 
 

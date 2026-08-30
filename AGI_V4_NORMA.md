@@ -538,10 +538,23 @@ ou SEM ela"; "a trava fica, mas o AGI sintoniza — número sem chute")
 pré-existente: `275bd027` (W880.II core) · `81cac88a` (W880.I AGI) ·
 `c79474f0` · `8a206e6e` · `f8f46564` · `3ab890ba` (lint).
 
+### Wave 883.B5 (30/08): series_divergence por MOVIMENTO — WIN destravado
+A comparação por NÍVEL blockava o WIN PARA SEMPRE: a perpétua costurada
+carrega basis de rolagem estrutural (WIN$ 177.805 vs WINZ26 181.790 = Δ2,04%)
+e o gate rejeitava candidato bom 5×/run (incidente real no run de 30/08:
+WIN_H1/ADX_TREND +R$1.046 barrado 5×). Correção (Bruno aprovou): gate agora
+compara RETORNO DIÁRIO mediano perpétua-vs-contrato — basis constante some
+da conta. Calibração com 24d de dado real: legítimos ≤0,085%; ativo ERRADO
+(WIN$×WDOU26) ≥0,694% → default `VT_AGI_SERIES_DIVERGENCE_PCT` 0.25% (3×
+folga p/ cima, 2,8× p/ baixo), janela 900 barras M15 (~24d, ≥3 dias comuns).
+Validado: WIN_M15/WIN_M30 `allow_changes=True`; freeze/grace do WDO intactos;
+teste negativo (ativo errado) bloqueia. Nível (diff_pct) segue no audit
+como diagnóstico, rotulado "basis (normal)". Testes:
+`tests/test_rollover_series_returns.py` (5 casos herméticos).
+
 ### Dívidas conhecidas desta wave (não feitas — decidir depois)
 - WSP cooldown herdado 1800s (chaves mortas `wsp_m30`/`wdo_m15` no config);
 - volume 2 no WIN_M15 (governador comporta; precisa OK do Bruno);
-- `series_divergence` compara NÍVEL (bloqueia WIN todo) — migrar p/ retornos;
 - loop de convergência conta pares disabled como failing (desperdício);
 - walker com multiplier uniforme 0.20 (WDO 50× fora de escala);
 - `backtest/strategies/AGI4_BIT_202313.py` untracked (mirror stale).
