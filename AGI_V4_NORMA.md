@@ -481,3 +481,67 @@ Primeira calibração real (19/08): ótimo bruto 300, clamp leva 100→200
   todo UPDATE) e Σ das linhas == broker truth;
 - `close_source` novos: `RECONCILE_NETTING` (pai) e
   `RECONCILE_NETTING_SPLIT` (filhos) — não alterar os existentes.
+
+---
+
+## 14. Wave 883 — saúde do LLM, scorecard de trocas, trava sintonizada e guarda de sinal (29–30/08/2026)
+
+Origem: auditoria multi-agente (4 agentes, somente leitura) das operações
+14–28/08, das entradas/lucro e do AGI v4. Decisões do Bruno em 29/08.
+
+### O que a auditoria achou (contexto das mudanças)
+- Execução de ordens SÓLIDA (Lei 3/4 ok nas 162 operações); camada de
+  registro frágil (crash do reconcile 27–28/08 corrigido em hotfix P0).
+- Stages 2/4 (LLM) mortos ≥5 dias SEM alerta — o "AGI" virou só busca em
+  grade; 10 runs seguidos `applied=0` com ~140 mil simulações sem info nova.
+- `pnl_claimed` dos swaps NUNCA era cobrado (57 swaps no journal); live
+  -R$211/14d enquanto todas as sims 30d positivas; shadow -R$6.083.
+- Entradas tardias em M30/H1 (H1 p50 = 22min dentro da barra seguinte);
+  71 sinais descartados/15d pelo SLIPPAGE-GUARD por preço andado.
+- Trava de lucro assimétrica: 5/10 dias verdes pararam entre 10h–13h.
+
+### Mudanças (Bruno: "a LLM atual fica; adaptar o sistema a funcionar COM
+ou SEM ela"; "a trava fica, mas o AGI sintoniza — número sem chute")
+1. **Saúde do LLM** (`de53fe61`): validator_v2 com circuit-breaker por
+   modelo (2 falhas → cooldown 10min; cascata pula sem custo de timeout —
+   cada entrada queimava 15-20s) e gate anti-resposta-erro (hermes CLI
+   devolve rc=0 com erro no stdout; nunca mais vira "LLM OK ... HTTP 403").
+   `ask_llm` grava `/tmp/vt_llm_health.json`; Stage 6 mostra banner 🔴 se
+   cair 2+ vezes seguidas. Kill-switch não precisa: é observabilidade.
+2. **swap_scorecard** (`014399b0`): conferidor de recibos — para cada swap
+   do journal com ≥5 pregões, PnL entregue (live+shadow na janela) vs
+   `pnl_claimed`. **MODO OBSERVAÇÃO**: só reporta (linha 📋 no Telegram +
+   audit). Escalonamento de Gate B/quarentena automática fica para wave
+   futura após ~2 semanas de dados. `VT_AGI_SCORECARD=0` desliga.
+   House rule intacta: accountability de decisão já tomada, não treino.
+3. **Trava sintonizada** (`4073984c`): `calibrate_lock_activation` no
+   risk_calibrator — `trailing_activation_pct` por counterfactual 21d (grid
+   0.4–1.0 do trailing_target_per_lot, mesmos dias-shadow do alvo, empate →
+   trava cedo, histerese de passo [0.7×, 1.3×], ganho mínimo R$15/5d).
+   Dry-run real (14d): ótimo 0.8, primeiro passo 0.5→0.7 (arma R$175 em
+   vez de R$125). Aplicação automática no próximo run do calibrador.
+4. **Guarda de sinal expirado** (`24b74727`): `core/vt_signal_guard.py` —
+   M30/H1 com sinal visto depois de 25% da barra atual → entrada
+   descartada com log `[SINAL-EXPIRADO]`. Escopo só M30/H1 (M5/M15
+   seguem). `VT_SIGNAL_AGE_GUARD=0` desliga. EFEITO SÓ APÓS RESTART do
+   daemon (cron 09:00).
+5. **Quarentena manual BIT_M15** (`b5e59217`, config v1333): DIVERGENCE_RSI
+   -17,3R/15d, WR 22%, perda média -1,92R. Script whitelisted
+   `scripts/w883_quarantine_bit_m15_20260829.py` + journal `kind=live_kill`
+   (`rule=manual_quarantine_883`) → 10d de quarentena contra reativação por
+   sim (a sim 30d do par é POSITIVA — sem journal o AGI religaria).
+   Executado e verificado em 30/08 (fora do pregão).
+
+### Commits de referência da wave
+`de53fe61` (LLM) · `014399b0` (scorecard) · `4073984c` (trava) ·
+`24b74727` (sinal) · `b5e59217` (quarentena). Ondas de commit do drift
+pré-existente: `275bd027` (W880.II core) · `81cac88a` (W880.I AGI) ·
+`c79474f0` · `8a206e6e` · `f8f46564` · `3ab890ba` (lint).
+
+### Dívidas conhecidas desta wave (não feitas — decidir depois)
+- WSP cooldown herdado 1800s (chaves mortas `wsp_m30`/`wdo_m15` no config);
+- volume 2 no WIN_M15 (governador comporta; precisa OK do Bruno);
+- `series_divergence` compara NÍVEL (bloqueia WIN todo) — migrar p/ retornos;
+- loop de convergência conta pares disabled como failing (desperdício);
+- walker com multiplier uniforme 0.20 (WDO 50× fora de escala);
+- `backtest/strategies/AGI4_BIT_202313.py` untracked (mirror stale).
