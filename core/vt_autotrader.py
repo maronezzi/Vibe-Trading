@@ -43,6 +43,7 @@ from core.vt_emergency import safe_modify_sl_with_emergency_close
 from core.vt_config_loader import load_effective_config
 from core.vt_strategy_loader import load_strategies, get_strategy_func, reload_strategies
 from core.vt_order_validator_v2 import validate_order, validate_pre_send
+from core.vt_signal_guard import elapsed_in_current_bar, max_age_seconds, signal_age_ok
 from core.vt_calendar import is_trading_day, resolve_all_symbols, get_contract_expiry, _parse_contract_code, is_rollover_contract
 from core.vt_block_notify import (  # noqa: E402,F401  (Wave N+block_notify 2026-07-20)
     notify_block_activated,
@@ -2003,6 +2004,19 @@ def check_and_trade():
                             state, symbol, tf, strategy, last_bar_ts
                         )
                     if result:
+                        # Wave 883.B4 (Bruno 29/08 — "urgente"): sinal velho não
+                        # vira entrada. Em M30/H1 o estado acende bem depois do
+                        # fechamento do candle-sinal (H1 p50 = 22min dentro da
+                        # barra seguinte); entrar tarde custa R (auditoria
+                        # 29/08: +0,24R no 1º quarto da barra vs -0,09R depois).
+                        # VT_SIGNAL_AGE_GUARD=0 desliga. Ver core/vt_signal_guard.py.
+                        if not signal_age_ok(tf, bars):
+                            _elapsed = elapsed_in_current_bar(bars) or 0.0
+                            _lim = max_age_seconds(tf) or 0.0
+                            log(f"[SINAL-EXPIRADO] {symbol} {tf} — sinal do candle "
+                                f"fechado visto a {_elapsed/60:.0f}min da barra atual "
+                                f"(limite {_lim/60:.0f}min) — entrada descartada")
+                            continue
                         # Wave N+1 (2026-07-08): registra ts do signal para
                         # heurística de setup-latente usar depois.
                         state.recent_signal_ts[(symbol, tf, strategy)] = datetime.now()
