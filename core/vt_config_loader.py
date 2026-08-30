@@ -76,6 +76,11 @@ ALLOWED_WRITERS = (
     # slippage) por simulação counterfactual nos trades reais. Escrita só
     # nessas chaves, com evidência mínima (ver módulo).
     "optimization/agi_v4/risk_calibrator.py",
+    # Wave 883 (Bruno 29/08): quarentena manual do BIT_M15/DIVERGENCE_RSI
+    # (runbook §13) — escrita única em disabled_timeframes/day_trade_intent
+    # + journal live_kill p/ quarentena de 10d. Autorização explícita do
+    # Bruno em 29/08 ("5 - ok"); one-shot, mantido na lista como registro.
+    "scripts/w883_quarantine_bit_m15_20260829.py",
     # scripts de manutenção (devem rodar com autotrader PAUSADO)
     "scripts/vt_meio_dia_tuning.py",
     "scripts/migrate_today_trades_w13_2.py",
