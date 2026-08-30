@@ -545,3 +545,22 @@ pré-existente: `275bd027` (W880.II core) · `81cac88a` (W880.I AGI) ·
 - loop de convergência conta pares disabled como failing (desperdício);
 - walker com multiplier uniforme 0.20 (WDO 50× fora de escala);
 - `backtest/strategies/AGI4_BIT_202313.py` untracked (mirror stale).
+
+### Aprendizados do gerador manual (Wave 883.B — 10 estratégias W883_*, 30/08)
+Estudos feitos à mão (o que o Stage 4/LLM deveria saber quando voltar):
+- **Barras do backtest NÃO têm "open" nem "time"** (só high/low/close/volume —
+  `backtest_v944.py:557`); o live tem tudo. Plugin que usa `b["open"]` vive no
+  live e morre no backtest como "0 trades" (KeyError engolido). Corpo de
+  candle no plugin: `close[0] − close[1]`.
+- **Barras do smoke-test não têm "volume"** — `calculate_vwap` no plugin
+  precisa de try/except (senão o runtime_smoke_gate rejeita o arquivo).
+- **`max_dd_ratio > 2.5` é o bloqueio dominante** de candidatos lucrativos
+  (não é PF) — os params de gestão (max_consecutive_losses=3 + halt 60min +
+  trail 1,2/0,3 + profit_lock_r 0,8) resolvem a maioria dos casos.
+- **n_trades≥20 é a régua que mais derruba no limite** (16-19 trades) —
+  1 param de frequência (adx_min, squeeze_atr) resolve sem degradar PF.
+- Resultado: 5-7 combinações (estratégia × par) aprovadas nos gates COMPLETOS
+  (destaques: W883_RSI_CROSS_DI WIN_M30 +R$1.245/PF 28 com adx_min=8;
+  W883_SQUEEZE_BREAK WIN_M30 +R$997; DONCHIAN_COMPRESS WIN_M30 +R$815~917).
+  Arquivos ficam em `_pending/` (sandbox, gitignored) — o sweep das 12h testa,
+  afina params por par e promove pelos gates normais do Stage 5.
