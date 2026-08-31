@@ -3752,11 +3752,37 @@ def manage_position(symbol: str, tf: str, pos: dict, current_atr: float, strateg
                     pos["entry_ticket"] = _real_id  # adota position_id real
                     return  # posição viva, segue gestão no próximo tick
             # Sem posição consolidada E sem deal OUT ainda: pode ser latência
-            # do watcher. NÃO registra agora — o próximo tick resolve (deal OUT
-            # chega em ~1s, ou posição reaparece). Defesa contra fantasma.
-            log(f"[NETTING] {symbol} ticket={pos['entry_ticket']} sumiu sem deal OUT "
-                f"e sem consolidação — aguardando broker-truth (não registra)")
-            return
+            # do watcher. Wave 885: antes de aguardar, confirma o fechamento
+            # direto no broker via history por position_id — o ÚNICO caminho
+            # confiável no Wine (symbol=/date_from= retornam []; Wave 14.3/880.I).
+            # Se existe deal OUT (direção oposta) para este ticket no MT5, a
+            # posição fechou de verdade: segue para [FECHADO PELO SERVIDOR],
+            # que resolve PnL/preço/reason com broker-truth e close_source
+            # semântico (em vez de esperar o reconcile rotular GHOST). Sem o
+            # deal OUT no history, mantém a espera — a defesa anti-fantasma
+            # do incidente 20/08 fica intacta (consolidação netting não gera
+            # deal OUT para o ticket absorvido).
+            _hist_deals_gate = []
+            try:
+                _hist_deals_gate = _truth.get_position_history(
+                    symbol=symbol, days=1,
+                    position=str(pos.get("entry_ticket") or "").strip() or None,
+                )
+            except (OSError, ValueError, KeyError) as _e_hist_gate:
+                log(f"[NETTING] history por-ticket falhou "
+                    f"(ticket={pos.get('entry_ticket')}): {_e_hist_gate}")
+            _want_dir_gate = "SELL" if direction == "BUY" else "BUY"
+            _has_out_deal_gate = any(
+                str(getattr(_d, "position_id", "")) == str(pos["entry_ticket"])
+                and getattr(_d, "direction", "") == _want_dir_gate
+                for _d in _hist_deals_gate
+            )
+            if not _has_out_deal_gate:
+                log(f"[NETTING] {symbol} ticket={pos['entry_ticket']} sumiu sem deal OUT "
+                    f"e sem consolidação — aguardando broker-truth (não registra)")
+                return
+            log(f"[NETTING] {symbol} ticket={pos['entry_ticket']} sem evento EA, mas "
+                f"history por-ticket confirma deal OUT — registra fechamento agora")
         log(f"[FECHADO PELO SERVIDOR] {symbol} | Ticket {pos['entry_ticket']}")
 
         # Bruno 2026-06-30: pegar PnL REAL do MT5 (broker-truth) ao invés de calcular
