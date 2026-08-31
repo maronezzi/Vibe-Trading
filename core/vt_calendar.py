@@ -294,9 +294,12 @@ def _check_contract_spread(symbol: str) -> float:
 
 
 # Rolagem: quantos dias úteis antes do vencimento o contrato atual deixa de ser
-# "viável" e deve ser trocado. Com ROLL_DAYS=2, o contrato atual é mantido
-# enquanto tiver > 2 dias úteis até o vencimento (e mantiver liquidez) — elimina
-# a rolagem prematura (ex: trocar um contrato com 44 dias de vida).
+# "seguro" e deve ser trocado. Com ROLL_DAYS=2, assim que restam ≤ 2 dias úteis
+# até o vencimento (ou o contrato vence), o resolver migra DIRETO para o próximo
+# contrato do calendário — sem olhar spread/liquidez/stabilidade para DECIDIR a
+# rolagem. O gatilho é puramente o calendário (Bruno 31/08: "assim que tivermos
+# 2 dias para vencer o contrato o sistema migra automaticamente para o próximo,
+# se venceu migra, não olha nada, seja direto").
 ROLL_DAYS = 2
 
 
@@ -304,19 +307,21 @@ def resolve_symbol(symbol_root: str, force_check: bool = False) -> str:
     """
     Resolve automaticamente o contrato vigente para o symbol_root.
 
-    Hierarquia de decisão (determinística e estável — elimina a divergência
-    config↔runtime e a rolagem prematura):
+    Regra DIRETA (Bruno 31/08): assim que restam ≤ ROLL_DAYS dias úteis até o
+    vencimento do contrato atual (ou ele vence), migra para o PRÓXIMO contrato
+    do calendário. O gatilho da rolagem é puramente o calendário — NÃO olha
+    spread/liquidez/stabilidade para decidir se rola.
 
-      1. ESTABILIDADE: se o contrato ATUAL está líquido (spread < 999 no MT5)
-         com > ROLL_DAYS dias úteis até o vencimento, MANTÉM o atual.
-      2. ROLAGEM: escolhe o candidato mais próximo com liquidez real.
-         Meses candidatos dependem da regra do ativo (EXPIRY_RULES):
-         - WIN/IND (bimonthly): meses pares G/J/M/Q/V/Z (quarta ~dia 15)
-         - WDO/DOL (first_bday): todos os meses (1º dia útil do mês)
-         - BIT/WSP (monthly): todos os meses (último dia útil do mês)
-         Sempre o vencimento mais próximo (NÃO o de menor spread) —
-         determinístico e respeita a progressão natural do contrato.
-      3. Fallback: mantém o atual se nada líquido foi encontrado.
+    Seleção do próximo: varre os candidatos em ordem de vencimento (front→back)
+    e pega o primeiro com > ROLL_DAYS dias úteis restantes (evita pular pra outro
+    contrato que também está prestes a vencer). Entre esses, prefere o que tem
+    cotação real no MT5 (bid>0) para não operar um ticker morto; se nenhum
+    cotar, usa o próximo do calendário mesmo assim (direto, sem travar).
+
+    Meses candidatos por regra do ativo (EXPIRY_RULES):
+      - WIN/IND (bimonthly): meses pares G/J/M/Q/V/Z (quarta ~dia 15)
+      - WDO/DOL (first_bday): todos os meses (1º dia útil do mês)
+      - BIT/WSP (monthly): todos os meses (último dia útil do mês)
 
     Retorna o código do contrato (ex: WINV26, WDOU26, INDM26).
     """
@@ -329,7 +334,7 @@ def resolve_symbol(symbol_root: str, force_check: bool = False) -> str:
     today = date.today()
     rule = EXPIRY_RULES.get(symbol_root, "monthly")
 
-    # ─── Meses candidatos (ordem de vencimento) ───
+    # ─── Meses candidatos (ordem de vencimento, front → back) ───
     months = sorted(WIN_MONTHS.keys()) if rule == "bimonthly" else list(range(1, 13))
     max_candidates = 4 if rule == "bimonthly" else 6
     candidates: list[tuple[int, int]] = []
@@ -342,7 +347,7 @@ def resolve_symbol(symbol_root: str, force_check: bool = False) -> str:
             break
 
     def _info(m: int, y: int) -> dict | None:
-        """Contrato + vencimento + dias úteis + spread real (MT5) de (mês, ano)."""
+        """Contrato + vencimento + dias úteis de (mês, ano)."""
         contract = _make_contract_code(symbol_root, m, y)
         try:
             expiry = get_contract_expiry(symbol_root, m, y)
@@ -354,37 +359,35 @@ def resolve_symbol(symbol_root: str, force_check: bool = False) -> str:
             check += timedelta(days=1)
             if is_trading_day(check)[0]:
                 days_util += 1
-        spread = _check_contract_spread(contract)
         return {
             "contract": contract, "month": m, "year": y,
-            "expiry": expiry, "days_util": days_util, "spread": spread,
+            "expiry": expiry, "days_util": days_util,
         }
 
-    # ─── 1. ESTABILIDADE: honrar o config enquanto o contrato é viável ───
-    # Só saímos do contrato atual quando ele está a ≤ ROLL_DAYS dias úteis do
-    # vencimento OU perdeu liquidez (spread = 999). Isto elimina a divergência
-    # config↔runtime e a rolagem prematura.
+    # ─── 1. CONTRATO ATUAL: mantém só enquanto é seguro (> ROLL_DAYS dias) ───
+    # Assim que restam ≤ ROLL_DAYS dias úteis (ou o contrato venceu), cai na
+    # rolagem abaixo. Decisão puramente por calendário.
     if current:
         _, cur_m, cur_y = _parse_contract_code(current)
         if cur_m:
             cur = _info(cur_m, cur_y)
-            if cur and cur["spread"] < 999 and cur["days_util"] > ROLL_DAYS:
+            if cur and cur["days_util"] > ROLL_DAYS:
                 return current
 
-    # ─── 2. ROLAGEM: candidato mais próximo com liquidez ───
-    viable = [c for c in (_info(m, y) for m, y in candidates)
-              if c and c["spread"] < 999 and c["days_util"] > 0]
-    viable.sort(key=lambda c: c["expiry"])
-    if viable:
-        return viable[0]["contract"]
-
-    # ─── 3. Fallback final: nada líquido encontrado ───
-    if current:
-        return current
-    if candidates:
-        m, y = candidates[0]
-        return _make_contract_code(symbol_root, m, y)
-    return current or symbol_root
+    # ─── 2. MIGRAÇÃO: próximo contrato seguro do calendário ───
+    infos = [c for c in (_info(m, y) for m, y in candidates) if c]
+    infos.sort(key=lambda c: c["expiry"])
+    # Só contratos ainda seguros (> ROLL_DAYS dias) entram na seleção — evita
+    # pular pra outro contrato que também está prestes a vencer.
+    safe = [c for c in infos if c["days_util"] > ROLL_DAYS]
+    pool = safe or [c for c in infos if c["days_util"] > 0] or infos
+    if not pool:
+        return current or symbol_root
+    # Prefere o primeiro com cotação real (bid>0); senão, o primeiro do pool.
+    for c in pool:
+        if _check_contract_spread(c["contract"]) < 999:
+            return c["contract"]
+    return pool[0]["contract"]
 
 
 def _check_contract_liquidity(symbol: str) -> bool:
