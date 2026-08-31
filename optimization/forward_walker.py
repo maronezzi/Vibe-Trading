@@ -74,6 +74,11 @@ SIM_MAGIC = 555599  # reservado pra forward sims
 # backfill nunca contamina o sinal shadow do pregão atual.
 BACKFILL_TABLE = "forward_backfill_trades"
 
+# run_id do processo live (setado no main() antes do walker_loop). Cada walker
+# live grava a própria partição — o gap-fill do cron deixa de ser indistinguível
+# do PROD na mesma tabela (bug 31/08: 8 sinais WINZ26/M15 escritos 2x).
+_LIVE_RUN_ID: str | None = None
+
 # Telegram target — espelha scripts/check_symbols_active.py:155 e core/vt_autotrader.py:724
 TELEGRAM_TARGET = os.environ.get(
     "VT_TELEGRAM_TARGET", "telegram:-1004284773048"
@@ -111,12 +116,27 @@ CREATE INDEX IF NOT EXISTS idx_fwd_sym_tf ON {SIM_TABLE}(symbol, timeframe);
 CREATE INDEX IF NOT EXISTS idx_fwd_entry ON {SIM_TABLE}(entry_time);
 """
 
+# Wave 885 (2026-08-31): colunas novas do live (migração idempotente no
+# ensure_schema, pois a tabela já existe no DB de produção):
+#   - run_id: cada processo walker grava a própria partição (gap-fill do cron
+#     rodava no MESMO pregão sem run_id → 2 walkers escreviam o mesmo sinal
+#     2x em forward_sim_trades e o stage6 do AGI lia o shadow inflado).
+#   - signal_bar_ts: epoch do candle fechado que gerou o sinal — identidade
+#     estável entre walkers (entry_time virou relógio local, ver Fix entry_time)
+#     e chave do skip-if-exists anti-dupla-escrita.
+SIM_COLUMNS_NEW = ("run_id", "signal_bar_ts")
+
 
 def ensure_schema() -> None:
     """Cria a tabela forward_sim_trades se não existir. Idempotente."""
     con = sqlite3.connect(str(TRADES_DB))
     try:
         con.executescript(SCHEMA_SQL)
+        cols = {r[1] for r in con.execute(f"PRAGMA table_info({SIM_TABLE})")}
+        for _col in SIM_COLUMNS_NEW:
+            if _col not in cols:
+                con.execute(f"ALTER TABLE {SIM_TABLE} ADD COLUMN {_col} "
+                            f"{'TEXT' if _col == 'run_id' else 'INTEGER'}")
         con.commit()
     finally:
         con.close()
@@ -210,6 +230,9 @@ class SimPosition:
     tp1_volume_closed: float = 0.0     # volume já fechado no TP1
     remaining_volume: float = 0.0       # volume restante após TP1
     original_volume: float = 0.0        # volume original (imutável, base do TP1)
+    # epoch do candle fechado que gerou o sinal — identidade do sinal p/ dedupe
+    # (2 walkers no mesmo pregão) e init do last_bar_ts. 0 = legado/backfill sem ts.
+    signal_bar_ts: int = 0
     last_bar_ts: int = 0  # epoch do último candle que processamos (pra detectar novo candle)
     notes: str = ""
 
@@ -217,7 +240,7 @@ class SimPosition:
         self.ticket = f"SIM-{int(time.time() * 1000)}-{self.symbol}-{self.timeframe}"
         self.highest = self.entry_price
         self.lowest = self.entry_price
-        self.last_bar_ts = int(self.entry_time.timestamp())
+        self.last_bar_ts = self.signal_bar_ts or int(self.entry_time.timestamp())
         # TP1 state init (espelha autotrader manage_position:2523)
         self.original_volume = self.volume
         self.remaining_volume = self.volume
@@ -510,7 +533,7 @@ class WalkerState:
 def open_sim_position(state: WalkerState, symbol: str, tf: str, strategy: str,
                       direction: str, price: float, sl_pts: float,
                       entry_time: datetime, atr: float, params: dict,
-                      signal_detail: dict) -> SimPosition:
+                      signal_detail: dict, bar_ts: int = 0) -> SimPosition:
     root = symbol_root_of(symbol)
     pos = SimPosition(
         symbol=symbol,
@@ -544,6 +567,7 @@ def open_sim_position(state: WalkerState, symbol: str, tf: str, strategy: str,
         # default=str: estratégias podem botar datetime/Decimal no info
         # (crash real no backfill 16/08 — json.dumps levanta TypeError).
         notes=json.dumps(signal_detail, ensure_ascii=False, default=str)[:500],
+        signal_bar_ts=bar_ts,
     )
     state.positions[(symbol, tf)] = pos
     state.total_signals_executed += 1
@@ -553,13 +577,32 @@ def open_sim_position(state: WalkerState, symbol: str, tf: str, strategy: str,
 def close_sim_position(con: sqlite3.Connection, pos: SimPosition,
                        exit_price: float, exit_reason: str, exit_time: datetime,
                        bars_held: int, table: str = SIM_TABLE,
-                       run_id: str | None = None) -> dict:
+                       run_id: str | None = None) -> dict | None:
     """Calcula PnL (composição TP1 + restante) e grava no DB. Retorna dict com métricas.
 
-    table/run_id: backfill grava em forward_backfill_trades com run_id;
-    live usa os defaults (forward_sim_trades, sem run_id) — comportamento
-    do path live é inalterado.
+    table/run_id: backfill grava em forward_backfill_trades com o run_id
+    explícito do replay; live grava em forward_sim_trades com _LIVE_RUN_ID
+    (Wave 885: antes o live gravava sem run_id — 2 walkers no mesmo pregão
+    duplicavam sinais e o stage6 do AGI lia o shadow inflado).
+
+    Wave 885: no live, skip-if-exists por (symbol, tf, strategy, direction,
+    signal_bar_ts) — o 2º walker que processar o MESMO candle de sinal não
+    re-escreve o trade. Retorna None quando pula o INSERT (dup detectada).
     """
+    if table == SIM_TABLE and pos.signal_bar_ts:
+        _dup = con.execute(
+            f"""SELECT 1 FROM {table}
+                WHERE symbol=? AND timeframe=? AND strategy=? AND direction=?
+                  AND signal_bar_ts=? LIMIT 1""",
+            (pos.symbol, pos.timeframe, pos.strategy, pos.direction,
+             pos.signal_bar_ts),
+        ).fetchone()
+        if _dup:
+            print(f"  [SKIP-DUP] {pos.symbol}/{pos.timeframe} {pos.direction} "
+                  f"sinal_bar_ts={pos.signal_bar_ts} já registrado — INSERT ignorado")
+            return None
+    if run_id is None and table == SIM_TABLE:
+        run_id = _LIVE_RUN_ID
     if pos.direction == "BUY":
         gross_pts_remaining = exit_price - pos.entry_price
     else:
@@ -576,10 +619,14 @@ def close_sim_position(con: sqlite3.Connection, pos: SimPosition,
         fees_brl += pos.tp1_volume_closed * fees_per_leg * 2
     net_brl = pos.tp1_profit_brl + gross_brl_remaining - fees_brl
 
-    # Colunas de run_id só existem na tabela de backfill
-    cols_extra = ", run_id" if run_id is not None else ""
-    vals_extra = ", ?" if run_id is not None else ""
-    params_extra = [run_id] if run_id is not None else []
+    # run_id: live e backfill gravam a partição do processo. signal_bar_ts só
+    # existe no schema live (backfill dedupliza por DELETE run_id prévio).
+    ts_extra = ", signal_bar_ts" if table == SIM_TABLE else ""
+    ts_val = ", ?" if table == SIM_TABLE else ""
+    ts_param = [pos.signal_bar_ts] if table == SIM_TABLE else []
+    cols_extra = f"{ts_extra}, run_id" if run_id is not None else ts_extra
+    vals_extra = f"{ts_val}, ?" if run_id is not None else ts_val
+    params_extra = ts_param + ([run_id] if run_id is not None else [])
     con.execute(
         f"""INSERT INTO {table}
             (entry_ticket, symbol, timeframe, strategy, direction, volume,
@@ -610,17 +657,38 @@ def close_sim_position(con: sqlite3.Connection, pos: SimPosition,
 
 
 def compute_forward_metrics(con: sqlite3.Connection) -> dict:
-    """Métricas forward-only — só conta sims FECHADAS."""
+    """Métricas forward-only — só conta sims FECHADAS.
+
+    Wave 31/08: base das métricas virou net_pnl_brl (antes era gross_pnl_pts —
+    o [FINAL] reportava WR/PF/totais em pontos brutos, ignorando fees/TP1).
+    Dedupe por identidade do sinal: (symbol, tf, strategy, direction,
+    signal_bar_ts); linhas legadas sem signal_bar_ts caem na chave
+    (entry_time minuto, entry_price) — cobre os dups do gap-fill de 31/08.
+    """
     rows = list(con.execute(
         f"""SELECT symbol, timeframe, strategy, direction,
-                   gross_pnl_pts, net_pnl_brl, exit_reason
+                   gross_pnl_pts, net_pnl_brl, exit_reason,
+                   signal_bar_ts, entry_time, entry_price
             FROM {SIM_TABLE}
             WHERE exit_time IS NOT NULL
-              AND date(created_at) = date('now', 'localtime')"""
+              AND date(created_at) = date('now', 'localtime')
+            ORDER BY id"""
     ))
     if not rows:
         return {"n": 0}
-    pnls = [r[4] for r in rows]
+    seen: set = set()
+    pnls = []
+    for r in rows:
+        sym, tf, strat, direction, _gpts, net, _reason, bar_ts, entry_time, entry_price = r
+        if bar_ts:
+            sig_key = (sym, tf, strat, direction, "bar", bar_ts)
+        else:
+            sig_key = (sym, tf, strat, direction, "legacy",
+                       str(entry_time)[:16], round(entry_price or 0.0, 6))
+        if sig_key in seen:
+            continue
+        seen.add(sig_key)
+        pnls.append(net or 0.0)
     wins = sum(1 for p in pnls if p > 0)
     losses = sum(1 for p in pnls if p < 0)
     n = len(pnls)
@@ -637,7 +705,7 @@ def compute_forward_metrics(con: sqlite3.Connection) -> dict:
         sharpe = (mean / std) * math.sqrt(252) if std > 0 else 0
     else:
         sharpe = 0
-    # Max DD (corrido, em pts)
+    # Max DD (corrido, em R$ líquidos)
     cum = 0
     peak = 0
     max_dd = 0
@@ -650,7 +718,7 @@ def compute_forward_metrics(con: sqlite3.Connection) -> dict:
             max_dd = dd
     return {
         "n": n, "wins": wins, "losses": losses, "wr": wr, "pf": pf,
-        "total_pts": total, "sharpe": sharpe, "max_dd_pts": max_dd,
+        "total_brl": total, "sharpe": sharpe, "max_dd_brl": max_dd,
     }
 
 
@@ -666,16 +734,31 @@ def print_report(state: WalkerState, con: sqlite3.Connection, label: str,
     print(f"  n={m.get('n', 0)} wins={m.get('wins', 0)} losses={m.get('losses', 0)} "
           f"WR={m.get('wr', 0) * 100:.1f}% PF={m.get('pf', 0):.2f} "
           f"Sharpe={m.get('sharpe', 0):.2f}")
-    print(f"  total_pts={m.get('total_pts', 0):+.0f} max_dd_pts={m.get('max_dd_pts', 0):+.0f}")
+    print(f"  total_brl={m.get('total_brl', 0):+.2f} "
+          f"max_dd_brl={m.get('max_dd_brl', 0):+.2f}")
     # por par com WR + recomendação
     by_pair: dict[str, dict] = {}
     for r in con.execute(
         f"""SELECT symbol, timeframe, strategy, COUNT(*),
                    SUM(net_pnl_brl), AVG(gross_pnl_pts),
                    SUM(CASE WHEN net_pnl_brl > 0 THEN 1 ELSE 0 END) AS wins
-            FROM {SIM_TABLE}
-            WHERE exit_time IS NOT NULL
-              AND date(created_at) = date('now', 'localtime')
+            FROM {SIM_TABLE} t
+            WHERE t.exit_time IS NOT NULL
+              AND date(t.created_at) = date('now', 'localtime')
+              AND t.id = (
+                  SELECT MIN(t2.id) FROM {SIM_TABLE} t2
+                  WHERE t2.exit_time IS NOT NULL
+                    AND date(t2.created_at) = date('now', 'localtime')
+                    AND t2.symbol = t.symbol AND t2.timeframe = t.timeframe
+                    AND t2.strategy = t.strategy AND t2.direction = t.direction
+                    AND (
+                        (t.signal_bar_ts IS NOT NULL
+                         AND t2.signal_bar_ts = t.signal_bar_ts)
+                        OR (t.signal_bar_ts IS NULL AND t2.signal_bar_ts IS NULL
+                            AND substr(t2.entry_time, 1, 16) = substr(t.entry_time, 1, 16)
+                            AND abs(t2.entry_price - t.entry_price) < 0.0000001)
+                    )
+              )
             GROUP BY symbol, timeframe"""
     ):
         sym, tf, strat, n, pnl, avg_pts, wins = r
@@ -911,9 +994,10 @@ def walker_loop(args, state: WalkerState) -> None:
                                 res = close_sim_position(con, pos, exit_px, reason,
                                                           datetime.now(), pos.bars_held)
                                 con.commit()  # commit por close (não a cada poll)
-                                print(f"  [CLOSE] {symbol} {tf} {pos.direction} "
-                                      f"@{exit_px:.0f} reason={reason} "
-                                      f"pts={res['gross_pts']:+.0f} R$ {res['net_brl']:+.2f}")
+                                if res:
+                                    print(f"  [CLOSE] {symbol} {tf} {pos.direction} "
+                                          f"@{exit_px:.0f} reason={reason} "
+                                          f"pts={res['gross_pts']:+.0f} R$ {res['net_brl']:+.2f}")
                                 del state.positions[(symbol, tf)]
                             continue
 
@@ -974,10 +1058,16 @@ def walker_loop(args, state: WalkerState) -> None:
                             entry_sl_price = last_close - sl_pts * pv
                         else:
                             entry_sl_price = last_close + sl_pts * pv
+                        # Wave 885 fix: entry_time vira relógio local do walker — o
+                        # timestamp do candle chega ~3h atrasado do MT5 via Wine
+                        # (mesma defasagem do tick().time) e envenenava o held_min
+                        # (posição "nascia" com ~180min → hard_exit no 1º poll —
+                        # os 36/36 HARD_EXIT do relatório 31/08). O ts do candle
+                        # segue registrado em signal_bar_ts p/ dedupe/auditoria.
                         pos = open_sim_position(
                             state, symbol, tf, strategy_name, direction,
-                            last_close, sl_pts, last_bar_ts, atr, params,
-                            result.get("info", {}),
+                            last_close, sl_pts, datetime.now(), atr, params,
+                            result.get("info", {}), bar_ts=last_bar_ts_unix,
                         )
                         print(f"  [OPEN]  {symbol} {tf} {strategy_name} {direction} "
                               f"@{last_close:.0f} sl@{entry_sl_price:.0f} "
@@ -1185,7 +1275,7 @@ def backfill_pair(con: sqlite3.Connection, state: WalkerState, symbol: str,
         open_sim_position(
             state, symbol, tf, strategy_name, direction,
             closed["close"], sl_pts, closed_dt, atr, params,
-            result.get("info", {}),
+            result.get("info", {}), bar_ts=int(closed["time"]),
         )
         if direction == "BUY":
             entry_sl_price = closed["close"] - sl_pts * pv
@@ -1461,6 +1551,11 @@ def main() -> None:
             args.config_override = json.loads(args.config_override)
         run_backfill(args, state)
         return
+
+    # Partição deste processo live (Wave 885): run_id por walker — o
+    # gap-fill do cron deixa de escrever indistinguível do PROD na mesma tabela.
+    global _LIVE_RUN_ID
+    _LIVE_RUN_ID = f"live_{datetime.now():%Y%m%d_%H%M%S}_pid{os.getpid()}"
 
     walker_loop(args, state)
 
