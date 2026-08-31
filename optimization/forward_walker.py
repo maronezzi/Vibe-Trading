@@ -235,6 +235,13 @@ class SimPosition:
     signal_bar_ts: int = 0
     last_bar_ts: int = 0  # epoch do último candle que processamos (pra detectar novo candle)
     notes: str = ""
+    # ─── telemetria modo conta-real (lesson 05/08 §6.1) ───
+    decision_price: float = 0.0        # close do candle de sinal (antes do slippage)
+    entry_slippage_pts: float = 0.0    # fill - decisão (>0 = adverso)
+    entry_spread_pts: float | None = None  # bid-ask no tick da entrada
+    exit_spread_pts: float | None = None   # bid-ask no tick da saída
+    sl_mods_rejected: int = 0          # modifies que a conta REAL rejeitaria (stop level)
+    tp1_skipped_fractional: bool = False  # TP1 pulado por volume fracionário (C3)
 
     def __post_init__(self):
         self.ticket = f"SIM-{int(time.time() * 1000)}-{self.symbol}-{self.timeframe}"
@@ -282,14 +289,27 @@ class SimPosition:
         if low < self.lowest:
             self.lowest = low
 
-    def _set_sl_price(self, new_sl_price: float) -> bool:
+    def _set_sl_price(self, new_sl_price: float,
+                      current_price: float | None = None) -> bool:
         """Move current_sl_pts pra fazer SL = new_sl_price (se melhorar o lock).
 
         Convenção signed (espelhada de autotrader:2741-2745):
           sl_pts signed: positivo=abaixo entry (loss), negativo=acima entry (profit lock).
           BUY: novo SL acima do atual = melhor.
           SELL: novo SL abaixo do atual = melhor.
+
+        Modo conta-real (lesson 05/08 C1): se a distância do SL novo ao PREÇO
+        ATUAL fica abaixo do stop level simulado do contrato, a conta REAL
+        rejeitaria o modify (INVALID_STOPS) — aqui rejeita igual, mantém o SL
+        anterior e contabiliza em sl_mods_rejected.
         """
+        _cur = current_price
+        if _cur is None:
+            _cur = self.highest if self.direction == "BUY" else self.lowest
+        _stop = stop_level_pts(symbol_root_of(self.symbol))
+        if _stop > 0 and _cur > 0 and abs(_cur - new_sl_price) < _stop:
+            self.sl_mods_rejected += 1
+            return False
         if self.direction == "BUY":
             if new_sl_price <= self.current_sl_price:
                 return False
@@ -320,6 +340,14 @@ class SimPosition:
             return False
         # Fração do volume original a fechar (mesma fórmula do autotrader:2527-2530)
         close_volume = self.original_volume * self.tp1_pct
+        # Modo conta-real (lesson 05/08 C3): B3 exige volume inteiro (volume_step
+        # = 1 contrato nos minis). TP1 de 0.5 contrato = "Invalid volume" ×98 no
+        # dia real — espelha o guard _normalize_partial_volume do autotrader
+        # (Wave 880.B3): pula o TP1 e não tenta de novo.
+        if close_volume < 1.0:
+            self.tp1_done = True
+            self.tp1_skipped_fractional = True
+            return False
         actual_close = min(close_volume, self.remaining_volume)
         if actual_close <= 0:
             self.tp1_done = True  # idempotente
@@ -338,7 +366,8 @@ class SimPosition:
         self.tp1_done = True
         return True
 
-    def apply_trailing(self, atr: float, held_minutes: float) -> None:
+    def apply_trailing(self, atr: float, held_minutes: float,
+                       current_price: float | None = None) -> None:
         """Replica EXATAMENTE manage_position (vt_autotrader.py:2628-2750).
 
         Ordem:
@@ -348,6 +377,9 @@ class SimPosition:
           4. TRAILING STOP — aplica novo SL se trail_on (linha 2693-2714)
              - Após max_position_minutes, trail agressivo (0.3x ATR)
              - Pós-TP1, usa atr_trail_mult (mais apertado, linha 2577)
+
+        current_price: close do candle em formação — usado pela simulação de
+        stop level (modify mais perto que o stop level = rejeitado, lesson C1).
         """
         self.current_atr = atr
         if atr <= 0:
@@ -374,7 +406,7 @@ class SimPosition:
                     be_price = self.entry_price + cost_pts * self.point_val
                 else:
                     be_price = self.entry_price - cost_pts * self.point_val
-                if self._set_sl_price(be_price):
+                if self._set_sl_price(be_price, current_price):
                     self.breakeven_applied = True
 
         # ===== TIME-BASED TRAILING (autotrader:2664-2668) =====
@@ -397,7 +429,7 @@ class SimPosition:
                 new_sl = self.highest - trail_dist
             else:
                 new_sl = self.lowest + trail_dist
-            self._set_sl_price(new_sl)
+            self._set_sl_price(new_sl, current_price)
 
     def check_exit(self, bar: dict, held_minutes: float) -> tuple[bool, str, float]:
         """Retorna (should_exit, reason, exit_price).
@@ -482,6 +514,54 @@ def symbol_root_of(symbol: str) -> str:
         if root in symbol:
             return root
     return "WIN"
+
+
+# ─── modo conta-real (docs/lesson_learning_2026-08-05.md, §6.1) ───────────────
+# A demo aceita modify de SL a poucos pontos do preço; a conta REAL rejeita
+# (INVALID_STOPS ×155 no dia 05/08 — o dia inteiro sem trailing/breakeven).
+# O walker SIMULA o stop level: modify com distância menor = rejeitado e
+# contabilizado, exatamente o que a real faria. Valores em PTS DE PREÇO.
+# ESTIMATIVAS do lesson §5.1.1 — confirmar com a XP e ajustar aqui.
+# Override opcional em vt_config.json: "stop_level_sim_pts": {"WIN": 300, ...}
+STOP_LEVEL_SIM_PTS = {
+    "WIN": 300.0, "IND": 300.0, "WDO": 200.0, "DOL": 200.0,
+    "BIT": 500.0, "WSP": 200.0,
+}
+
+
+def stop_level_pts(root: str) -> float:
+    """Stop level simulado (pts de preço) para a raiz; override via config."""
+    override = CONFIG.get("stop_level_sim_pts") or {}
+    try:
+        return float(override.get(root, STOP_LEVEL_SIM_PTS.get(root, 0.0)))
+    except (TypeError, ValueError):
+        return STOP_LEVEL_SIM_PTS.get(root, 0.0)
+
+
+def capture_spread(symbol: str) -> float | None:
+    """Spread bid-ask no tick atual (pts de preço) — read-only via orchestrator.
+
+    Telemetria modo conta-real (lesson §6.1: spread real > demo). None =
+    indisponível (Wine lento/off) — nunca levanta.
+    """
+    try:
+        from mt5 import mt5_orchestrator as _orch  # type: ignore
+        _t = _orch.tick(symbol)
+        if isinstance(_t, dict) and _t.get("bid") and _t.get("ask"):
+            return round(float(_t["ask"]) - float(_t["bid"]), 5)
+    except Exception:
+        pass
+    return None
+
+
+# Journal operacional diário — fonte da auditoria LLM "demo opera como a real?".
+JOURNAL_DIR = ROOT / "data" / "forward_journal"
+
+
+def journal_paths(day: str | None = None) -> tuple[Path, Path]:
+    """Par (jsonl, md) do journal do dia (YYYY-MM-DD)."""
+    _d = day or datetime.now().strftime("%Y-%m-%d")
+    return (JOURNAL_DIR / f"operacao_{_d}.jsonl", JOURNAL_DIR / f"resumo_{_d}.md")
 
 
 def resolve_contract(symbol_or_root: str) -> str:
@@ -648,12 +728,163 @@ def close_sim_position(con: sqlite3.Connection, pos: SimPosition,
             fees_brl, net_brl, bars_held, pos.notes,
         ) + tuple(params_extra),
     )
-    return {
+    res = {
         "symbol": pos.symbol, "tf": pos.timeframe, "strategy": pos.strategy,
         "direction": pos.direction, "gross_pts": gross_pts_remaining,
         "net_brl": net_brl, "bars_held": bars_held, "reason": exit_reason,
         "tp1_brl": pos.tp1_profit_brl, "tp1_volume_closed": pos.tp1_volume_closed,
+        "exit_price": exit_price, "fees_brl": fees_brl,
+        # telemetria modo conta-real (journal/auditoria LLM)
+        "decision_price": pos.decision_price,
+        "entry_slippage_pts": pos.entry_slippage_pts,
+        "entry_spread_pts": pos.entry_spread_pts,
+        "exit_spread_pts": pos.exit_spread_pts,
+        "sl_mods_rejected": pos.sl_mods_rejected,
+        "tp1_skipped_fractional": pos.tp1_skipped_fractional,
     }
+    if table == SIM_TABLE:
+        try:
+            _journal_append(con, pos, res, exit_price, run_id)
+        except Exception as _je:
+            print(f"  [JOURNAL] falhou: {_je}")
+    return res
+
+
+# ─── journal operacional (modo conta-real — lesson_learning 05/08 §6.1) ───────
+def _match_live_counterpart(con: sqlite3.Connection,
+                            pos: SimPosition) -> dict | None:
+    """Trade LIVE correspondente ao sim (mesmo par/TF/direção, entrada ±15min).
+
+    Base do audit "a demo operou como pensamos?": compara o net do sim com o
+    net_pnl REAL do daemon para o mesmo sinal. None = live não operou o sinal
+    (divergência de decisão — registrada como tal no journal).
+    """
+    try:
+        _et = pos.entry_time.isoformat(sep=" ", timespec="seconds")
+        row = con.execute(
+            """SELECT entry_ticket, round(net_pnl, 2), entry_time, close_source
+               FROM trades
+               WHERE symbol=? AND timeframe=? AND direction=?
+                 AND abs(julianday(entry_time) - julianday(?)) * 1440 <= 15
+               ORDER BY abs(julianday(entry_time) - julianday(?))
+               LIMIT 1""",
+            (pos.symbol, pos.timeframe, pos.direction, _et, _et),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    return {"ticket": row[0], "net_pnl": row[1], "entry_time": row[2],
+            "close_source": row[3]}
+
+
+def _journal_append(con: sqlite3.Connection, pos: SimPosition, res: dict,
+                    exit_price: float, run_id: str | None) -> None:
+    """Append 1 linha JSONL no journal do dia (telemetria modo conta-real)."""
+    JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+    _jsonl, _ = journal_paths()
+    live = _match_live_counterpart(con, pos)
+    if live is not None:
+        live["delta_brl"] = round(res["net_brl"] - float(live["net_pnl"] or 0.0), 2)
+    rec = {
+        "ts": datetime.now().isoformat(sep=" ", timespec="seconds"),
+        "run_id": run_id,
+        "symbol": pos.symbol, "tf": pos.timeframe, "strategy": pos.strategy,
+        "direction": pos.direction,
+        "decision_price": pos.decision_price, "fill_price": pos.entry_price,
+        "entry_slippage_pts": pos.entry_slippage_pts,
+        "entry_spread_pts": pos.entry_spread_pts,
+        "exit_spread_pts": pos.exit_spread_pts,
+        "entry_time": pos.entry_time.isoformat(sep=" ", timespec="seconds"),
+        "exit_reason": res["reason"], "exit_price": exit_price,
+        "net_brl": res["net_brl"], "fees_brl": res["fees_brl"],
+        "bars_held": res["bars_held"],
+        "sl_mods_rejected": pos.sl_mods_rejected,
+        "tp1_skipped_fractional": pos.tp1_skipped_fractional,
+        "tp1_brl": res["tp1_brl"],
+        "live_counterpart": live,
+    }
+    with open(_jsonl, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+
+
+def write_daily_summary(con: sqlite3.Connection) -> Path | None:
+    """Resumo MD do journal do dia — entrada da auditoria LLM no fw-report.
+
+    Agrega o jsonl do dia: slippage/spread, rejeições de modify por stop
+    level, TP1 pulados, distribuição de saídas e divergências sim vs live.
+    Sobrescreve o resumo do dia (estado final). None = sem trades hoje.
+    """
+    _jsonl, _md = journal_paths()
+    if not _jsonl.exists():
+        return None
+    recs = []
+    with open(_jsonl, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    recs.append(json.loads(line))
+                except ValueError:
+                    continue
+    if not recs:
+        return None
+
+    def _avg(vals):
+        vals = [v for v in vals if v is not None]
+        return round(sum(vals) / len(vals), 2) if vals else None
+
+    slips = [r.get("entry_slippage_pts") for r in recs]
+    spreads_in = [r.get("entry_spread_pts") for r in recs]
+    spreads_out = [r.get("exit_spread_pts") for r in recs]
+    rejected = sum(int(r.get("sl_mods_rejected") or 0) for r in recs)
+    tp1_skips = sum(1 for r in recs if r.get("tp1_skipped_fractional"))
+    reasons: dict[str, int] = {}
+    for r in recs:
+        reasons[r["exit_reason"]] = reasons.get(r["exit_reason"], 0) + 1
+    matched = [r for r in recs if r.get("live_counterpart")]
+    deltas = [r["live_counterpart"]["delta_brl"] for r in matched]
+    total_net = round(sum(r["net_brl"] for r in recs), 2)
+
+    anomalies = []
+    if len(recs) and reasons.get("HARD_EXIT", 0) / len(recs) > 0.5:
+        anomalies.append(f"HARD_EXIT domina ({reasons.get('HARD_EXIT', 0)}/{len(recs)}) — gestão de tempo vencida")
+    if rejected:
+        anomalies.append(f"{rejected} modify(s) de SL seriam REJEITADOS na conta real (stop level simulado) — a gestão esperada difere da demo")
+    if tp1_skips:
+        anomalies.append(f"{tp1_skips} TP1 pulado(s) por volume fracionário (correto na B3; não contabilizar como lucro perdido)")
+    adverse = [s for s in slips if s and s > 0]
+    if adverse and max(adverse) > 50:
+        anomalies.append(f"slippage adverso máx {max(adverse):.1f} pts — conferir fills reais do dia no log do daemon")
+
+    lines = [
+        f"# Journal de operação — {datetime.now():%Y-%m-%d} (modo conta-real)",
+        "",
+        f"- Trades simulados: **{len(recs)}** | net_brl somado: **R$ {total_net:+.2f}**",
+        f"- Slippage decisão→fill: média {_avg(slips)} pts | máx {max(slips) if slips else None} pts | adverso em {len(adverse)}/{len(slips)}",
+        f"- Spread entrada: {_avg(spreads_in)} pts (n={len(spreads_in)}) | saída: {_avg(spreads_out)} pts (n={len(spreads_out)})",
+        f"- Modifies de SL rejeitados pelo stop level simulado: **{rejected}**",
+        f"- TP1 pulados (volume fracionário): {tp1_skips}",
+        f"- Saídas: {reasons}",
+        f"- Contraparte live: {len(matched)}/{len(recs)} | delta sim−live médio: {_avg(deltas)} R$ | pior: {min(deltas) if deltas else None} R$",
+        "",
+    ]
+    if anomalies:
+        lines.append("## Anomalias (o que a conta REAL puniria)")
+        lines += [f"- {a}" for a in anomalies]
+        lines.append("")
+    lines.append("## Trades")
+    lines.append("| hora | par | dir | decisão | fill | slip pts | spread | saída | net R$ | rejects | live Δ |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    for r in recs:
+        live = r.get("live_counterpart") or {}
+        lines.append(
+            f"| {str(r.get('entry_time'))[11:16]} | {r['symbol']}/{r['tf']} | {r['direction']} "
+            f"| {r.get('decision_price')} | {r.get('fill_price')} | {r.get('entry_slippage_pts')} "
+            f"| {r.get('entry_spread_pts')} | {r['exit_reason']} | {r['net_brl']:+.2f} "
+            f"| {r.get('sl_mods_rejected')} | {live.get('delta_brl', '—')} |")
+    _md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return _md
 
 
 def compute_forward_metrics(con: sqlite3.Connection) -> dict:
@@ -982,7 +1213,8 @@ def walker_loop(args, state: WalkerState) -> None:
                             atr_now = vat.calculate_atr(bars, 14)
                             held_min = (datetime.now() - pos.entry_time).total_seconds() / 60
                             pos.update_extremes(current_bar)
-                            pos.apply_trailing(atr_now, held_min)
+                            pos.apply_trailing(atr_now, held_min,
+                                               current_price=current_bar.get("close"))
                             should_exit, reason, exit_px = pos.check_exit(current_bar, held_min)
                             # só conta novo bar se timestamp mudou
                             new_bar_ts = current_bar.get("time", 0)
@@ -991,6 +1223,7 @@ def walker_loop(args, state: WalkerState) -> None:
                                 pos.last_bar_ts = new_bar_ts
                                 state.total_bars_processed += 1
                             if should_exit:
+                                pos.exit_spread_pts = capture_spread(symbol)
                                 res = close_sim_position(con, pos, exit_px, reason,
                                                           datetime.now(), pos.bars_held)
                                 con.commit()  # commit por close (não a cada poll)
@@ -1054,21 +1287,27 @@ def walker_loop(args, state: WalkerState) -> None:
                         sl_pts = result["sl_pts"]
                         # entry_sl_price (pra log) — calcula via point_val
                         pv = POINT_VAL_MAP.get(root, 1.0)
+                        # Modo conta-real: fill simulado no OPEN do candle em
+                        # formação (bars[0]) — o 1º tick após a decisão — não no
+                        # close do candle de sinal (otimista demais vs real). O
+                        # slippage decisão→fill vai pro journal p/ auditoria LLM.
+                        fill_price = bars[0].get("open") or last_close
                         if direction == "BUY":
-                            entry_sl_price = last_close - sl_pts * pv
+                            entry_sl_price = fill_price - sl_pts * pv
                         else:
-                            entry_sl_price = last_close + sl_pts * pv
-                        # Wave 885 fix: entry_time vira relógio local do walker — o
-                        # timestamp do candle chega ~3h atrasado do MT5 via Wine
-                        # (mesma defasagem do tick().time) e envenenava o held_min
-                        # (posição "nascia" com ~180min → hard_exit no 1º poll —
-                        # os 36/36 HARD_EXIT do relatório 31/08). O ts do candle
-                        # segue registrado em signal_bar_ts p/ dedupe/auditoria.
+                            entry_sl_price = fill_price + sl_pts * pv
+                        # entry_time = relógio local (Wave 885): o ts do candle
+                        # chega ~3h atrasado do MT5 via Wine e envenenava o held_min.
                         pos = open_sim_position(
                             state, symbol, tf, strategy_name, direction,
-                            last_close, sl_pts, datetime.now(), atr, params,
+                            fill_price, sl_pts, datetime.now(), atr, params,
                             result.get("info", {}), bar_ts=last_bar_ts_unix,
                         )
+                        pos.decision_price = last_close
+                        pos.entry_slippage_pts = round(
+                            (fill_price - last_close) if direction == "BUY"
+                            else (last_close - fill_price), 5)
+                        pos.entry_spread_pts = capture_spread(symbol)
                         print(f"  [OPEN]  {symbol} {tf} {strategy_name} {direction} "
                               f"@{last_close:.0f} sl@{entry_sl_price:.0f} "
                               f"(atr={atr:.0f}, sl_pts={sl_pts:.0f}, pv={pv})")
@@ -1127,6 +1366,14 @@ def walker_loop(args, state: WalkerState) -> None:
                 send_telegram_summary(con, state, args, final.get("by_pair", {}))
             else:
                 print("[TELEGRAM] --no-telegram set, summary não enviado")
+            # Journal operacional do dia (modo conta-real) — entrada da
+            # auditoria LLM no fw-report (lesson_learning 05/08 §6.2).
+            try:
+                _md = write_daily_summary(con)
+                if _md:
+                    print(f"[JOURNAL] resumo operacional: {_md}")
+            except Exception as _je:
+                print(f"[JOURNAL] resumo diário falhou: {_je}")
         finally:
             con.close()
 

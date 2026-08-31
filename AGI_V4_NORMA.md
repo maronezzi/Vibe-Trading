@@ -633,3 +633,32 @@ Efeito no AGI: shadow signal do pregão passa a ser confiável a partir de
 01/09; calibrações do risk_calibrator sobre janelas antigas herdam os vícios
 (1)–(3) — reavaliar target/trava com alguns dias de dado limpo antes de
 novos ajustes finos.
+
+## 16. Wave 886 — modo conta-real no walker + journal de auditoria LLM (31/08/2026)
+
+Base: docs/lesson_learning_2026-08-05.md (+_matriz) — o 1º dia em conta REAL
+(XPMT5-PRD, −36,9% sem edge) provou que demo ≠ real em 3 pontos operacionais.
+O walker agora SIMULA os 3 e registra telemetria por trade:
+
+1. **Stop level simulado** (`STOP_LEVEL_SIM_PTS`, override config
+   `stop_level_sim_pts`): modify de SL mais perto do preço que o stop level =
+   REJEITADO e contado em `sl_mods_rejected` — é o que a real fez 155× no
+   dia 05/08. Estimativas (WIN 300, BIT 500, WDO/WSP 200 pts de preço) —
+   **confirmar com a XP** e atualizar.
+2. **TP1 fracionário pulado** (`tp1_skipped_fractional`): volume 1.0 × 0.5 =
+   inválido na B3 (C3). O live já tinha o guard (Wave 880.B3); o walker não —
+   agora sim, e o sim DEIXA DE CONTABILIZAR lucro de TP1 impossível.
+3. **Fill honesto + custos**: entrada filla no OPEN do candle em formação
+   (1º tick pós-decisão) e o slippage decisão→fill é medido; spread bid-ask
+   capturado no tick na entrada e na saída (`capture_spread`); fees 0.50/leg
+   continuam no net (a demo cobra ZERO — PnL demo é otimista vs real).
+
+**Journal** (`data/forward_journal/operacao_<dia>.jsonl` + `resumo_<dia>.md`):
+1 linha por trade com toda a telemetria + contraparte LIVE do mesmo sinal
+(mesmo par/TF/direção, ±15min) com Δ sim−live. O resumo MD alimenta a seção 9
+do fw-report (job Hermes 03b055c13731) — o LLM audita diariamente "a demo está
+operando como a real operaria?" ANTES da migração para a conta real.
+
+Estado da migração real (pós-05/08): correções C1–C6 verificadas no código em
+31/08 (recovery com trade_stops_level, guard entry_price=0, volume_step no TP1,
+hermes no PATH, kill switch −500). Sintomas daquele dia: 0 no pregão de 31/08.
