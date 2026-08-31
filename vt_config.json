@@ -1,7 +1,7 @@
 {
-  "_version": 1335,
-  "_updated_at": "2026-08-30T18:02:46.581484",
-  "_updated_by": "agi_v4_stage5",
+  "_version": 1337,
+  "_updated_at": "2026-08-31T17:21:17.729680",
+  "_updated_by": "agi_v4_risk_calibrator",
   "_notes": "auto-resolve vencimento: WIN: WINV26 → WINZ26",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
@@ -103,9 +103,9 @@
   "bars_count": 45,
   "resolved_symbols": {
     "WIN": "WINZ26",
-    "BIT": "BITQ26",
+    "BIT": "BITU26",
     "WSP": "WSPU26",
-    "WDO": "WDOU26"
+    "WDO": "WDOV26"
   },
   "warmup_minutes": 15,
   "winddown_minutes": 15,
@@ -585,11 +585,11 @@
     "degrade_disable_breakouts": true
   },
   "profit_lock_enabled": true,
-  "profit_lock_min_target": 250.0,
+  "profit_lock_min_target": 100.0,
   "profit_lock_target_mult": 1.0,
   "profit_lock_lookback_days": 7,
   "trailing_profit_lock_enabled": true,
-  "trailing_activation_pct": 0.7,
+  "trailing_activation_pct": 0.5,
   "trailing_floor_pct": 0.5,
   "_note_trailing_profit_lock": "Wave 1110 (23/07): Trailing Profit Lock — ratchet progressivo. Ativa em trailing_activation_pct do target, floor sobe linearmente de trailing_floor_pct×pico até 1.0×pico no target. Breach → fecha tudo + arma profit lock. Config: trailing_profit_lock_enabled, trailing_activation_pct, trailing_floor_pct.",
   "trailing_target_per_lot": 250.0,
