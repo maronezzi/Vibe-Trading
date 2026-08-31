@@ -598,3 +598,38 @@ Estudos feitos à mão (o que o Stage 4/LLM deveria saber quando voltar):
   W883_SQUEEZE_BREAK WIN_M30 +R$997; DONCHIAN_COMPRESS WIN_M30 +R$815~917).
   Arquivos ficam em `_pending/` (sandbox, gitignored) — o sweep das 12h testa,
   afina params por par e promove pelos gates normais do Stage 5.
+
+## 15. Wave 885 — shadow signal saneado: walker (dedupe, métricas, relógio) e gate NETTING (31/08/2026)
+
+Diagnóstico pós-pregão 31/08 (live +14t/+R$62,86, WIN destravado pela v-fix da
+Wave 883): o forward walker — fonte do shadow signal que stage6, risk_calibrator
+e swap_scorecard consomem — tinha TRÊS vícios estruturais, todos corrigidos:
+
+1. **Dupla escrita**: gap-fill e PROD escreviam na MESMA `forward_sim_trades`
+   sem run_id (31/08: 8 sinais WINZ26/M15 ×2, n=44 bruto vs 36 único; o AGI
+   leu o WIN em dobro no shadow das 12h/17h). Fix: colunas `run_id` (por
+   processo, migração idempotente no ensure_schema) + `signal_bar_ts` (epoch do
+   candle do sinal) + skip-if-exists no INSERT; métricas deduplicam linhas
+   legadas por (entry_time minuto, entry_price).
+2. **Métrica em pts brutos**: `compute_forward_metrics` media WR/PF/total sobre
+   `gross_pnl_pts` — o [FINAL] dizia WR 45,5% quando o net real era 13,9%. Fix:
+   base virou `net_pnl_brl` (total_brl/max_dd_brl).
+3. **Relógio envenenado (o pior)**: entry_time vinha do timestamp do candle MT5
+   via Wine (~3h atrasado — mesma defasagem do tick().time) → held_min nascia
+   ~180min → hard_exit no primeiro poll → **36/36 exits HARD_EXIT** e toda a
+   gestão de tempo das sims morta (WR 0% dos pares pode ser artefato disto).
+   Fix: entry_time = relógio local do walker; bar_ts preservado em
+   signal_bar_ts (dedupe/auditoria). IMPLICAÇÃO: amostras forward anteriores a
+   01/09 carregam gestão de tempo quebrada — peso baixo em decisões.
+
+Extra: gate NETTING do daemon (defesa anti-fantasma 20/08) agora confirma o
+fechamento via history por position_id (único caminho confiável no Wine) antes
+de "aguardar broker-truth" — saídas server-side registram no mesmo passe com
+close_source semântico, em vez de virar GHOST_RECONCILE do ciclo periódico.
+E o spec do job Hermes do walker (cron 09h) saiu da era v1093: raízes em vez
+de contratos hardcoded, forensics 7d gerada na hora, SQL do live PnL corrigido.
+
+Efeito no AGI: shadow signal do pregão passa a ser confiável a partir de
+01/09; calibrações do risk_calibrator sobre janelas antigas herdam os vícios
+(1)–(3) — reavaliar target/trava com alguns dias de dado limpo antes de
+novos ajustes finos.
