@@ -662,3 +662,20 @@ operando como a real operaria?" ANTES da migração para a conta real.
 Estado da migração real (pós-05/08): correções C1–C6 verificadas no código em
 31/08 (recovery com trade_stops_level, guard entry_price=0, volume_step no TP1,
 hermes no PATH, kill switch −500). Sintomas daquele dia: 0 no pregão de 31/08.
+
+**Atualização 31/08 ~23h30 — MEDIÇÃO na conta real** (login read-only com a
+credencial salva do terminal, XPMT5-PRD ao vivo): `trade_stops_level = 0` e
+`trade_freeze_level = 0` nos 4 contratos. As estimativas de 05/08 (WIN 300,
+BIT 500...) **estavam erradas** — defaults do walker zerados (Wave 887);
+o mecanismo fica pronto via config `stop_level_sim_pts`. O que a real
+realmente impõe é a **grade de tick** (WIN/IND 5, WDO/DOL 0.5, BIT 20,
+WSP 0.25 pts — `trade_tick_size`): o executor já alinha o SL no cmd_modify;
+o walker agora espelha o alinhamento. Releitura da causa das INVALID_STOPS
+×155 de 05/08: SL **fora da grade do tick** e **do lado errado do mercado**,
+ambos efeitos do bug entry_price=0 (C2, corrigido) — não de stop level.
+Incidente operacional da leitura: o ciclo real→demo deixou o terminal em
+authorization-failed (credencial salva da demo não sobreviveu à troca);
+resolvido restaurando `Config/accounts.dat.bak_prd_20260805` + boot frio —
+demo verificada por UI + orchestrator (52257579, R$1.000.580,23). Lição:
+trocar conta no terminal pode invalidar a credencial salva da anterior —
+sempre ter o accounts.dat.bak atualizado antes de qualquer troca.

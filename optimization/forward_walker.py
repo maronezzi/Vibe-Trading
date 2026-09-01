@@ -298,11 +298,13 @@ class SimPosition:
           BUY: novo SL acima do atual = melhor.
           SELL: novo SL abaixo do atual = melhor.
 
-        Modo conta-real (lesson 05/08 C1): se a distância do SL novo ao PREÇO
-        ATUAL fica abaixo do stop level simulado do contrato, a conta REAL
-        rejeitaria o modify (INVALID_STOPS) — aqui rejeita igual, mantém o SL
-        anterior e contabiliza em sl_mods_rejected.
+        Modo conta-real: alinha o SL à grade do tick (mesma normalização do
+        executor cmd_modify — SL fora da grade = INVALID_STOPS na real), depois
+        aplica o stop level simulado se houver (config; medido = 0 na XP).
         """
+        _tick = tick_size_pts(symbol_root_of(self.symbol))
+        if _tick > 0:
+            new_sl_price = round(round(new_sl_price / _tick) * _tick, 10)
         _cur = current_price
         if _cur is None:
             _cur = self.highest if self.direction == "BUY" else self.lowest
@@ -517,15 +519,17 @@ def symbol_root_of(symbol: str) -> str:
 
 
 # ─── modo conta-real (docs/lesson_learning_2026-08-05.md, §6.1) ───────────────
-# A demo aceita modify de SL a poucos pontos do preço; a conta REAL rejeita
-# (INVALID_STOPS ×155 no dia 05/08 — o dia inteiro sem trailing/breakeven).
-# O walker SIMULA o stop level: modify com distância menor = rejeitado e
-# contabilizado, exatamente o que a real faria. Valores em PTS DE PREÇO.
-# ESTIMATIVAS do lesson §5.1.1 — confirmar com a XP e ajustar aqui.
-# Override opcional em vt_config.json: "stop_level_sim_pts": {"WIN": 300, ...}
+# MEDIDO NA CONTA REAL (XPMT5-PRD 2257579, 31/08 22:5x, leitura read-only
+# symbol_info via scripts/read_stop_levels.py): trade_stops_level = 0 e
+# trade_freeze_level = 0 nos 4 contratos — o broker NÃO impõe distância mínima
+# de stop (as estimativas de 05/08 — WIN 300, BIT 500 — estavam erradas; as
+# rejeições INVALID_STOPS daquele dia vieram de SL fora da grade do tick e do
+# lado errado do mercado, ambas devida ao bug entry_price=0, já corrigido).
+# O mecanismo fica ligado via config ("stop_level_sim_pts") caso a XP imponha
+# níveis no futuro.
 STOP_LEVEL_SIM_PTS = {
-    "WIN": 300.0, "IND": 300.0, "WDO": 200.0, "DOL": 200.0,
-    "BIT": 500.0, "WSP": 200.0,
+    "WIN": 0.0, "IND": 0.0, "WDO": 0.0, "DOL": 0.0,
+    "BIT": 0.0, "WSP": 0.0,
 }
 
 
@@ -536,6 +540,25 @@ def stop_level_pts(root: str) -> float:
         return float(override.get(root, STOP_LEVEL_SIM_PTS.get(root, 0.0)))
     except (TypeError, ValueError):
         return STOP_LEVEL_SIM_PTS.get(root, 0.0)
+
+
+# Grade de tick por raiz (pts de PREÇO) — medida na real 31/08 (trade_tick_size):
+# WIN/IND 5.0, WDO/DOL 0.5, BIT 20.0, WSP 0.25. O daemon ALINHA o SL à grade
+# antes do modify (mt5_executor.cmd_modify, "evita Invalid stops"); o walker
+# espelha o alinhamento p/ que os preços de SL das sims sejam os mesmos da real.
+TICK_SIZE_PTS = {
+    "WIN": 5.0, "IND": 5.0, "WDO": 0.5, "DOL": 0.5,
+    "BIT": 20.0, "WSP": 0.25,
+}
+
+
+def tick_size_pts(root: str) -> float:
+    """Tamanho do tick (pts de preço) para a raiz; fallback 0 = sem grade."""
+    override = CONFIG.get("tick_size_pts") or {}
+    try:
+        return float(override.get(root, TICK_SIZE_PTS.get(root, 0.0)))
+    except (TypeError, ValueError):
+        return TICK_SIZE_PTS.get(root, 0.0)
 
 
 def capture_spread(symbol: str) -> float | None:
