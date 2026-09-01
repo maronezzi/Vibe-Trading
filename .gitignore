@@ -165,3 +165,4 @@ data/super_agi_v5_*/
 
 # Debug leftover (importa o daemon/MT5 se executado — não versionar)
 tmp_bitcheck.py
+data/forward_journal/
