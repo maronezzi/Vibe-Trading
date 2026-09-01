@@ -360,7 +360,7 @@ class SimPosition:
             tp1_pnl_pts = (actual_close / max(0.001, self.original_volume)) * profit_pts_total
         else:
             tp1_pnl_pts = 0.0
-        multiplier = CONFIG.get("multiplier", 0.20)
+        multiplier = _mult_for(self.symbol)
         tp1_pnl_brl = tp1_pnl_pts * multiplier * actual_close
         self.tp1_profit_brl += tp1_pnl_brl
         self.tp1_volume_closed += actual_close
@@ -561,6 +561,21 @@ def tick_size_pts(root: str) -> float:
         return TICK_SIZE_PTS.get(root, 0.0)
 
 
+def _mult_for(symbol: str) -> float:
+    """R$/ponto do contrato — fonte autoritativa: vt_trade_log.get_multiplier.
+
+    O CONFIG["multiplier"] global (0.20) é escala de WIN: distorcia as sims de
+    BIT 20×, WSP 12.5× e WDO 50× (dívida §14 da Norma — vista no journal de
+    01/09 como Δ sim↔live absurdo em BIT). Fallbacks do vt_trade_log são
+    broker-truth validados.
+    """
+    try:
+        from core.vt_trade_log import get_multiplier
+        return float(get_multiplier(symbol))
+    except Exception:
+        return float(CONFIG.get("multiplier", 0.20) or 0.20)
+
+
 def capture_spread(symbol: str) -> float | None:
     """Spread bid-ask no tick atual (pts de preço) — read-only via orchestrator.
 
@@ -710,7 +725,7 @@ def close_sim_position(con: sqlite3.Connection, pos: SimPosition,
         gross_pts_remaining = exit_price - pos.entry_price
     else:
         gross_pts_remaining = pos.entry_price - exit_price
-    multiplier = CONFIG.get("multiplier", 0.20)  # WIN mini
+    multiplier = _mult_for(pos.symbol)
     # Volume que sobra após TP1 parcial → paga esse trecho a exit_price.
     gross_brl_remaining = gross_pts_remaining * pos.remaining_volume * multiplier
     # TP1 parcial já foi contabilizado em pos.tp1_profit_brl (BRL).
