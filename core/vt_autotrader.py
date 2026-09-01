@@ -1838,7 +1838,15 @@ def check_and_trade():
     # gerenciar.
     try:
         from core.vt_profit_lock import is_locked as _pl_is_locked
-        _pl_locked, _pl_state = _pl_is_locked()
+        # Wave 889 (Bruno 01/09): a flag manda em TODAS as camadas — com
+        # profit_lock_enabled=False o gate não bloqueia nem com state órfão
+        # (o toggle desarma o state, mas a semântica correta é a flag valer
+        # aqui também; um state esquecido de um dia anterior não pode travar
+        # um pregão com o lock desabilitado no config).
+        if CONFIG.get("profit_lock_enabled", False):
+            _pl_locked, _pl_state = _pl_is_locked()
+        else:
+            _pl_locked, _pl_state = False, {}
         if _pl_locked:
             log(f"🔒 PROFIT LOCK ativo desde {(_pl_state.get('armed_at','?')[:16])} "
                 f"(target R$ {_pl_state.get('target',0):.2f}, "
@@ -2838,8 +2846,12 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                         _pt = _point_for(symbol_root(symbol))
                         _restore_pts = max(
                             1, int(round(abs(_prev_sl - exec_price) / _pt)))
-                        from core.vt_emergency import (
-                            safe_modify_sl_with_emergency_close)
+                        # Wave 09/01 (double-check 09:30): import local REMOVIDO.
+                        # Causava UnboundLocalError nas refs 2926/2985: o import
+                        # local tornava o nome LOCAL p/ _execute_entry inteiro, e
+                        # quando o caminho de correção de SL (LLM falhou) executava
+                        # sem passar por este if, a var local estava unbound.
+                        # Usa o global da linha 42 (from core.vt_emergency import ...).
                         _mod = safe_modify_sl_with_emergency_close(
                             symbol, _gov_prior_pos.get("ticket"),
                             _restore_pts, exec_price, direction)
