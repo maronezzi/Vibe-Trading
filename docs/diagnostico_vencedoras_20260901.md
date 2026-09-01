@@ -59,3 +59,19 @@ SELL 35–45 = **−179** (WR 33%) · SELL <35 e 45–50 = positivos.
 
 Próximo: entradas na esteira — backfill A/B do walker (mesmo período, run_id distinto) →
 sweep/gates do Stage 5 → só então promoção. Live intocada.
+
+## 6. VEREDITO dos gates (02/09, head-to-head no WIN_M15, motor AGI 30d + walk-forward)
+
+| Estratégia | n | PnL 30d | Sharpe | Veredito |
+|---|---|---|---|---|
+| **AGI4_WIN_121815 (incumbente)** | **82** | **+478,10** | **+1,18** | ✅ segue no trono |
+| V2RSIZ (zonas de RSI) | 31 | −175,00 | −1,45 | ❌ REJEITADA (PF<1,15; dd 5,9; sharpe) |
+| V2V13H (veto 13h) | 65 | −298,00 | −1,01 | ❌ REJEITADA |
+
+**Leitura:** a mineração achou padrões reais no histórico LIVE (~100 trades, clusters de
+regime), mas no universo simulado de 30 dias as trades filtradas eram líquido POSITIVAS —
+cortá-las virou o sinal. Overfit in-sample clássico, pegado pelos guardrails a custo zero.
+As hipóteses RSI/13h descem para status de **monitoramento** (observar no live/journal,
+acumular amostra) — não viram filtro hardcoded. A incumbente sai do teste FORTALECIDA:
+o mesmo motor que rejeitou as variantes valida o edge dela (+478, sharpe 1,18, 82 trades).
+Harness de head-to-head (h2h no alvo, params reais do par) fica construído e reutilizável.
