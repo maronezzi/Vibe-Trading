@@ -396,18 +396,24 @@ class SimPosition:
         if not self.trail_on and profit_pts >= self.trail_activate_atr * atr:
             self.trail_on = True
 
-        # ===== BREAKEVEN (autotrader:2637-2661) =====
+        # ===== BREAKEVEN (autotrader:3602-3640) =====
         # sl_pts signed: BE aperta SL pra perto do entry (cost_pts é positivo pequeno).
         if not self.trail_on and held_minutes >= self.be_after_minutes:
             cost_pts = 5 / self.point_val if self.point_val > 0 else 5
-            # be_sl_pts é POSITIVO (SL abaixo do entry para BUY, acima do entry para SELL).
-            # Em executor units: cost_pts = distância do entry. Se for MENOR que o sl_pts
-            # atual (SL inicial largo), apertar pra cost_pts é MELHOR.
-            if cost_pts < abs(self.current_sl_pts):
-                if self.direction == "BUY":
-                    be_price = self.entry_price + cost_pts * self.point_val
-                else:
-                    be_price = self.entry_price - cost_pts * self.point_val
+            _cur_be = current_price if current_price is not None else (
+                self.highest if self.direction == "BUY" else self.lowest)
+            # Modo conta-real (bug 01/09): o broker só aceita SL no lado válido
+            # do preço (BUY: SL < preço atual). O daemon tenta o modify e é
+            # rejeitado quando não há lucro — aqui nem tentamos: sem preço acima
+            # do BE, mantém o SL de entrada. Antes, o BE armava incondicional e
+            # arranhava todo WIN a +5pts aos 3min (8/8 sims de 01/09).
+            if self.direction == "BUY":
+                be_price = self.entry_price + cost_pts * self.point_val
+                be_valido = _cur_be > be_price
+            else:
+                be_price = self.entry_price - cost_pts * self.point_val
+                be_valido = _cur_be < be_price
+            if be_valido and cost_pts < abs(self.current_sl_pts):
                 if self._set_sl_price(be_price, current_price):
                     self.breakeven_applied = True
 
@@ -439,8 +445,12 @@ class SimPosition:
         Ordem de prioridade (espelha autotrader manage_position):
           HARD_EXIT > SL > TIME_MAX_NEG
         """
-        # HARD EXIT — após hard_exit_minutes, força exit a mercado (autotrader:2593).
-        if held_minutes >= self.hard_exit_minutes:
+        # HARD EXIT — após hard_exit_min E SEM lucro atual (espelha Wave 880.B2
+        # do daemon: vencedora segue sob trailing/EOD; perdedora/flutuante sai
+        # a mercado). Antes era incondicional e sacava vencedoras.
+        cur_profit_pts = ((bar["close"] - self.entry_price) if self.direction == "BUY"
+                          else (self.entry_price - bar["close"]))
+        if held_minutes >= self.hard_exit_minutes and cur_profit_pts <= 0:
             return True, "HARD_EXIT", bar["close"]
 
         # SL — usa low/high do candle; se tocou, sai no preço do SL.
