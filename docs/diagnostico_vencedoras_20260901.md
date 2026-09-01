@@ -43,3 +43,19 @@
   de 4 ângulos. As variantes precisam isolar uma variável por vez.
 - In-sample: tudo acima olhou o próprio histórico que treina os gates — walk-forward e
   backfill A/B existem exatamente para punir o que não generaliza.
+
+## 5. Variantes construídas (02/09, sandbox `_pending/`)
+
+| Variante | Mudança única | Defaults (tunáveis) | Teste |
+|---|---|---|---|
+| `agi4_win_121815_v2_rsizones.py` | Zonas de RSI por lado: BUY em `[rsi_buy_min, rsi_buy_max]` (60–70), SELL veta `[35, 45]` (zona morta; flush <35 e fade neutro 45–50 seguem) | `rsi_buy_min=60`, `rsi_buy_max=70`, `rsi_sell_veto_lo=35`, `rsi_sell_veto_hi=45` | 9/9 asserts stub (incumbente intacta — RSI 55 still BUY nela) |
+| `agi4_win_121815_v2_veto13h.py` | Veto de entrada na janela local 13→14h (`_local_hour` normaliza epoch-do-daemon e datetime-do-walker) | `veto_hour_start=13`, `veto_hour_end=14`, `veto_hours` extensível ("10,15") | 6/6 asserts stub (epoch + datetime walker) |
+
+Rerefinamento que a leitura do código trouxe: a incumbente tem **teto de ADX mas não de
+RSI** (BUY aceita RSI 80 = perseguir exaustão) e **piso de RSI ausente no SELL** (vende em
+RSI 30). As zonas por lado ficaram mais cirúrgicas que a "banda 50–70" bruta do §1:
+BUY 50–60 = −120 (momentum fraco) · BUY 60–70 = **+316** (n=4) · BUY 70–80 = −163 ·
+SELL 35–45 = **−179** (WR 33%) · SELL <35 e 45–50 = positivos.
+
+Próximo: entradas na esteira — backfill A/B do walker (mesmo período, run_id distinto) →
+sweep/gates do Stage 5 → só então promoção. Live intocada.
