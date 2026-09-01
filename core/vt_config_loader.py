@@ -84,6 +84,10 @@ ALLOWED_WRITERS = (
     # scripts de manutenção (devem rodar com autotrader PAUSADO)
     "scripts/vt_meio_dia_tuning.py",
     "scripts/migrate_today_trades_w13_2.py",
+    # Wave 888 (Bruno 01/09): toggle da trava de lucro p/ experimento demo do
+    # modo conta-real ("Como é uma conta demo, vc quer desativar o profit
+    # lock...?"). Reutilizável na semana de migração. Restaurar ao fim do dia.
+    "scripts/toggle_profit_lock.py",
     "scripts/preflight_dryrun.py",
     "scripts/simulate_today_wave9.py",
     "scripts/warmup_search.py",
