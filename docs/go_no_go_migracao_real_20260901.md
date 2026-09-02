@@ -72,3 +72,27 @@ Com 5/5 em 02/09 → recomendação formal de GO para **quinta 03/09**.
 - **02/09**: ☐ preencher no fechamento → decisão GO para 03/09.
 - **03/09+ (se GO)**: semana real com monitor intradiário; PnL da real será inferior ao demo
   por construção (taxas + slippage) — divergência de DECISÃO é o que dispara alerta.
+
+## 8. Incidente 02/09 10:19 — EMERGENCY CLOSE por consolidação NETTING (fechado, custo R$5)
+
+**Sequência:** WSP M15+M30 SELL no mesmo símbolo → NETTING consolidou a M15 (child
+2517895574) na M30 (pai 2517822277) em ~1min → modify de SL no ticket filho falhou
+`POSITION_NOT_FOUND` (o filho não existe mais) → recovery abortou corretamente (1
+tentativa, sem storm) → PnL do filho = None → **safety-first tratou como contra e
+fechou a exposição netted inteira: −R$5,00 broker-truth** (era o risco real vivo).
+
+**O que funcionou:** a camada safety-first agiu defensiva e corretamente (fechou −5
+em vez de deixar risco sem visibilidade); o fix Wave 885/889 fez a PRIMEIRA salvada
+em produção ao vivo — registrou o fechamento do PAI por history por-ticket com
+broker-truth em tempo real. Dano total: R$5.
+
+**Gaps identificados (Wave 891, pré-abertura):**
+1. Modify não adota o ticket do PAI quando o filho foi consolidado (o monitor adota;
+   o path de modify não) → tighten útil pode ser perdido.
+2. PnL None → "contra" fecha a posição NETTED inteira, incluindo o trade de OUTRA
+   estratégia (hoje custou −5; se o pai estivesse +200, fecharia um vencedor alheio).
+3. Wording do alerta não diz a causa real (consolidação netting) — assusta sem informar.
+
+**Impacto GO:** critério 1 de 02/09 ganha asterisco (novo sintoma da família NETTING,
+custo R$5, safety-first funcionou). Wave 891 aplica o fix pré-abertura de 03/09;
+pre-flight valida. GO mantido sob esses termos.
