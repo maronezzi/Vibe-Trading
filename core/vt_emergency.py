@@ -145,6 +145,39 @@ def _get_current_pnl(symbol: str, ticket, direction: str,
         return None  # falha, não 0.0
 
 
+def _netting_container(symbol: str, ticket):
+    """Wave 891 (incidente 02/09 10:19): em conta NETTING existe UMA posição
+    aberta por símbolo. Se o ticket consultado não está mais em positions_get
+    mas há posição aberta do MESMO símbolo com outro ticket, é o container
+    netted que absorveu a sub-entrada (consolidação) — e o PnL verdadeiro do
+    risco vivo é o DELE.
+
+    Retorna (ticket_pai, profit, price_open) ou None (sem container / falha).
+    """
+    try:
+        from mt5.mt5_orchestrator import status as mt5_status
+        st = mt5_status()
+        positions = st.get("positions", []) if isinstance(st, dict) else []
+        for p in positions:
+            if (str(p.get("symbol", "")) == str(symbol)
+                    and str(p.get("ticket", "")) != str(ticket)):
+                return (p.get("ticket"),
+                        float(p.get("profit", 0) or 0),
+                        float(p.get("price_open", 0) or 0))
+    except Exception as e:
+        _logger.warning("_netting_container falhou (%s ticket=%s): %s", symbol, ticket, e)
+    return None
+
+
+def _abs_sl_price(entry_price: float, sl_pts, direction: str,
+                  point_val: float) -> float:
+    """Preço ABSOLUTO do SL a partir do entry + sl_pts (executor units)."""
+    s = float(sl_pts)
+    if direction == "BUY":
+        return entry_price - s * point_val
+    return entry_price + s * point_val
+
+
 def _is_position_against_us(symbol: str, ticket, direction: str,
                               entry_price: float, current_pnl) -> bool:
     """
@@ -346,10 +379,73 @@ def safe_modify_sl_with_emergency_close(
             "underlying_result": result,
         }
 
+    # 2c. Wave 891 (incidente 02/09 10:19): em conta NETTING, quando o ticket
+    # do filho é consolidado num PAI aberto, o modify falha com
+    # POSITION_NOT_FOUND ("posição fechada") — mas o risco NÃO sumiu: vive na
+    # posição netted do símbolo. Regra da casa tightest-SL-wins: reaplicar o
+    # MESMO preço absoluto de SL no ticket do pai (convertendo sl_pts do filho
+    # → sl_pts do pai via price_open de cada um). Se falhar, cai no fluxo de
+    # PnL abaixo, que agora usa o PnL netted do pai como verdade.
+    _err_s = str((result or {}).get("error", "")) if isinstance(result, dict) else ""
+    if "POSITION_NOT_FOUND" in _err_s or "não encontrado" in _err_s:
+        _parent = _netting_container(symbol, ticket)
+        if _parent is not None:
+            _p_ticket, _p_profit, _p_open = _parent
+            _logger.warning(
+                "Wave 891 NETTING: %s ticket=%s consolidado no pai %s "
+                "(PnL netted R$%+.2f) — reaplicando SL no pai (tightest-SL-wins)",
+                symbol, ticket, _p_ticket, _p_profit,
+            )
+            try:
+                from mt5.mt5_error_recovery import _get_point_val
+                _pv = _get_point_val(symbol)
+                if _pv and _pv > 0 and _p_open > 0:
+                    _sl_abs = _abs_sl_price(entry_price, sl_pts, direction, _pv)
+                    _p_sl_pts = int(round(((_p_open - _sl_abs) if direction == "BUY"
+                                           else (_sl_abs - _p_open)) / _pv))
+                    result2 = safe_modify_sl(
+                        symbol=symbol, ticket=_p_ticket, sl_pts=_p_sl_pts,
+                        entry_price=_p_open, direction=direction, **kwargs,
+                    )
+                    if isinstance(result2, dict) and result2.get("status") == "ok":
+                        _logger.warning(
+                            "Wave 891 NETTING: SL do filho aplicado no PAI %s "
+                            "(sl_pts=%d → SL≈%.2f) — risco da sub-entrada "
+                            "protegido (tightest-SL-wins)",
+                            _p_ticket, _p_sl_pts, _sl_abs,
+                        )
+                        return {
+                            "status": "ok",
+                            "emergency_closed": False,
+                            "adopted_parent": _p_ticket,
+                            "underlying_result": result2,
+                        }
+                    _logger.warning(
+                        "Wave 891 NETTING: modify no pai falhou (%s) — seguindo "
+                        "para avaliação de PnL netted",
+                        (result2 or {}).get("error") if isinstance(result2, dict) else result2,
+                    )
+            except Exception as e:
+                _logger.error("Wave 891 NETTING: adoção do pai falhou: %s", e)
+
     # 3. Falhou — verifica PnL
     pnl = _get_current_pnl(symbol, ticket, direction, entry_price)
+    _netting_note = ""
+    if pnl is None:
+        # Wave 891: filho consolidado não tem PnL próprio (None) — o verdadeiro
+        # é o da posição netted do símbolo. Sem pai legível, None segue → contra
+        # (safety-first preservado).
+        _parent_pnl = _netting_container(symbol, ticket)
+        if _parent_pnl is not None:
+            pnl = _parent_pnl[1]
+            _netting_note = (f" [netting: ticket {ticket} consolidado no pai "
+                             f"{_parent_pnl[0]} — PnL netted R${pnl:+.2f} usado "
+                             f"como verdade; close age sobre a posição netted]")
+            _logger.warning("Wave 891 %s", _netting_note)
     attempts = result.get("attempts", MAX_SL_MODIFY_ATTEMPTS) if isinstance(result, dict) else MAX_SL_MODIFY_ATTEMPTS
     last_error = result.get("error", "unknown") if isinstance(result, dict) else "unknown"
+    if _netting_note:
+        last_error = f"{last_error}{_netting_note}"
     # Wave 880.B6: pnl pode ser None (falha de leitura). Formatação None-safe.
     _pnl_str = f"R${pnl:+.2f}" if pnl is not None else "indisponível"
 

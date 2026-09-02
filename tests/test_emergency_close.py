@@ -376,3 +376,86 @@ class TestConstants:
         from core import vt_emergency as em
         assert em.MAX_SL_MODIFY_ATTEMPTS == 3, \
             f"MAX_SL_MODIFY_ATTEMPTS deveria ser 3, é {em.MAX_SL_MODIFY_ATTEMPTS}"
+
+
+class TestNettingAdoptionWave891:
+    """Wave 891 (incidente 02/09 10:19): filho consolidado em PAI netting.
+
+    - POSITION_NOT_FOUND no modify do filho → adota o PAI e reaplica o SL
+      (tightest-SL-wins) convertendo sl_pts via price_open de cada um.
+    - PnL do filho é None → usa o PnL netted do PAI como verdade (não fecha
+      exposição de OUTRA estratégia que está no lucro).
+    - Sem container netted → safety-first original preservado.
+    """
+
+    def _mod(self):
+        from core import vt_emergency as em
+        return em
+
+    def test_adopt_parent_reapplies_sl(self):
+        from core import vt_emergency as em
+        with patch.object(em, "safe_modify_sl") as mock_mod, \
+             patch.object(em, "_get_current_pnl", return_value=None), \
+             patch.object(em, "_netting_container") as mock_cont, \
+             patch("mt5.mt5_error_recovery._get_point_val", return_value=1.0):
+            # 1a chamada: filho POSITION_NOT_FOUND; 2a: pai recebe o SL
+            mock_mod.side_effect = [
+                {"status": "failed", "attempts": 3,
+                 "error": "POSITION_NOT_FOUND: ticket 111 não encontrado em WSPU26"},
+                {"status": "ok"},
+            ]
+            mock_cont.return_value = (222, 50.0, 95.0)  # pai: ticket 222, +50, open 95
+            r = em.safe_modify_sl_with_emergency_close(
+                symbol="WSPU26", ticket=111, sl_pts=20, entry_price=100.0,
+                direction="BUY",
+            )
+            # SL absoluto do filho = 100 - 20 = 80; no pai (open 95): (95-80)/1 = 15
+            assert mock_mod.call_count == 2
+            assert mock_mod.call_args_list[1].kwargs["ticket"] == 222
+            assert mock_mod.call_args_list[1].kwargs["sl_pts"] == 15
+            assert r["status"] == "ok" and r.get("adopted_parent") == 222
+            # sem emergency: pai no lucro (+50) jamais deveria fechar
+            assert r.get("emergency_closed") is False
+
+    def test_netting_parent_losing_closes_with_named_cause(self):
+        from core import vt_emergency as em
+        with patch.object(em, "safe_modify_sl") as mock_mod, \
+             patch.object(em, "_get_current_pnl", return_value=None), \
+             patch.object(em, "_netting_container") as mock_cont, \
+             patch.object(em, "_emergency_close_position") as mock_close, \
+             patch("mt5.mt5_error_recovery._get_point_val", return_value=1.0), \
+             patch.object(em, "_notify_critical_emergency"):
+            mock_mod.side_effect = [
+                {"status": "failed", "attempts": 3,
+                 "error": "POSITION_NOT_FOUND: ticket 111 não encontrado em WSPU26"},
+                {"status": "failed", "attempts": 1, "error": "no changes"},
+            ]
+            mock_cont.return_value = (222, -30.0, 95.0)  # pai no PREJUÍZO
+            mock_close.return_value = {"status": "closed", "exit_price": 80.0}
+            r = em.safe_modify_sl_with_emergency_close(
+                symbol="WSPU26", ticket=111, sl_pts=20, entry_price=100.0,
+                direction="BUY",
+            )
+            assert r.get("emergency_closed") is True
+            # causa nomeada: last_error carrega a nota netting
+            assert "netting" in r.get("emergency_reason", "") or \
+                "netting" in str(mock_close.call_args.kwargs.get("last_error", "")) or \
+                "netting" in str(r.get("underlying_result", {}).get("error", ""))
+
+    def test_no_container_keeps_safety_first(self):
+        from core import vt_emergency as em
+        with patch.object(em, "safe_modify_sl") as mock_mod, \
+             patch.object(em, "_get_current_pnl", return_value=None), \
+             patch.object(em, "_netting_container", return_value=None), \
+             patch.object(em, "_emergency_close_position") as mock_close, \
+             patch.object(em, "_notify_critical_emergency"):
+            mock_mod.return_value = {"status": "failed", "attempts": 3,
+                                     "error": "POSITION_NOT_FOUND: não encontrado"}
+            mock_close.return_value = {"status": "already_closed"}
+            r = em.safe_modify_sl_with_emergency_close(
+                symbol="WSPU26", ticket=111, sl_pts=20, entry_price=100.0,
+                direction="BUY",
+            )
+            # sem pai netting: safety-first original (None → contra → fechar)
+            assert r.get("emergency_closed") is True
+            assert mock_mod.call_count == 1  # sem adoção, sem retry no pai
