@@ -1,0 +1,15 @@
+# =====================================================================
+# Vibe-Trading — CRONTAB DE DESENVOLVIMENTO (máquina LOCAL)
+# Instalado automaticamente pelo 40_cutover_to_vps.sh.
+# Diferença vital vs crontab.txt: NADA de trading aqui. O sistema ativo
+# passa a ser a VPS; o local vira pura estação de desenvolvimento + espelho.
+# Restaurar o modo produção local: crontab ~/Backups/crontab.local.pre_cutover.*
+# =====================================================================
+
+# ─── RESCAN DE DRIFT 19:00 (seg-sex) — repo local dev ────────────────
+00 19 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/w877_19h_rescan_uncommitted.sh >> /tmp/w877_rescan.log 2>&1
+
+# ─── ESPELHO VPS→LOCAL 19:40 (seg-sex) — regra do Bruno: cópia na ────
+#     máquina E na nuvem. Puxa DB/config/estratégias/relatórios + estado
+#     do hermes para ~/Backups/vps-mirror/ (NÃO toca no tree de dev).
+40 19 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vps/50_mirror_pull_from_vps.sh >> /tmp/vt_mirror.log 2>&1

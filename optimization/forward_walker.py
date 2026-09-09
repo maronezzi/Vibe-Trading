@@ -129,7 +129,7 @@ SIM_COLUMNS_NEW = ("run_id", "signal_bar_ts")
 
 def ensure_schema() -> None:
     """Cria a tabela forward_sim_trades se não existir. Idempotente."""
-    con = sqlite3.connect(str(TRADES_DB))
+    con = sqlite3.connect(str(TRADES_DB), timeout=30.0)
     try:
         con.executescript(SCHEMA_SQL)
         cols = {r[1] for r in con.execute(f"PRAGMA table_info({SIM_TABLE})")}
@@ -179,7 +179,7 @@ CREATE INDEX IF NOT EXISTS idx_bf_entry ON {BACKFILL_TABLE}(entry_time);
 
 def ensure_backfill_schema() -> None:
     """Cria a tabela forward_backfill_trades se não existir. Idempotente."""
-    con = sqlite3.connect(str(TRADES_DB))
+    con = sqlite3.connect(str(TRADES_DB), timeout=30.0)
     try:
         con.executescript(BACKFILL_SCHEMA_SQL)
         con.commit()
@@ -658,6 +658,52 @@ class WalkerState:
     last_report_t: datetime = field(default_factory=datetime.now)
 
 
+# ─── Cooldown fidelidade-live (VPS-M4, 2026-09-03) ────────────────────────
+# Espelha core/vt_autotrader.py::_check_cooldown + Wave N+4B: o daemon bloqueia
+# nova entrada por tempo-desde-última-operação (cooldown_seconds por direção e
+# 60% disso por símbolo, resolvido de params_by_tf → CONFIG[root] → CONFIG[win]
+# → 300s) e aplica lockout de 30min após 2 losses consecutivas mesma direção.
+# O gate de anti-re-entry por candle não captura isso e fazia a sim reentrar
+# onde o live rejeita (ex.: WDO 09:44→09:45 de 2026-09-03).
+_COOLDOWN_STATE: dict = {"last_trade": {}, "consec_loss": {}, "loss_lock": {}}
+
+
+def _sim_cooldown_ok(symbol: str, tf: str, direction: str, params: dict,
+                     now: datetime) -> bool:
+    """Retorna True se a sim pode abrir, espelhando o gate do daemon."""
+    cd = (params or {}).get("cooldown_seconds")
+    if cd is None:
+        cd = (CONFIG.get(symbol_root_of(symbol).lower()) or {}).get("cooldown_seconds")
+    if cd is None:
+        cd = (CONFIG.get("win") or {}).get("cooldown_seconds")
+    if not isinstance(cd, (int, float)) or cd <= 0:
+        cd = 300  # default final do daemon
+    last = _COOLDOWN_STATE["last_trade"].get((symbol, tf, direction))
+    if last and (now - last).total_seconds() < cd:
+        return False
+    last_sym = _COOLDOWN_STATE["last_trade"].get(symbol)
+    if last_sym and (now - last_sym).total_seconds() < cd * 0.6:
+        return False
+    lock_until = _COOLDOWN_STATE["loss_lock"].get((symbol_root_of(symbol), direction))
+    if lock_until and now < lock_until:
+        return False
+    return True
+
+
+def _sim_register_trade_close(symbol: str, direction: str, net_pnl: float,
+                              now: datetime) -> None:
+    """Alimenta perdas consecutivas/lockout (chamado no fechamento da sim)."""
+    key = (symbol_root_of(symbol), direction)
+    if net_pnl < 0:
+        _COOLDOWN_STATE["consec_loss"][key] = _COOLDOWN_STATE["consec_loss"].get(key, 0) + 1
+        if _COOLDOWN_STATE["consec_loss"][key] >= 2:
+            # Wave N+4B: 2 losses consecutivas mesma direção → 30min de lockout
+            _COOLDOWN_STATE["loss_lock"][key] = now + timedelta(minutes=30)
+            _COOLDOWN_STATE["consec_loss"][key] = 0
+    else:
+        _COOLDOWN_STATE["consec_loss"][key] = 0
+
+
 def open_sim_position(state: WalkerState, symbol: str, tf: str, strategy: str,
                       direction: str, price: float, sl_pts: float,
                       entry_time: datetime, atr: float, params: dict,
@@ -746,6 +792,11 @@ def close_sim_position(con: sqlite3.Connection, pos: SimPosition,
         # +1 leg adicional por causa do TP1 parcial
         fees_brl += pos.tp1_volume_closed * fees_per_leg * 2
     net_brl = pos.tp1_profit_brl + gross_brl_remaining - fees_brl
+    if table == SIM_TABLE:
+        # [VPS-M4] alimenta cooldown/lockout de perdas consecutivas
+        # (espelho do Wave N+4B do daemon); backfill/replay não conta.
+        _sim_register_trade_close(pos.symbol, pos.direction, net_brl,
+                                  exit_time or datetime.now())
 
     # run_id: live e backfill gravam a partição do processo. signal_bar_ts só
     # existe no schema live (backfill dedupliza por DELETE run_id prévio).
@@ -909,7 +960,9 @@ def write_daily_summary(con: sqlite3.Connection) -> Path | None:
         f"# Journal de operação — {datetime.now():%Y-%m-%d} (modo conta-real)",
         "",
         f"- Trades simulados: **{len(recs)}** | net_brl somado: **R$ {total_net:+.2f}**",
-        f"- Slippage decisão→fill: média {_avg(slips)} pts | máx {max(slips) if slips else None} pts | adverso em {len(adverse)}/{len(slips)}",
+        # Convenção do slip (entry_slippage_pts): fill − decisão
+        # (>0 = adverso, <0 = favorável). "máx" abaixo é o ADVERSO.
+        f"- Slippage decisão→fill: média {_avg(slips)} pts | adverso máx {max(adverse) if adverse else 0.0} pts | favorável máx {min(slips) if slips else None} pts | adverso em {len(adverse)}/{len(slips)}",
         f"- Spread entrada: {_avg(spreads_in)} pts (n={len(spreads_in)}) | saída: {_avg(spreads_out)} pts (n={len(spreads_out)})",
         f"- Modifies de SL rejeitados pelo stop level simulado: **{rejected}**",
         f"- TP1 pulados (volume fracionário): {tp1_skips}",
@@ -1333,6 +1386,14 @@ def walker_loop(args, state: WalkerState) -> None:
                         # ABRE SIM (não toca broker)
                         direction = result["direction"]
                         sl_pts = result["sl_pts"]
+                        # [VPS-M4] cooldown fidelidade-live antes de abrir
+                        _now_open = datetime.now()
+                        if not _sim_cooldown_ok(symbol, tf, direction, params, _now_open):
+                            print(f"  [COOLDOWN] {symbol}/{tf} {direction} "
+                                  f"bloqueado (fidelidade live)")
+                            continue
+                        _COOLDOWN_STATE["last_trade"][(symbol, tf, direction)] = _now_open
+                        _COOLDOWN_STATE["last_trade"][symbol] = _now_open
                         # entry_sl_price (pra log) — calcula via point_val
                         pv = POINT_VAL_MAP.get(root, 1.0)
                         # Modo conta-real: fill simulado no OPEN do candle em
@@ -1402,7 +1463,7 @@ def walker_loop(args, state: WalkerState) -> None:
     finally:
         con.close()
         # relatório final
-        con = sqlite3.connect(str(TRADES_DB))
+        con = sqlite3.connect(str(TRADES_DB), timeout=30.0)
         try:
             final = print_report(state, con,
                                  f"FINAL @{datetime.now():%H:%M:%S}",

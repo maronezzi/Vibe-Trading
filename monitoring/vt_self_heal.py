@@ -137,6 +137,22 @@ def _notify_telegram(msg: str) -> bool:
         return False
 
 
+def _is_non_trading_today() -> bool:
+    """True se hoje NÃO é dia útil B3 (feriado/fim de semana). Fail-open False.
+
+    Wave 892 (2026-09-07): com mercado fechado, ticks zerados e o Wine idle
+    fazem os checks de mercado parecerem quebrados (incidente 07/09 12:00 —
+    self-heal reiniciou o MT5 num feriado por causa de mt5_slow/mt5_tick_stale).
+    """
+    try:
+        from core.vt_calendar import is_trading_day
+        from datetime import date as _date
+        _ok_day, _motivo = is_trading_day(_date.today())
+        return not _ok_day
+    except Exception:
+        return False  # fail-open: mantém comportamento original
+
+
 # ── Health checks (6) ───────────────────────────────────────────────────────
 def _check_autotrader_alive() -> Optional[HealthIssue]:
     """Check 1: pgrep -f core/vt_autotrader.py + log freshness."""
@@ -204,6 +220,10 @@ def _check_mt5_reachable() -> Optional[HealthIssue]:
         data = mt5_status()
         elapsed = time.time() - t0
         if elapsed > MT5_TIMEOUT_SEC:
+            # Wave 892: em feriado o Wine idle responde lento sem nada quebrado —
+            # restart do MT5 em dia não útil é ruído (e risco) desnecessário.
+            if _is_non_trading_today():
+                return None
             return HealthIssue(
                 "mt5_slow", SEV_HIGH,
                 f"MT5 status() demorou {elapsed:.1f}s (>{MT5_TIMEOUT_SEC}s).",
@@ -292,6 +312,11 @@ def _check_mt5_tick_freshness() -> Optional[HealthIssue]:
             return None
         from mt5.mt5_orchestrator import tick as mt5_tick
     except Exception:
+        return None
+    # Wave 892: feriado B3 — mercado fechado, tick parado é normal em
+    # qualquer branch (inclui "sem price e sem time", que não passa pela
+    # guarda de horário abaixo).
+    if _is_non_trading_today():
         return None
     stale = []
     for root, full_sym in list(resolved.items()):

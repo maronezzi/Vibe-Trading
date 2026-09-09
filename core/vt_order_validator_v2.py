@@ -102,6 +102,12 @@ def _cache_put(key: str, response: str):
 # Transporte HTTP direto (medido: 3-13s vs 46-54s CLI) — mesmo endpoint/key
 # do config do hermes.
 _LLM_PROVIDERS = [
+    # VPS-M4 (Bruno 03/09): Groq na frente — validadores são prompts curtos e
+    # precisam de resposta rápida. Medido 03/09: veredito completo em 0,35s
+    # (cadeia antiga: 13-18s). Free tier Groq: uso do validador fica folgado.
+    # ATENÇÃO: Groq rejeita o campo "enable_thinking" (HTTP 400) — ver
+    # _ask_llm_http. Se rate-limitar, a cadeia cai pros providers abaixo.
+    {"provider": "groq",               "model": "qwen/qwen3.8-27b",                "timeout": 8},
     {"provider": "zenmux",             "model": "deepseek/deepseek-v4-flash-free", "timeout": 12},
     {"provider": "zenmux",             "model": "deepseek/deepseek-v4-flash",      "timeout": 12},
     {"provider": "alibaba-token-plan", "model": "deepseek-v4-flash-0731",          "timeout": 15},
@@ -156,6 +162,10 @@ def _llm_note_success(model: str) -> None:
 # HTTP direto = 3.5-13s. Mesmos endpoints/keys do ~/.hermes/config.yaml
 # (providers chat_completions). CLI hermes vira fallback se o HTTP falhar.
 _PROVIDER_ENDPOINTS = {
+    "groq": (
+        "https://api.groq.com/openai/v1/chat/completions",
+        "GROQ_API_KEY",
+    ),
     "alibaba-token-plan": (
         "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
         "ALIBABA_TOKEN_PLAN_API_KEY",
@@ -212,14 +222,20 @@ def _ask_llm_http(prompt: str, provider: str, model: str, timeout: int) -> Optio
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 300,
-        "enable_thinking": False,
     }
+    if provider != "groq":
+        # Groq rejeita campos desconhecidos (HTTP 400 "property
+        # 'enable_thinking' is unsupported" — testado 03/09).
+        body["enable_thinking"] = False
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            # Groq (Cloudflare) bloqueia o UA padrão "Python-urllib" com 403
+            # (testado 03/09) — UA próprio resolve.
+            "User-Agent": "vibe-trading-validator/1.0",
         },
         method="POST",
     )

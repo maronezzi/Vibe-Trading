@@ -4,6 +4,10 @@
 # Importante: cron roda com PATH=/usr/bin:/bin — scripts devem usar caminhos absolutos.
 # O vt_pre_flight valida TUDO antes do autotrader iniciar; se falhar, autotrader NÃO inicia.
 #
+# Wave 892 (2026-09-07): jobs seg-sex dependentes de pregão têm prefixo
+#   scripts/vt_trading_day_gate.sh &&  — em feriado B3/fim de semana o job é
+#   pulado em silêncio (mesmo calendário core/vt_calendar.py que o daemon usa).
+#
 # Estrutura de pastas (desde 2026-06-22):
 #   core/          — autotrader, config, trade_log, strategy_loader, calendar
 #   mt5/           — orchestrator, executor, fetch, resolve, error_recovery
@@ -13,10 +17,10 @@
 #   scripts/       — shell helpers
 
 # ─── PRE-FLIGHT 08:55 (seg-sex) — garante dia útil, MT5 up, config OK, state limpo ──
-55 8 * * 1-5 /usr/bin/python3 /home/bruno/Projects/Vibe-Trading/monitoring/vt_pre_flight.py >> /tmp/vt_pre_flight.log 2>&1
+55 8 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && /usr/bin/python3 /home/bruno/Projects/Vibe-Trading/monitoring/vt_pre_flight.py >> /tmp/vt_pre_flight.log 2>&1
 
 # ─── AUTOTRADER START 09:00 (seg-sex) — pkill+start idempotente ────────────────────
-0 9 * * 1-5 /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/start_autotrader.sh >> /tmp/vt_start.log 2>&1
+0 9 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/start_autotrader.sh >> /tmp/vt_start.log 2>&1
 
 # ─── FORWARD WALKER (shadow validator live) 09:01 (seg-sex) ──────────────────────
 #     Wave sem-trades/shadow: forward_walker replica entrada/SL/TP/trailing do
@@ -27,10 +31,24 @@
 #     09:01 (1 min após o autotrader) para ele reivindicar o snapshot de
 #     starting-balance primeiro. --duration-min 480 cobre 09:01→17:01.
 #     Idempotente (pgrep guard) e self-gate de dia útil/pregão no próprio script.
-1 9 * * 1-5 /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/start_forward_walker.sh >> /tmp/vt_forward_walker.log 2>&1
+1 9 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/start_forward_walker.sh >> /tmp/vt_forward_walker.log 2>&1
+
+# ─── COLETOR FORWARD 17:05 (seg-sex) — VPS-M4 (2026-09-03) ──────────────────
+#     Coleta read-only do dia do walker (deadline 17:01) direto para o
+#     output-dir do job hermes vt-forward-walker-pregao. Substitui o wrapper
+#     em background do job, que morria quando o scope do job era recolhido
+#     (lição cgroups 2026-09-03).
+5 17 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/fw_collect_day.sh >> /tmp/vt_fw_collect.log 2>&1
+
+# ─── MONITORAMENTO DIÁRIO VPS (VPS-M5, 2026-09-03) — relatório via Telegram ───
+#     Abertura (09:20), meio-dia pós-AGI (13:35) e fechamento (18:35).
+#     Read-only: checam saúde e reportam; fechamento inclui mineração do dia.
+20 9 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/vps/diario_abertura.sh >> /tmp/vt_diario_abertura.log 2>&1
+35 13 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/vps/diario_meiodia.sh >> /tmp/vt_diario_meiodia.log 2>&1
+35 18 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/vps/diario_fechamento.sh >> /tmp/vt_diario_fechamento.log 2>&1
 
 # ─── INTELIGÊNCIA TRADER 11:00 / 13:00 (seg-sex) — análise + ajuste de params ─────
-5 10,12,15 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_copilot.py >> /tmp/vt_copilot.log 2>&1
+5 10,12,15 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_copilot.py >> /tmp/vt_copilot.log 2>&1
 
 # ─── RELATÓRIO INTRADAY 20min (seg-sex 9-17h) — PnL broker-truth (MT5) ─────────
 #     Modo --report: texto + gráfico PNG da evolução do PnL total (curva
@@ -49,10 +67,10 @@
 #
 # Wave N+2.5 (2026-07-08, 8ee7fd87): entry removida sem menção no commit
 # message. Restaurada manualmente — bloco idêntico ao commit 7b371db8.
-*/20 9-17 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_copilot.py --report >> /tmp/vt_copilot_report.log 2>&1
+*/20 9-17 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_copilot.py --report >> /tmp/vt_copilot_report.log 2>&1
 
 # ─── RELATÓRIO DIÁRIO 16:50 (seg-sex) — fecha posições + P&L do dia ──────────────
-50 16 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_daily_report.py >> /tmp/vt_daily_report.log 2>&1
+50 16 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_daily_report.py >> /tmp/vt_daily_report.log 2>&1
 
 # ─── AGI v4 OTIMIZADOR 12:00 + 17:10 (seg-sex) — W873: v3 descontinuado ────────
 #     W873 (2026-07-07): agi_tuning_17h.py (v3) foi descontinuado e substituído
@@ -73,24 +91,24 @@
 #       - 12h (pregão aberto): VT_MAX_WORKERS=1, deadline 2h (CPU limitada
 #         para não atrapalhar o autotrader ao vivo).
 #       - 17h10 (pós-close): sem limite, deadline 8h (madrugada toda).
-00 12 * * 1-5 /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/run_agi_v4_cron.sh >> /tmp/vt_agi_v4_cron.log 2>&1
-10 17 * * 1-5 /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/run_agi_v4_cron.sh >> /tmp/vt_agi_v4_cron.log 2>&1
+00 12 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/run_agi_v4_cron.sh >> /tmp/vt_agi_v4_cron.log 2>&1
+10 17 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/run_agi_v4_cron.sh >> /tmp/vt_agi_v4_cron.log 2>&1
 
 # ─── SELF-HEAL MONITOR 5min (seg-sex 9-17h) — 6 health checks + auto-cura ──────
 #     Fase 2.2: autotrader/MT5/DB/state/lock/cron. Auto-cura conservadora (restart
 #     de processo/MT5 + alerta). Nunca desabilita símbolo/TF (Lei 2).
-*/5 9-17 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_self_heal.py >> /tmp/vt_self_heal.log 2>&1
+*/5 9-17 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_self_heal.py >> /tmp/vt_self_heal.log 2>&1
 
 # ─── SELF-HEAL MONITOR 15min (fora do pregão) — supervisão leve fora de horário ─
 #     Wave Lifecycle (Bruno 12/07): restrito a 1-5 (seg-sex). O daemon agora
 #     sai sozinho pós-EOD, e _check_autotrader_alive tem gate de trading-day,
 #     mas não há motivo para self-heal rodar em fim de semana. Reinstalar com
 #     `crontab crontab.txt` após editar este arquivo.
-*/15 0-8,18-23 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_self_heal.py >> /tmp/vt_self_heal.log 2>&1
+*/15 0-8,18-23 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_self_heal.py >> /tmp/vt_self_heal.log 2>&1
 
 # ─── SCOPE-AUDIT segunda 9:00 — Lei 2: 16 pares WIN/BIT/WSP/WDO × TFs ativos ──
 #     Fase 2.3: alerta se símbolo/TF fora do escopo (exclui só IND). Bruno decide.
-0 9 * * 1 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 scripts/check_symbols_active.py >> /tmp/vt_scope_audit.log 2>&1
+0 9 * * 1 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 scripts/check_symbols_active.py >> /tmp/vt_scope_audit.log 2>&1
 
 # ─── DRY-RUN SEMANAL domingo 6:00 — Fase 5: validação 1 dia antes do pregão ──
 #     10 cenários adversariais + invariantes. Gera data/validation_weekly_*.md.
@@ -98,14 +116,14 @@
 0 6 * * 0 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 scripts/vt_validate_1day.py --mode=mock >> /tmp/vt_dryrun_weekly.log 2>&1
 
 # ─── RELATÓRIO SEMANAL sexta 17:30 — resumo + 6 gráficos PNG + CSV ─────────────
-30 17 * * 5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_weekly_report.py >> /tmp/vt_weekly.log 2>&1
+30 17 * * 5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 monitoring/vt_weekly_report.py >> /tmp/vt_weekly.log 2>&1
 
 # ─── WAVE N+5B (2026-07-08): LOSER REPLAY pós-EOD 17:30 ────────────────────────
 #     Cron que gera monitoring/reports/loser_replay_<date>.json cruzando
 #     losing trades vs signal_blocked_log. Saída revisada por humano
 #     semanalmente antes de virar input do AGI v4 stage2_intel
 #     (futuro Wave N+5B.2).
-30 17 * * 1-5 cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 -c "from monitoring.vt_loser_replay import generate_report; from pathlib import Path; generate_report(db_path=Path('/home/bruno/Projects/Vibe-Trading/vt_trades.db'))" >> /tmp/vt_loser_replay.log 2>&1
+30 17 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && cd /home/bruno/Projects/Vibe-Trading && /usr/bin/python3 -c "from monitoring.vt_loser_replay import generate_report; from pathlib import Path; generate_report(db_path=Path('/home/bruno/Projects/Vibe-Trading/vt_trades.db'))" >> /tmp/vt_loser_replay.log 2>&1
 
 # ─── WAVE N+1 (2026-07-08): VACUM SEMANAL signal_blocked_log domingo 5:00 ──────
 #     Limpa rows > 90 dias pra controlar storage growth (< 50k rows/dia target).
@@ -119,4 +137,4 @@
 # ─── TRADE EVENT WATCHER watchdog */5min (seg-sex 9-17h) ──────────────────────
 #     Se o watcher (EA → CSV → SQLite) morrer, reinicia em até 5 min.
 #     O copilot depende dele para fonte MT5_EVENTS (broker-truth local).
-*/5 9-17 * * 1-5 pgrep -f "vt_trade_event_watcher.py" > /dev/null || (cd /home/bruno/Projects/Vibe-Trading && PYTHONUNBUFFERED=1 nohup python3 monitoring/vt_trade_event_watcher.py >> /tmp/vt_trade_event_watcher.log 2>&1 &)
+*/5 9-17 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vt_trading_day_gate.sh && pgrep -f "vt_trade_event_watcher.py" > /dev/null || (cd /home/bruno/Projects/Vibe-Trading && PYTHONUNBUFFERED=1 nohup python3 monitoring/vt_trade_event_watcher.py >> /tmp/vt_trade_event_watcher.log 2>&1 &)

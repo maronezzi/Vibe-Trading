@@ -1,0 +1,19 @@
+[Unit]
+Description=MT5 terminal XP (Wine, prefixo ~/.wine) — Vibe-Trading
+After=network.target xvfb99.service
+Requires=xvfb99.service
+
+[Service]
+Type=simple
+User=bruno
+Environment=DISPLAY=:99
+Environment=WINEPREFIX=/home/bruno/.wine
+Environment=WINEDEBUG=-all
+Environment=HOME=/home/bruno
+ExecStart=/usr/bin/wine "/home/bruno/.wine/drive_c/Program Files/MetaTrader 5 Terminal/terminal64.exe" /portable
+Restart=always
+RestartSec=5
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

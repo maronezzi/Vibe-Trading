@@ -9,8 +9,6 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-import pytest
-
 from monitoring import vt_self_heal as sh
 
 
@@ -44,11 +42,22 @@ class TestMt5TickFreshness:
         with patch("core.vt_config_loader.load_config",
                    return_value={"resolved_symbols": {"WIN": "WINQ26"}}), \
              patch("mt5.mt5_orchestrator.tick",
-                   return_value={"time": old_time, "bid": 0, "ask": 0}):
+                   return_value={"time": old_time, "bid": 0, "ask": 0}), \
+             patch.object(sh, "_is_non_trading_today", return_value=False):
             issue = sh._check_mt5_tick_freshness()
         assert issue is not None
         assert issue.type == "mt5_tick_stale"
         assert issue.severity == sh.SEV_HIGH
+
+    def test_holiday_no_issue(self):
+        """Wave 892: feriado B3 — tick parado é normal, sem alerta."""
+        old_time = time.time() - 600
+        with patch("core.vt_config_loader.load_config",
+                   return_value={"resolved_symbols": {"WIN": "WINQ26"}}), \
+             patch("mt5.mt5_orchestrator.tick",
+                   return_value={"time": old_time, "bid": 0, "ask": 0}), \
+             patch.object(sh, "_is_non_trading_today", return_value=True):
+            assert sh._check_mt5_tick_freshness() is None
 
     def test_bid_alive_ignores_stale_time(self):
         """Preço ao vivo (bid/ask > 0) ≠ feed morto, mesmo com `time` defasado.
@@ -83,7 +92,8 @@ class TestMt5TickFreshness:
             return {"time": old_time, "bid": 0, "ask": 0}               # morto
 
         with patch("core.vt_config_loader.load_config", return_value=cfg), \
-             patch("mt5.mt5_orchestrator.tick", side_effect=fake_tick):
+             patch("mt5.mt5_orchestrator.tick", side_effect=fake_tick), \
+             patch.object(sh, "_is_non_trading_today", return_value=False):
             issue = sh._check_mt5_tick_freshness()
         assert issue is not None
         assert issue.type == "mt5_tick_stale"

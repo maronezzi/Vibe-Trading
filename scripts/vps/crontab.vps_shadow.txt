@@ -1,0 +1,10 @@
+# =====================================================================
+# Vibe-Trading — CRONTAB DE SOMBRA DA VPS (validação pré-cutover)
+# APENAS o forward walker (read-only, magic 555599, SEM ordens).
+# O daemon/trading NÃO roda aqui até o cutover (40_cutover instala o
+# crontab.txt completo, substituindo este).
+# Instalar:  ssh vps 'crontab -' < scripts/vps/crontab.vps_shadow.txt
+# =====================================================================
+
+# ─── FORWARD WALKER 09:01 (seg-sex) — réplica do crontab.txt ─────────
+1 9 * * 1-5 /bin/bash /home/bruno/Projects/Vibe-Trading/scripts/start_forward_walker.sh >> /tmp/vt_forward_walker.log 2>&1
