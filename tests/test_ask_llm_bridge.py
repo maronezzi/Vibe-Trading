@@ -97,107 +97,92 @@ def test_ask_llm_returns_none_when_hermes_missing(monkeypatch):
     assert result is None
 
 
-def test_ask_llm_returns_string_on_first_provider_success(monkeypatch):
-    """Se o primeiro provider retorna stdout não-vazio, ask_llm retorna."""
-    mod = _import_helper()
-    fake_hermes = "/fake/hermes"
-    monkeypatch.setattr(mod, "find_hermes", lambda: fake_hermes)
-    fake_completed = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="resposta-model-1 " + "x"*60, stderr=""
-    )
-    with mock.patch.object(subprocess, "run", return_value=fake_completed) as m:
-        result = mod.ask_llm("p", timeout=30)
-    assert result == "resposta-model-1 " + "x"*60
-    # Primário (Wave 880.F) = zenmux/deepseek-v4-flash-free → passa -m/--provider
-    args, _ = m.call_args
-    cmd = args[0]
-    assert "-m" in cmd
-    assert "deepseek/deepseek-v4-flash-free" in cmd
-    assert "--provider" in cmd
-    assert "zenmux" in cmd
-
-
-def test_ask_llm_falls_back_to_second_provider(monkeypatch):
-    """Se o primário falha (rc!=0), tenta o fallback (MiMo v2.5 pro)."""
-    mod = _import_helper()
-    fake_hermes = "/fake/hermes"
-    monkeypatch.setattr(mod, "find_hermes", lambda: fake_hermes)
-
-    primary_fail = subprocess.CompletedProcess(
-        args=[], returncode=1, stdout="", stderr="err primary"
-    )
-    fallback_ok = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="resposta-fallback " + "x"*60, stderr=""
-    )
-    with mock.patch.object(
-        subprocess, "run", side_effect=[primary_fail, fallback_ok]
-    ) as m:
-        result = mod.ask_llm("p", timeout=60)
-    assert result == "resposta-fallback " + "x"*60
-    assert m.call_count == 2
-    # 2ª chamada (fallback 1) deve usar zenmux/deepseek-v4-flash
-    cmd2 = m.call_args_list[1].args[0]
-    assert "deepseek/deepseek-v4-flash" in cmd2
-    assert "zenmux" in cmd2
-
-
-def test_ask_llm_returns_none_when_all_providers_fail(monkeypatch):
-    """Se AMBOS falham, retorna None."""
+def test_ask_llm_returns_string_on_first_provider_success(monkeypatch, tmp_path):
+    """Se o provider (HTTP direto) responde, ask_llm retorna a resposta."""
     mod = _import_helper()
     monkeypatch.setattr(mod, "find_hermes", lambda: "/fake/hermes")
-    fail = subprocess.CompletedProcess(
-        args=[], returncode=1, stdout="", stderr="boom"
-    )
-    with mock.patch.object(subprocess, "run", return_value=fail):
-        result = mod.ask_llm("p", timeout=60)
+    monkeypatch.setattr(mod, "_LLM_HEALTH_PATH", tmp_path / "health.json")
+    # Wave 892: cadeia = yolo (HTTP direto) — CLI do hermes não é usado.
+    calls = {}
+
+    def _fake_direct(prompt, provider, model, timeout, system=None):
+        calls.update(provider=provider, model=model)
+        return "resposta-model-1 " + "x" * 60
+
+    monkeypatch.setattr(mod, "_ask_llm_http_direct", _fake_direct)
+    result = mod.ask_llm("p", timeout=30)
+    assert result == "resposta-model-1 " + "x" * 60
+    assert calls == {"provider": "yolo", "model": "qwen3.8-27b"}
+
+
+def test_ask_llm_single_provider_sem_segunda_tentativa(monkeypatch, tmp_path):
+    """Wave 892: cadeia de 1 provider — falha única não gera retentativas."""
+    mod = _import_helper()
+    monkeypatch.setattr(mod, "find_hermes", lambda: "/fake/hermes")
+    monkeypatch.setattr(mod, "_LLM_HEALTH_PATH", tmp_path / "health.json")
+    attempts = []
+
+    def _fake_direct(prompt, provider, model, timeout, system=None):
+        attempts.append(provider)
+        return None  # provider falhou
+
+    monkeypatch.setattr(mod, "_ask_llm_http_direct", _fake_direct)
+    result = mod.ask_llm("p", timeout=60)
+    assert result is None
+    assert len(attempts) == 1, "cadeia tem 1 provider — não deve tentar de novo"
+
+
+def test_ask_llm_returns_none_when_all_providers_fail(monkeypatch, tmp_path):
+    """Se o provider falha (HTTP None), retorna None."""
+    mod = _import_helper()
+    monkeypatch.setattr(mod, "find_hermes", lambda: "/fake/hermes")
+    monkeypatch.setattr(mod, "_LLM_HEALTH_PATH", tmp_path / "health.json")
+    monkeypatch.setattr(mod, "_ask_llm_http_direct", lambda *a, **k: None)
+    result = mod.ask_llm("p", timeout=60)
     assert result is None
 
 
-def test_ask_llm_handles_timeout(monkeypatch):
-    """TimeoutExpired num provider → tenta o próximo."""
+def test_ask_llm_handles_timeout(monkeypatch, tmp_path):
+    """Timeout/exceção do transporte HTTP → tratado, retorna None."""
     mod = _import_helper()
     monkeypatch.setattr(mod, "find_hermes", lambda: "/fake/hermes")
-    fallback_ok = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="ok-after-timeout " + "x"*60, stderr=""
-    )
-    with mock.patch.object(
-        subprocess, "run",
-        side_effect=[subprocess.TimeoutExpired(cmd="hermes", timeout=10),
-                     fallback_ok],
-    ) as m:
-        result = mod.ask_llm("p", timeout=60)
-    assert result == "ok-after-timeout " + "x"*60
-    assert m.call_count == 2
+    monkeypatch.setattr(mod, "_LLM_HEALTH_PATH", tmp_path / "health.json")
+
+    def _boom(*a, **k):
+        raise TimeoutError("estouro do budget do provider")
+
+    monkeypatch.setattr(mod, "_ask_llm_http_direct", _boom)
+    assert mod.ask_llm("p", timeout=60) is None
 
 
-def test_ask_llm_handles_subprocess_exception(monkeypatch):
-    """Exception genérica em subprocess.run → tenta o próximo."""
+def test_ask_llm_handles_subprocess_exception(monkeypatch, tmp_path):
+    """Exception genérica no transporte → nunca levanta, retorna None."""
     mod = _import_helper()
     monkeypatch.setattr(mod, "find_hermes", lambda: "/fake/hermes")
-    fallback_ok = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="ok-after-exc " + "x"*60, stderr=""
-    )
-    with mock.patch.object(
-        subprocess, "run", side_effect=[OSError("fake"), fallback_ok]
-    ):
-        result = mod.ask_llm("p", timeout=60)
-    assert result == "ok-after-exc " + "x"*60
+    monkeypatch.setattr(mod, "_LLM_HEALTH_PATH", tmp_path / "health.json")
+
+    def _boom(*a, **k):
+        raise OSError("fake")
+
+    monkeypatch.setattr(mod, "_ask_llm_http_direct", _boom)
+    assert mod.ask_llm("p", timeout=60) is None
 
 
-def test_ask_llm_system_prompt_passed_as_flag(monkeypatch):
-    """Se system é fornecido, hermes recebe flag ``-s``."""
+def test_ask_llm_system_prompt_passed_as_flag(monkeypatch, tmp_path):
+    """Se system é fornecido, HTTP direto recebe no kwarg ``system``."""
     mod = _import_helper()
     monkeypatch.setattr(mod, "find_hermes", lambda: "/fake/hermes")
-    fake_completed = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="ok", stderr=""
-    )
-    with mock.patch.object(subprocess, "run", return_value=fake_completed) as m:
-        mod.ask_llm("user prompt", timeout=30, system="system instruction")
-    args, _ = m.call_args
-    cmd = args[0]
-    assert "-s" in cmd
-    assert "system instruction" in cmd
-    assert "user prompt" in cmd
+    monkeypatch.setattr(mod, "_LLM_HEALTH_PATH", tmp_path / "health.json")
+    got = {}
+
+    def _fake_direct(prompt, provider, model, timeout, system=None):
+        got.update(prompt=prompt, system=system)
+        return "ok " + "x" * 60
+
+    monkeypatch.setattr(mod, "_ask_llm_http_direct", _fake_direct)
+    mod.ask_llm("user prompt", timeout=30, system="system instruction")
+    assert got["system"] == "system instruction"
+    assert got["prompt"] == "user prompt"
 
 
 def test_ask_llm_logs_to_dedicated_file(monkeypatch):

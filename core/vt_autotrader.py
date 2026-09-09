@@ -2748,7 +2748,11 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
         except Exception as _st_err:
             log(f"[RISK-GOV] status() falhou ({_st_err}) — fail-open segue")
         _gov_res = _gov.check_entry_risk_budget(
-            symbol, direction, sl_pts, _vol, CONFIG, _gov_positions)
+            symbol, direction, sl_pts, _vol, CONFIG, _gov_positions,
+            # Wave 893 (08/09): perda realizada do root consome orçamento —
+            # sem isto o governador ignorava o -R$90 já perdido e liberava
+            # mais -R$120 (incidente WIN 04/09: dia -210 vs stop -150).
+            realized_pnl=_symbol_daily_pnl(symbol))
         # Guarda posição atual do MESMO contrato p/ tightest-SL pós-fill
         for _p in _gov_res.get("positions", []):
             if _p.get("symbol") == symbol:
@@ -4870,53 +4874,69 @@ def reconcile_positions_with_mt5():
                         strategy_in_db = row["strategy"] or "VWAP"
                     else:
                         # 2b) Inserir no DB (orphan recuperado)
-                        try:
-                            _multiplier_map = {
-                                # W873: broker-truth MT5 (alinhado com watchdog/trade_log)
-                                "WIN": 1.0, "WDO": 0.0015, "BIT": 0.01,
-                                "DOL": 0.0018, "IND": 1.0, "WSP": 0.01,
-                            }
-                            _root_pv = next(
-                                (r for r in _multiplier_map if r in symbol), "WIN"
-                            )
-                            _now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            _sig = {
-                                "atr": 0, "rsi": 50, "sl_pts": 0,
-                                "reconciled": True, "reconciled_at": _now_str,
-                            }
-                            cur = conn.execute(
-                                """
-                                INSERT OR IGNORE INTO trades (
-                                    symbol, direction, volume, entry_time, entry_price,
-                                    entry_sl, entry_ticket, timeframe, strategy,
-                                    signal_detail, multiplier, notes
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    symbol, direction, volume, _now_str,
-                                    entry_price, p.get("sl") or 0, ticket_str,
-                                    tf, "RECONCILED",
-                                    json.dumps(_sig, default=str),
-                                    _multiplier_map.get(_root_pv, 0.20),
-                                    f"RECONCILED_ORPHAN | ingested at {_now_str}",
-                                ),
-                            )
-                            conn.commit()
-                            trade_id = cur.lastrowid
-                            strategy_in_db = "RECONCILED"
-                        except sqlite3.IntegrityError:
-                            # Race: outro tick inseriu entre o SELECT e o INSERT.
-                            # Pega o id que o outro tick criou.
-                            row2 = conn.execute(
-                                "SELECT id, strategy FROM trades WHERE entry_ticket = ?",
-                                (ticket_str,),
-                            ).fetchone()
-                            if row2:
-                                trade_id = row2["id"]
-                                strategy_in_db = row2["strategy"] or "RECONCILED"
-                        except Exception as _e_db:
-                            log(f"[RECONCILE] DB insert falhou para ticket={ticket_str}: {_e_db}")
-                            # Continua — vai tentar colocar em state mesmo assim
+                        # Wave 893 (08/09): retry em OperationalError — incidente
+                        # 08/09 09:31 (VPS): "database is locked" no 1º tentativo
+                        # fazia a posição ser adotada em memória SEM nunca ser
+                        # persistida (ticket WSPU26 2521005088 perdido do DB).
+                        for _ins_attempt in range(3):
+                            try:
+                                _multiplier_map = {
+                                    # W873: broker-truth MT5 (alinhado com watchdog/trade_log)
+                                    "WIN": 1.0, "WDO": 0.0015, "BIT": 0.01,
+                                    "DOL": 0.0018, "IND": 1.0, "WSP": 0.01,
+                                }
+                                _root_pv = next(
+                                    (r for r in _multiplier_map if r in symbol), "WIN"
+                                )
+                                _now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                _sig = {
+                                    "atr": 0, "rsi": 50, "sl_pts": 0,
+                                    "reconciled": True, "reconciled_at": _now_str,
+                                }
+                                cur = conn.execute(
+                                    """
+                                    INSERT OR IGNORE INTO trades (
+                                        symbol, direction, volume, entry_time, entry_price,
+                                        entry_sl, entry_ticket, timeframe, strategy,
+                                        signal_detail, multiplier, notes
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        symbol, direction, volume, _now_str,
+                                        entry_price, p.get("sl") or 0, ticket_str,
+                                        tf, "RECONCILED",
+                                        json.dumps(_sig, default=str),
+                                        _multiplier_map.get(_root_pv, 0.20),
+                                        f"RECONCILED_ORPHAN | ingested at {_now_str}",
+                                    ),
+                                )
+                                conn.commit()
+                                trade_id = cur.lastrowid
+                                strategy_in_db = "RECONCILED"
+                                break
+                            except sqlite3.IntegrityError:
+                                # Race: outro tick inseriu entre o SELECT e o INSERT.
+                                # Pega o id que o outro tick criou.
+                                row2 = conn.execute(
+                                    "SELECT id, strategy FROM trades WHERE entry_ticket = ?",
+                                    (ticket_str,),
+                                ).fetchone()
+                                if row2:
+                                    trade_id = row2["id"]
+                                    strategy_in_db = row2["strategy"] or "RECONCILED"
+                                break
+                            except sqlite3.OperationalError as _e_db:
+                                if _ins_attempt < 2:
+                                    log(f"[RECONCILE] DB locked ao inserir ticket={ticket_str} "
+                                        f"(tentativa {_ins_attempt + 1}/3): {_e_db} — retry em 2s")
+                                    time.sleep(2)
+                                    continue
+                                log(f"[RECONCILE] DB insert falhou para ticket={ticket_str}: {_e_db}")
+                                # Continua — vai tentar colocar em state mesmo assim
+                            except Exception as _e_db:
+                                log(f"[RECONCILE] DB insert falhou para ticket={ticket_str}: {_e_db}")
+                                # Continua — vai tentar colocar em state mesmo assim
+                                break
 
                     # 2c) Adicionar ao state.positions
                     # Usar key symbol_tf — pode colidir se 2 TFs do mesmo symbol.

@@ -184,13 +184,19 @@ class TestProfitTargetVariavel:
 
     def test_shadow_reconstroi_dia_censurado(self):
         # Sem shadow: 6 dias válidos, todos "planos" p/ o grid → empate → 100.
+        # Wave 893: piso estrutural (1.2 × ativação trailing 1 lote = 150)
+        # CORRIGE o teto p/ cima mesmo em janela fraca — corrige o bug do
+        # "alvo 100" aplicado em 08/09 pela sim em janela perdedora.
         # Com shadow: dia 'a' reconstruído chega a ~120+ → alvo maior vence.
         live, shadow = self._cenario()
         cfg = {"profit_lock_min_target": 100.0}
         so_live = rc.calibrate_profit_target(cfg, live, shadow=None)
         com_shadow = rc.calibrate_profit_target(cfg, live, shadow)
         assert so_live["status"] == "calibrado"
-        assert so_live["best"] == 100          # vies p/ baixo sem shadow
+        assert so_live["floor"] == 150        # piso estrutural (trailing)
+        assert so_live["best"] == 150         # contrafactual queria 100; piso corrige
+        assert so_live["apply"] is True       # correção estrutural (cur < piso)
+        assert so_live["floor_basis"]["clamped_by_floor"] is True
         assert com_shadow["best"] == 200       # clamp 2x do atual (100→200)
         assert com_shadow["best_raw"] >= 200   # bruto quer mais
         assert com_shadow["shadow_meta"]["n_reconstructed_days"] == 1
@@ -279,3 +285,30 @@ class TestCalibrateLockActivation:
             {"trailing_target_per_lot": 200.0, "trailing_activation_pct": 0.5},
             [{"root": "W", "tf": "M5", "pnl": 5.0, "day": "d1"}], None)
         assert r["status"] == "dados_insuficientes" and r["keep"] == 0.5
+
+
+class TestDailyStopsRoots:
+    """Wave 892 (08/09): calibrate_daily_stops só enxerga roots do config.
+
+    O root = symbol[:3] arrastava lixo do DB (DOLN26N99 — simulação legada
+    de rollover) e criava "Stop DOL" fantasma no relatório. DOL nunca será
+    operado (Bruno 08/09) — não pode mais aparecer na calibração."""
+
+    def test_root_fora_do_config_ignorado(self):
+        trades = [{"root": "DOL", "tf": "M15", "pnl": -10.0, "day": f"d{i}"}
+                  for i in range(6) for _ in range(4)]  # dados "calibráveis"
+        trades += [{"root": "WIN", "tf": "M15", "pnl": 5.0, "day": f"d{i}"}
+                   for i in range(6) for _ in range(4)]
+        cfg = {"symbols": ["WIN", "WDO", "BIT", "WSP"],
+               "max_daily_loss_by_symbol": {"WIN": -150}}
+        r = rc.calibrate_daily_stops(cfg, trades)
+        assert "DOL" not in r, "root fora do config não pode ser calibrado"
+        assert "WIN" in r
+
+    def test_sem_chave_symbols_mantem_comportamento_antigo(self):
+        """Config mínimo (sem 'symbols') — união trades∪current, como antes."""
+        trades = [{"root": "DOL", "tf": "M15", "pnl": 5.0, "day": "d1"}]
+        cfg = {"max_daily_loss_by_symbol": {}}
+        r = rc.calibrate_daily_stops(cfg, trades)
+        assert "DOL" in r  # dados_insuficientes, mas presente (fallback)
+        assert r["DOL"]["status"] == "dados_insuficientes"

@@ -123,7 +123,8 @@ def open_worst_case_risk(open_positions: list, root: str, config: dict,
 
 def check_entry_risk_budget(symbol: str, direction: str, sl_pts: float,
                             volume: float, config: dict,
-                            open_positions: list) -> dict:
+                            open_positions: list,
+                            realized_pnl: float = 0.0) -> dict:
     """Decide se a nova entrada cabe no orçamento de risco diário do root.
 
     Args:
@@ -135,6 +136,10 @@ def check_entry_risk_budget(symbol: str, direction: str, sl_pts: float,
             contract_specs, execution_guards).
         open_positions: snapshot broker-truth de posições (lista de dicts
             do status() do orchestrator).
+        realized_pnl: PnL diário JÁ REALIZADO do root em R$ (Wave 893 —
+            default 0 mantém comportamento antigo). SÓ perdas consomem
+            orçamento; lucro realizado não o expande (ganho é território
+            do profit lock/trailing, não do risco).
 
     Returns:
         dict {ok: bool, reason: str, detail: str, budget, open_risk,
@@ -187,17 +192,27 @@ def check_entry_risk_budget(symbol: str, direction: str, sl_pts: float,
         open_risk = open_worst_case_risk(open_positions, root, config, budget)
         new_risk = abs(float(sl_pts)) * point * mult * max(float(volume), 0.0)
         budget_eff = budget / (1.0 + max(buffer, 0.0))
+        # Wave 893 (Bruno 08/09): perda REALIZADA consome orçamento. Incidente
+        # 04/09 (WIN): -90 realizado + nova entrada de pior caso -120 vs stop
+        # diário -150 — o governador via só "0 aberto + 120 novo ≤ 120 efetivo"
+        # e liberava; o dia fechou em -210 (40% além do stop). Só o lado
+        # negativo conta (ver docstring de realized_pnl).
+        realized_loss = min(float(realized_pnl or 0.0), 0.0)
+        avail = budget_eff + realized_loss
         out["budget"] = budget
         out["open_risk"] = round(open_risk, 2)
         out["new_risk"] = round(new_risk, 2)
+        out["realized_pnl"] = round(float(realized_pnl or 0.0), 2)
 
-        if open_risk + new_risk > budget_eff:
+        if open_risk + new_risk > avail:
             out["ok"] = False
             out["reason"] = "RISK_BUDGET"
             out["detail"] = (
                 f"risco em aberto R${open_risk:.0f} + novo R${new_risk:.0f} "
-                f"> orçamento efetivo R${budget_eff:.0f} "
-                f"(stop diário {root} -R${budget:.0f}, buffer {buffer:.0%})"
+                f"> disponível R${avail:.0f} "
+                f"(stop diário {root} -R${budget:.0f}, buffer {buffer:.0%}"
+                + (f", já realizado R${realized_pnl:.0f}" if realized_loss < 0 else "")
+                + ")"
             )
         return out
     except Exception as e:  # fail-open: governador nunca segura entrada

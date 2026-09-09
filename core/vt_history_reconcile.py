@@ -55,15 +55,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "mt5"))
 DB_PATH = Path("/home/bruno/Projects/Vibe-Trading/vt_trades.db")
 
 
-def _open_db(timeout: float = 10.0) -> sqlite3.Connection:
+def _open_db(timeout: float = 30.0) -> sqlite3.Connection:
     """Conexão SQLite com WAL + busy_timeout (mesmo padrão de vt_trade_log).
 
-    Failure mode: se DB está locked por >10s, propaga OperationalError
-    pro caller, que aborta rápido (não trava autotrader).
+    Wave 893 (08/09): timeout 10→30s. Incidente 08/09 09:31-10:02 — bursts de
+    "database is locked" no VPS fizeram o RECONCILE perder inserts de tickets
+    reais (WSPU26 2521005088: posição adotada em memória e nunca persistida).
+    30s de busy_timeout absorve contenção entre daemon/walker/watchdog/copilot.
     """
     conn = sqlite3.connect(str(DB_PATH), timeout=timeout)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -333,6 +335,10 @@ def reconcile_db_with_mt5_history(
                 _err = f"db_locked_trade#{tid}: {_e}"
                 result["errors"].append(_err)
                 log_callable(f"[RECONCILE] {trade['symbol']} #{tid}: DB locked, next tick will retry")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 continue
             except Exception as _e:
                 _err = f"update_trade#{tid}: {_e}"

@@ -679,3 +679,220 @@ resolvido restaurando `Config/accounts.dat.bak_prd_20260805` + boot frio —
 demo verificada por UI + orchestrator (52257579, R$1.000.580,23). Lição:
 trocar conta no terminal pode invalidar a credencial salva da anterior —
 sempre ter o accounts.dat.bak atualizado antes de qualquer troca.
+
+## Adendo VPS-M4 (2026-09-03) — migração para VPS + fidelidade do forward walker
+
+**Migração**: produção inteira na VPS Hostinger KVM 2 (São Paulo, ping ~3,3 ms à
+XP). Daemon/crons/watcher/walker/hermes-gateway na VPS; desktop vira estação de
+dev (crontab só com espelho 19:40 + rescan 19:00). Runbook completo:
+`MIGRACAO_VPS.md`; kit: `scripts/vps/`. Serviços permanentes: xvfb99,
+mt5-order, hermes-gateway (systemd, Restart=always). gateway local do desktop
+DESABILITADO no systemd --user — nunca habilitar com a VPS no ar (conflito de
+polling 409 derruba o chat).
+
+**Fidelidade do forward walker (correção VPS-M4)**: o walker NÃO tinha os
+cooldowns do daemon e reentrava onde o live rejeita (WDO 09:44→09:45 de
+03/09). Espelhado em `optimization/forward_walker.py`: `_sim_cooldown_ok`
+(resolução params_by_tf→CONFIG[root]→CONFIG[win]→300s; cd por direção +
+cd×0,6 por símbolo) + lockout de 30min após 2 losses consecutivas mesma
+direção (Wave N+4B). Efeito: contagem de sims tende a CAIR e o forward fica
+mais honesto vs live.
+
+**Coletor do walker**: agora é cron 17:05 (`scripts/fw_collect_day.sh` →
+output-dir do job 03b055c13731 + espelho em data/forward_journal/). O wrapper
+em background do job hermes morria com o scope do job (cgroups).
+
+**Leitura do journal (convenção)**: slippage = fill − decisão; **negativo =
+favorável**. O relatório do 03/09 leu −100 pts do BIT como "pior" — era o fill
+MAIS favorável do dia. Cabeçalho reescrito para "adverso máx / favorável máx".
+
+**Forward 03/09 (primeiro pregão VPS)**: 33 sims, +R$ 57,95 vs live −R$ 118,69
+(19t). Lições: (1) "100% exits SL" NÃO é anomalia — os exits são trailing
+stops, muitos em lucro (o rótulo é SL mesmo em trailing positivo); TP1 pulado
+7× por volume fracionário é correto na B3. (2) **Imposto de realidade**:
+contraparte live em 14/33 sims, Δ médio R$ 7,26/trade — dimensionar sizing da
+conta real com esse custo. (3) BIT é insimulável (spread 40–80 pts + slippage
+até −100): sim positiva ≠ live negativa; par permanece desativado (v1347).
+(4) WSP M15/M5 únicos pares com sim e live alinhados (+132/+17 vs +166/+160
+7d). (5) WDO_M5 EMA_SLOPE_MOMENTUM e WIN sem amostra forward suficiente —
+pedem sessão forward dedicada antes de disable/ajuste.
+
+**Pendências abertas**: mineração dos 33 trades (SL-only vs MFE) na mineração
+de fim de semana; sessão forward dedicada WDO/WIN; cadastro do imposto de
+realidade no sizing da conta PRD antes da "operação na real".
+
+---
+
+## 17. Wave 892 — Gate de feriado B3 nos crons (07/09/2026)
+
+Incidente: no feriado de 07/09 a esteira seg–sex inteira rodou na VPS como se
+houvesse pregão. Efeitos além do ruído: (a) AGI 12:00 aplicou config ao vivo
+(v1355→v1359: risk target 100→200 e WIN_M15 desativado por live_bleed —
+rollback em `vt_config.json.snapshot_pre_cron_20260907_120001`, decisão do
+Bruno pendente); (b) self-heal reiniciou o MT5 às 12:00 (ticks zerados de
+mercado fechado pareceram feed quebrado); (c) falso ❌ no diario_abertura.
+
+Correções (aplicadas na VPS srv1952413 no mesmo dia):
+1. `scripts/vt_trading_day_gate.sh` — exit 1 se `core/vt_calendar.py
+   is_trading_day()` diz não-útil. Prefixado (`gate &&`) em 18 linhas do
+   `crontab.txt` (pre-flight, start, walker, fw_collect, diários, copilot
+   análise+intraday, daily report, AGI 12:00/17:10, self-heal, scope audit,
+   weekly, loser replay, watchdog). **Feriado ⇒ AGI 12:00/17:10 não rodam** —
+   "AGI não rodou" em feriado é comportamento esperado, não incidente.
+2. `monitoring/vt_self_heal.py` — `_is_non_trading_today()`: `mt5_slow` não
+   gera heal em feriado e `mt5_tick_stale` retorna None no topo do check.
+3. Hermes na VPS: pausados os duplicados `Intraday Report 20min`
+   (6703b26712e1 — precedente W861), `Relatório Diário 16:50` (576c2dd0f2c3)
+   e `Pre-Flight 08:50` (6f5aa30da34a). A auditoria completa dos 36 jobs
+   segue como Wave VPS-M2 do MIGRACAO_VPS.md.
+
+---
+
+## 18. Wave 893 — LLM do AGI no yolo (provider único) + fixes de observabilidade + DOL fora (08/09/2026)
+
+### LLM: cascata antiga MORTA desde 03/09, provider único yolo
+
+O run 17:10 de 08/09 marcou **161 falhas consecutivas** do `ask_llm` — stages
+2/4 sem hipóteses/geração desde o primeiro pregão na VPS (03/09). Sondas diretas
+com a chave real revelaram que a cadeia zenmux/alibaba morreu por CONTA/CATÁLOGO,
+não por rede nem chave:
+
+| Provider | Erro real (HTTP) | Diagnóstico |
+|---|---|---|
+| zenmux deepseek-v4-flash-free | 404 `invalid_model` | free removido do catálogo |
+| zenmux deepseek-v4-flash | 402 `reject_no_credit` | saldo da conta zerado |
+| alibaba deepseek-v4-flash-0731 | 403 `AccessDenied.Unpurchased` | token-plan não cobre mais |
+| alibaba qwen3.8-max | 403 `AccessDenied.Unpurchased` | idem |
+
+**Correção** (`core/vt_hermes_helper.py`): `_ASK_LLM_PROVIDERS` e
+`_PROVIDER_ENDPOINTS` agora têm APENAS `yolo`/`qwen3.8-27b` — o mesmo provider
+default do hermes no VPS (`~/.hermes/config.yaml`), chave `YOLO_AUTO_API_KEY`
+do `~/.hermes/.env`. Bruno: "a LLM que pode usar é a do yolo que temos no
+hermes; exclua todas as demais". Verificação ponta a ponta na VPS em 08/09
+20:31: 547 chars OK, health file zerado.
+
+**Duas pegadinhas do yolo (medidas, não suposições):**
+1. Cloudflare na frente do yolo barra `Python-urllib` com 403 "error code:
+   1010" — o `_ask_llm_http_direct` agora manda `User-Agent: VibeTrading-AGI/4.0`.
+2. O qwen3.8-27b do yolo IGNORA `enable_thinking` e emite `reasoning_content`
+   ANTES do `content` — sem `chat_template_kwargs: {"enable_thinking": false}`
+   o budget de tokens vai em raciocínio e o content chega VAZIO. Campo
+   adicionado condicionalmente (só yolo; Groq, ex., rejeita campos extras).
+
+**Atenção**: `ask_llm` trata resposta < `MIN_VALID_RESPONSE_CHARS` (50) como
+falha do provider. Validator_v2 (caminho live) tem cadeia PRÓPRIA com Groq na
+frente (VPS-M4, 03/09) — não foi tocado nesta wave.
+
+### Fixes de observabilidade (audit JSON/Telegram)
+
+1. **"0min" fantasma**: o pipeline roda o stage 6 (que ESCREVE o audit) ANTES
+   de preencher `ended_at`/`duration_s` — o audit saía sempre com
+   `ended_at=null, duration_s=0` (run de ~27min virava "0min"). Corrigido em
+   `pipeline.py` (os dois caminhos de saída): timestamps agora são setados
+   antes do stage 6.
+2. **Audit sub-registra rejeições**: `rejected_changes`/`applied_changes` do
+   ctx são REPLACE por chamada do stage 5 (que roda ~6-8x por run) — o audit
+   gravava só a última (15 rejeições do Telegram viravam 1 no audit). O audit
+   agora grava os acumuladores `all_rejected_changes`/`all_applied_changes`
+   (mesma fonte do resumo Telegram).
+
+### DOL (dólar cheio) removido de vez — Bruno: "nunca vamos operar"
+
+- O "Stop DOL: mantém (só 0d de histórico)" dos relatórios era lixo do DB:
+  20 linhas sintéticas `DOLN26N99` (simulação legada de rollover, magic 555501,
+  preços 100→130, citadas em vt_calendar.py:239) viravam root "DOL" no
+  `calibrate_daily_stops` (root = symbol[:3]).
+- **DB**: as 20 linhas DOL% removidas do `vt_trades.db` da VPS em 08/09;
+  backup JSON em `~/Backups/trades_DOLN26N99_removed_20260908.json` (VPS e
+  desktop). NOTA: 12 linhas irmãs `BITM26N99` (mesma família sintética)
+  permanecem — BIT é root operado, remoção é decisão do Bruno.
+- **Código**: `calibrate_daily_stops` agora intersecta roots com
+  `config["symbols"]` (sem a chave, comportamento antigo preservado). Os
+  dicionários defensivos DOL em core/ (SL_LIMITS do validator_v2, point values
+  do governor/netting) ficaram: root desconhecido cai em default MAIS
+  permissivo — remover DOL desses maps amoleceria a proteção fail-safe.
+
+---
+
+## 19. Wave 893 — assimetria ganho/perda: piso estrutural do alvo, governador com realizado, live-strat-bleed, e recuperação do DB lock (08/09/2026)
+
+**Contexto (diagnóstico pedido pelo Bruno)**: "quando perde, perde muito; quando
+ganha, o AGI limita com profit lock baixo". Medido em live 09/08–04/09 (22
+pregões): 11 dias ganhadores = +R$1.166 (média +106, máx +188) vs 11 perdedores
+= −R$1.746 (média −159, máx −454). Três causas estruturais, todas corrigidas:
+
+1. **Lock adaptativo preso no mínimo**: target = max(min, média dos dias
+   positivos ×1.0) — a própria truncagem destrói a evidência de dias maiores
+   (realimentação para baixo). Agravado em 08/09 17:37: calibrador aplicou
+   alvo 100 (abaixo do piso documentado "R$ 200-300 conforme Bruno" em
+   vt_profit_lock.py) porque em janela perdedora o contrafactual sempre
+   prefere truncar mais cedo.
+2. **Trailing morto**: trailing ativa em 125/lote mas o lock full disparava
+   em ~110 — o ratchet (proteger devolução SEM capar) nunca engajava
+   (state file ausente no VPS).
+3. **Stops só pré-entrada**: kill −500 e stops por símbolo bloqueiam novas
+   entradas; posições abertas seguem. WIN 04/09: −90 realizado + nova entrada
+   pior caso −120 vs stop −150 — o governador via "0 aberto + 120 ≤ 120
+   efetivo" e liberava; dia fechou −210 (40% além do stop).
+
+**Mudanças (todas com testes; deploy VPS 08/09 ~21h)**:
+- `risk_calibrator.calibrate_profit_target` — **piso estrutural** (decisão
+  do AGI, NÃO número do Bruno): floor = max(1.5 × perda média dos dias
+  negativos da janela, 1.2 × ativação-do-trailing-1-lote), clamp [100, 600];
+  piso pode ultrapassar o clamp de histerese (guardrail ≠ otimização) e a
+  cláusula `cur < floor` força APLICAÇÃO mesmo com gain contrafactual negativo.
+  Audit passa a carregar `floor` + `floor_basis`.
+- `vt_risk_governor.check_entry_risk_budget(realized_pnl=...)` — perda
+  REALIZADA do root consome orçamento (só lado negativo; lucro não expande).
+  Daemon passa `_symbol_daily_pnl(symbol)` no call site.
+- `stage5_apply._incumbent_live_bleeding` — **exceção de realidade live** no
+  better_baseline: incumbente com live ≤ −R$200/30d e ≥10 trades (envs
+  VT_AGI_LIVE_STRAT_PNL / _MIN_TRADES) não é baseline válido; candidato
+  positivo passa (WF/churn/rolagem seguem valendo; gate B do non_regression
+  recebe baseline_pnl=0). Caso: AGI4_WIN_121815 −R$440/29t em WIN_M15 com sim
+  positiva — e o kill-switch POR PAR não via (HTF_BIAS +346 no mesmo par).
+- **DB lock (incidente 09:31–10:02)**: busy_timeout 30s em vt_trade_log,
+  vt_history_reconcile, walker (3 conexões bare) + retry ×3 no insert de
+  órfãos do daemon. Trades do dia recuperados do MT5 por position_id
+  (close_source RECONCILE_DBLOCK_20260908): dia real = +R$106,87
+  (WDO +130 / WSP −23,13) — lock tinha armado às 10:55 (target 110,49).
+
+**Alvo redefinido pelo AGI (run standalone 20:54, v1369)**: 100 → **250**
+(bruto 200, piso 250 = 1.5×R$161,27, gain +47,78, clamped_by_floor). Efeito
+esperado: trailing engaja em 125/lote ANTES do lock full 250 — dia ganhador
+corre com ratchet em vez de morrer cedo. NOTA: `history(days=N)` do Wine MT5
+ segue quebrado (0 deals) — só `history(position=ID)` funciona; enumeração
+ de tickets veio do log do daemon.
+
+**Invariantes novos**: (a) piso do alvo é dados-derivado — Bruno NÃO seta
+número fixo (decisão 08/09 "quem define é o AGI"); (b) governador conta
+realizado; (c) exceção live-bleed NÃO pula walk-forward/churn; (d) recuperação
+de trades usa broker-truth por position_id, nunca estimativa.
+
+---
+
+## 20. Wave 893 (fecho) — limpeza dos plugins que queimavam o sandbox (08/09/2026)
+
+O run de validação 20:59-21:28 mostrou o flood "⚠️ BUG DE CÓDIGO: check_entry
+lançou 180x exceção (TypeError: object of type 'numpy.float64' has no len())"
+em ~1110 linhas de log por run. Fuzz local do catálogo INTEIRO (74 estratégias
+× grades do stage3, backtest_combo debug=True) isolou as causas:
+
+1. `AGI4_BIT_202313` e `agi4_wsp_201634`: tratavam `calculate_atr`/
+   `calculate_ema` como SÉRIE — os utils (engine E live) devolvem ESCALAR.
+   É a família do NORMA §3 Bug 1 (LLM indexa float), em DUAS variantes:
+   `len(scalar)` (TypeError "has no len()") e `ema[-1]` ("invalid index to
+   scalar variable"). Fix: 202313 calcula média de True Range puro sobre a
+   janela; 201634 usa EMA da janela truncada (`bars[:-slope_lookback]`,
+   padrão do AGI4_BIT_201534) e comparação direta `ema_f > ema_s > ema_t`
+   nos confluences. Pós-fix o 201634 passou a GERAR 224 trades no fuzz
+   (antes: 0 — alpha 100% escondido pela exceção).
+2. `ENHANCED_BOLLINGER` (e similares do live): KeyError 'open' — o
+   `bars_nf` do backtest_v944 só tinha high/low/close/volume, enquanto o
+   live fornece open/time. Fix: `backtest_combo` injeta "open" e "time"
+   (fidelidade sandbox↔live).
+
+Efeito: essas estratégias eram rejeitadas em 100% dos combos com 0 trades —
+ciclos queimados e alpha real escondido. Pós-fix: os 3 culpados rodaram os
+grids completos sem nenhuma exceção (fuzz dirigido; o fuzz do catálogo
+inteiro foi cortado por tempo — estratégias saudáveis simulam caro).

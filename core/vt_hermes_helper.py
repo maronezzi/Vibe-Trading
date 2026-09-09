@@ -235,24 +235,22 @@ def _get_ask_llm_logger() -> logging.Logger:
     return _ASK_LLM_LOGGER
 
 
-# Provedores LLM — mesma CADEIA de fallback de core/vt_order_validator_v2.py
-# Wave 880.F (Bruno 09/08): cadeia LLM unificada em TODOS os cron scripts
-# (hermes + openclaw), na ordem:
-#   1º zenmux/deepseek/deepseek-v4-flash-free
-#   2º zenmux/deepseek/deepseek-v4-flash
-#   3º alibaba-token-plan/deepseek-v4-flash-0731
-#   4º alibaba-token-plan/qwen3.8-max
-# (deepseek-v4-pro REMOVIDO da cadeia — Bruno 09/08.)
+# Provedores LLM do AGI — provider ÚNICO: yolo (qwen3.8-27b).
+# Wave 892 (Bruno 08/09): yolo é o mesmo provider default do hermes no VPS
+# (~/.hermes/config.yaml: provider yolo, model qwen3.8-27b, chave
+# YOLO_AUTO_API_KEY em ~/.hermes/.env). A cadeia anterior (zenmux free/flash +
+# alibaba deepseek/qwen) está MORTA desde 03/09 — 161 falhas consecutivas
+# verificadas com sondas diretas: zenmux 404 invalid_model (free removido do
+# catálogo), zenmux 402 reject_no_credit (saldo zerado), alibaba 403
+# AccessDenied.Unpurchased (token-plan não cobre mais os modelos). Bruno:
+# "a LLM que pode usar é a do yolo que temos no hermes; exclua todas as demais".
 #
 # DIFERENÇA de timeout vs validator_v2: este ask_llm é usado pelo AGI (geração
 # de código noturna, pós-close), não por validação de ordem em tempo real. O
 # qwen leva ~40-60s para GERAR CÓDIGO (Wave noturno-generoso, Bruno 01/08), por
-# isso os timeouts aqui são maiores. A ORDEM dos modelos é a mesma da cadeia.
+# isso o timeout aqui é generoso.
 _ASK_LLM_PROVIDERS = [
-    {"provider": "zenmux",             "model": "deepseek/deepseek-v4-flash-free", "timeout": 180},
-    {"provider": "zenmux",             "model": "deepseek/deepseek-v4-flash",      "timeout": 180},
-    {"provider": "alibaba-token-plan", "model": "deepseek-v4-flash-0731",          "timeout": 180},
-    {"provider": "alibaba-token-plan", "model": "qwen3.8-max",                     "timeout": 180},
+    {"provider": "yolo", "model": "qwen3.8-27b", "timeout": 180},
 ]
 
 # Wave 881 (03/08/2026): mínimo de chars para considerar uma resposta válida.
@@ -316,13 +314,11 @@ def read_llm_health() -> dict:
 # direto (medido 06/08: 3-13s vs 46-54s do CLI). Espelho aqui o mesmo
 # transporte como caminho PRIMÁRIO do ask_llm; o CLI vira fallback.
 _PROVIDER_ENDPOINTS = {
-    "alibaba-token-plan": (
-        "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
-        "ALIBABA_TOKEN_PLAN_API_KEY",
-    ),
-    "zenmux": (
-        "https://zenmux.ai/api/v1/chat/completions",
-        "ZENMUX_API_KEY",
+    # Wave 892 (Bruno 08/09): único provider do AGI — o yolo do hermes.
+    # Endpoint/modelo/chave espelham ~/.hermes/config.yaml (provider yolo).
+    "yolo": (
+        "https://yolo-auto.com/v1/chat/completions",
+        "YOLO_AUTO_API_KEY",
     ),
 }
 
@@ -380,12 +376,21 @@ def _ask_llm_http_direct(prompt: str, provider: str, model: str, timeout: int,
         "max_tokens": 4096,
         "enable_thinking": False,
     }
+    # Wave 892 (08/09): o yolo (vLLM) IGNORA enable_thinking e o qwen3.8-27b
+    # emite reasoning_content ANTES do content — sem este kwargs o budget de
+    # tokens vai embora em raciocínio e o content chega vazio (medido 08/09).
+    if provider == "yolo":
+        body["chat_template_kwargs"] = {"enable_thinking": False}
     req = urllib.request.Request(
         url,
         data=_json.dumps(body).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            # User-Agent explícito: o Cloudflare do yolo barra Python-urllib
+            # com 403 "error code: 1010" (assinatura do cliente); UA próprio
+            # passa (medido 08/09, curl e urllib com UA → 200).
+            "User-Agent": "VibeTrading-AGI/4.0",
         },
         method="POST",
     )
@@ -409,9 +414,9 @@ def ask_llm(
 ) -> str | None:
     """Provider LLM único para o AGI e futuros callers cross-module.
 
-    Tenta provedores em ordem: default global do hermes (deepseek-v4-flash) →
-    qwen3.7-max → zenmux. Retorna a primeira resposta não-vazia ou ``None`` em
-    qualquer falha — nunca levanta.
+    Tenta os provedores de ``_ASK_LLM_PROVIDERS`` em ordem (desde o Wave 892,
+    apenas yolo/qwen3.8-27b — o mesmo provider default do hermes). Retorna a
+    primeira resposta não-vazia ou ``None`` em qualquer falha — nunca levanta.
 
     Args:
         prompt: texto a enviar.

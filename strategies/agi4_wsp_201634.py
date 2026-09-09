@@ -49,9 +49,16 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
         return None
 
     # --- EMA slope (tendência) ---
-    if len(ema_s) < slope_lookback + 1:
+    # Wave 893 fix: calculate_ema do utils devolve ESCALAR — len() em float
+    # lançava TypeError em TODO combo da simulação. Slope = EMA atual vs EMA
+    # da janela sem as slope_lookback barras mais recentes (mesmo padrão do
+    # AGI4_BIT_201534, que usa bars[:-5] para o prev).
+    if len(bars) < slope_lookback + ema_slow + 1:
         return None
-    slope = ema_s[-1] - ema_s[-(slope_lookback + 1)]
+    ema_s_prev = calculate_ema(bars[:-slope_lookback], ema_slow)
+    if not ema_s_prev:
+        return None
+    slope = ema_s - ema_s_prev
     slope_threshold = atr * 0.05
 
     # --- POC aproximado: preço com maior volume nas últimas N barras ---
@@ -85,7 +92,9 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     vol_ok = rvol >= rvol_spike
 
     # --- Confluência LONG ---
-    long_trend = (ema_f[-1] > ema_s[-1] > ema_t[-1]) and (slope > slope_threshold)
+    # Wave 893 fix: EMAs são escalares (utils não devolvem série) —
+    # indexar [-1] levantava 'invalid index to scalar variable'.
+    long_trend = (ema_f > ema_s > ema_t) and (slope > slope_threshold)
     long_momo = rsi_long_min <= rsi <= rsi_long_max
     long_poc = poc_far_long  # preço puxou para cima do POC com volume
     if long_trend and long_momo and long_poc and vol_ok:
@@ -105,7 +114,7 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
         }
 
     # --- Confluência SHORT ---
-    short_trend = (ema_f[-1] < ema_s[-1] < ema_t[-1]) and (slope < -slope_threshold)
+    short_trend = (ema_f < ema_s < ema_t) and (slope < -slope_threshold)
     short_momo = rsi_short_min <= rsi <= rsi_short_max
     short_poc = poc_far_short
     if short_trend and short_momo and short_poc and vol_ok:

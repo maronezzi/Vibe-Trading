@@ -440,6 +440,63 @@ def live_kill_switch_pass(ctx: dict) -> list[str]:
     return killed
 
 
+def _incumbent_live_bleeding(pair: str, config: dict) -> tuple[bool, str]:
+    """Incumbente do par sangrando no LIVE (Wave 893, Bruno 08/09). Fail-safe.
+
+    O better_baseline compara o candidato contra a SIM do incumbente. Quando
+    o incumbente é cronicamente negativo no REAL (janela 30d) a sim dele não
+    é régua válida — segurar a troca "porque a sim do atual é melhor" deixa o
+    bleed eterno. Caso 08/09: AGI4_WIN_121815 live -R$440/29t em WIN_M15 com
+    sim positiva; as vitórias do HTF_BIAS no MESMO par escondiam o
+    kill-switch por PAR (granularidade errada — o bleed é por ESTRATÉGIA).
+
+    Retorna (True, detalhe) se strategy_by_tf[pair] tem live ≤
+    VT_AGI_LIVE_STRAT_PNL (-200) com ≥ VT_AGI_LIVE_STRAT_MIN_TRADES (10)
+    trades fechados nos últimos 30d. Qualquer erro → (False, "") — nunca
+    derruba o gate padrão.
+    """
+    try:
+        import os as _os
+        strat = (config.get("strategy_by_tf", {}) or {}).get(pair, "")
+        if not strat or "_" not in pair:
+            return False, ""
+        root, tf = pair.split("_", 1)
+        try:
+            from optimization.agi_v4.stage1_collect import _resolve_db_path
+            db = _resolve_db_path(config)
+        except Exception:
+            db = None
+        if not db:
+            return False, ""
+        from pathlib import Path as _P
+        if not _P(str(db)).exists():
+            return False, ""
+        import sqlite3 as _sq
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+        cutoff = (_dt.now() - _td(days=30)).strftime("%Y-%m-%d")
+        con = _sq.connect(str(db), timeout=10.0)
+        try:
+            row = con.execute(
+                """SELECT COUNT(*), COALESCE(SUM(net_pnl), 0) FROM trades
+                   WHERE symbol LIKE ? AND timeframe = ? AND strategy = ?
+                     AND entry_time >= ? AND exit_time IS NOT NULL
+                     AND exit_reason != 'GHOST'""",
+                (f"{root}%", tf, strat, cutoff),
+            ).fetchone()
+        finally:
+            con.close()
+        n, pnl = int(row[0] or 0), float(row[1] or 0)
+        min_n = int(float(_os.environ.get("VT_AGI_LIVE_STRAT_MIN_TRADES", "10")))
+        thr = float(_os.environ.get("VT_AGI_LIVE_STRAT_PNL", "-200"))
+        if n >= min_n and pnl <= thr:
+            return True, (f"incumbente {strat} live {n}t R${pnl:+.0f}/30d "
+                          f"≤ R${thr:.0f}")
+        return False, ""
+    except Exception:
+        return False, ""
+
+
 def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: dict) -> dict:
     pair = cand.get("pair", "")
     sym = pair.split("_", 1)[0] if "_" in pair else pair
@@ -530,9 +587,18 @@ def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: d
     cand_score = _blended(cand_pnl, cand.get("full", {}))
     base_score = _blended(baseline_pnl, baseline)
 
+    # ── Wave 893 (08/09): EXCEÇÃO DE REALIDADE LIVE no better_baseline ──
+    # Incumbente sangrando no real (≥10t, ≤-R$200/30d) → a sim dele não é
+    # régua: candidato positivo + walk-forward é aplicado mesmo com score
+    # sim menor. Os demais gates (WF 75%, anti-churn, rolagem) seguem valendo.
+    _strat_bleed, _strat_bleed_why = _incumbent_live_bleeding(pair, config)
+    if _strat_bleed:
+        log.info(f"[LIVE-STRAT-BLEED] {pair}: {_strat_bleed_why} — "
+                 f"baseline sim (R${base_score:.0f}) ignorado nesta troca")
+
     # Candidato positivo mas PIOR que baseline positivo: mantém o atual.
     # (ambos positivos → prefere o maior score; nunca troca positivo por menos)
-    if baseline_pnl > 0 and cand_score < base_score:
+    if baseline_pnl > 0 and cand_score < base_score and not _strat_bleed:
         return _reject(cand, "better_baseline_exists",
                        f"score cand R${cand_score:.2f} < baseline R${base_score:.2f} "
                        f"(cand 30d R${cand_pnl:.2f}/hoje R${cand.get('full', {}).get('today_pnl', 0):.2f}, "
@@ -552,8 +618,12 @@ def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: d
             from optimization.agi_v4 import non_regression
         except ImportError:
             from . import non_regression
+        # Wave 893: incumbente live-bleeding → gate B (fator sobre baseline
+        # positivo) não se aplica — mesma razão do better_baseline acima.
         nr_ok, nr_gate, nr_reason = non_regression.gate_swap(
-            pair, cand, baseline_pnl, cand_score, base_score,
+            pair, cand,
+            baseline_pnl if not _strat_bleed else 0.0,
+            cand_score, base_score,
             ctx.get("_nr_session", ""),
             live_pnl_by_pair=ctx.get("_nr_live_pnl"))
         if not nr_ok:

@@ -15,7 +15,6 @@ ESTE TESTE:
 - Verifica que os provider names batem com o config.yaml
 - Smoke test do _ask_llm_provider com MiniMax-M3 (precisa API)
 """
-import os
 import subprocess
 import sys
 import unittest
@@ -61,27 +60,28 @@ class TestValidatorLLMWiring(unittest.TestCase):
                 f"de 'minimax-oauth'). Output: {output[:500]}"
             )
 
-    def test_first_provider_is_zenmux_free(self):
-        """Wave 880.F (Bruno 07/08): primário do validator é o zenmux free
-        (deepseek/deepseek-v4-flash-free), 1º da cadeia de uso LLM definida
-        pelo Bruno. NÃO é mais o modelo global do config.yaml."""
+    def test_first_provider_is_groq(self):
+        """VPS-M4 (Bruno 03/09): primário do validator é groq/qwen3.8-27b
+        — prompts curtos, veredito em ~0,35s vs 13-18s da cadeia antiga.
+        (Antes era zenmux free — Wave 880.F 07/08.)"""
         primary = self.v2._LLM_PROVIDERS[0]
         self.assertEqual(
-            primary["provider"], "zenmux",
+            primary["provider"], "groq",
             f"Provider primário do validator ({primary['provider']}) ≠ "
-            f"zenmux. Wave 880.F: cadeia definida pelo Bruno."
+            f"groq. VPS-M4: cadeia definida pelo Bruno."
         )
         self.assertEqual(
-            primary["model"], "deepseek/deepseek-v4-flash-free",
-            f"Model primário do validator ({primary['model']}) ≠ "
-            f"deepseek/deepseek-v4-flash-free."
+            primary["model"], "qwen/qwen3.8-27b",
+            f"Model primário do validator ({primary['model']}) ≠ qwen/qwen3.8-27b."
         )
 
     def test_chain_order_is_bruno_defined(self):
-        """Wave 880.F (Bruno 07/08): cadeia LLM na ordem:
-        zenmux-free → zenmux-flash → alibaba-flash-0731 → qwen3.8-max.
-        (deepseek-v4-pro REMOVIDO — Bruno 09/08.)"""
+        """VPS-M4 (Bruno 03/09): cadeia LLM na ordem:
+        groq-qwen3.8-27b → zenmux-free → zenmux-flash → alibaba-flash-0731
+        → qwen3.8-max. (deepseek-v4-pro REMOVIDO — Bruno 09/08.)
+        Groq na frente; zenmux/alibaba são fallback pós rate-limit."""
         expected = [
+            ("groq", "qwen/qwen3.8-27b"),
             ("zenmux", "deepseek/deepseek-v4-flash-free"),
             ("zenmux", "deepseek/deepseek-v4-flash"),
             ("alibaba-token-plan", "deepseek-v4-flash-0731"),

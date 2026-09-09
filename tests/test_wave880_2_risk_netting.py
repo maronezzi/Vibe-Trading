@@ -46,6 +46,38 @@ CONFIG_RISCO = {
 }
 
 
+class TestGovernadorRealizado:
+    """Wave 893 (08/09): perda REALIZADA do root consome orçamento.
+
+    Incidente 04/09 (WIN): -R$90 realizado, nova entrada pior caso -R$120,
+    stop diário -150 — governador via "0 aberto + 120 ≤ 150" e liberava;
+    o dia fechou -210 (40% além do stop)."""
+
+    def test_incidente_04_09_perda_realizada_bloqueia(self):
+        # WIN: SL 600pts × mult 0.2 × 1 lote = R$120 de pior caso.
+        # Sem realizado: 120 ≤ 150 → ok. Com -90 realizado: 120 > 60 → bloqueia.
+        r_sem = gov.check_entry_risk_budget(
+            "WINZ26", "SELL", 600, 1.0, CONFIG_RISCO, [])
+        assert r_sem["ok"] is True
+        r_com = gov.check_entry_risk_budget(
+            "WINZ26", "SELL", 600, 1.0, CONFIG_RISCO, [], realized_pnl=-90.0)
+        assert r_com["ok"] is False
+        assert r_com["reason"] == "RISK_BUDGET"
+
+    def test_lucro_realizado_nao_expande_orcamento(self):
+        # +R$200 realizado NÃO libera risco além do stop diário.
+        r = gov.check_entry_risk_budget(
+            "WINZ26", "SELL", 1200, 1.0, CONFIG_RISCO, [], realized_pnl=200.0)
+        # 1200pts × 0.2 = R$240 > 150 mesmo com lucro — bloqueia
+        assert r["ok"] is False
+
+    def test_realizado_zero_mantem_comportamento_antigo(self):
+        # default/kwarg 0 = comportamento pré-Wave 893 (retrocompatível)
+        r = gov.check_entry_risk_budget(
+            "WINZ26", "SELL", 600, 1.0, CONFIG_RISCO, [], realized_pnl=0.0)
+        assert r["ok"] is True
+
+
 def _pos(symbol, direction, vol, entry, sl, magic=555501):
     return {"symbol": symbol, "type": 0 if direction == "BUY" else 1,
             "volume": vol, "price_open": entry, "sl": sl, "magic": magic,

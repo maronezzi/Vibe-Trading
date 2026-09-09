@@ -54,6 +54,20 @@ MIN_TRADES_DAY = 3    # dias com menos trades não contam
 MIN_GAIN_R = 15.0     # ganho mínimo acumulado (R$) p/ trocar o valor
 LOOKBACK_DAYS = 21    # janela de calibração (3 semanas)
 
+# ── Wave 893 (Bruno 08/09 — "quem define o alvo é o AGI, simulando"): piso
+# ESTRUTURAL do alvo diário, derivado dos dados, não um número fixo do Bruno.
+# Contexto: o contrafactual puro numa janela perdedora SEMPRE prefere o alvo
+# mínimo (truncar cedo "economiza" devolução), e o lock adaptativo
+# (média dos dias positivos truncados) realimenta o próprio mínimo — teto de
+# ganho morrendo abaixo da perda média diária. Live 08/09-04/09: ganho médio
+# +R$106/dia vs perda média -R$159/dia (assimetria sentida pelo Bruno).
+# O piso deriva da janela: 1.5× a perda média dos dias negativos, e nunca
+# deixa o alvo abaixo da ativação do trailing (1 lote) — senão o lock full
+# dispara antes do ratchet e o trailing morre (estado ausente no VPS 08/09).
+TARGET_FLOOR_LOSS_MULT = 1.5   # alvo ≥ 1.5× perda média diária (teto ≥ piso)
+TARGET_FLOOR_ABS_MIN = 100.0   # borna inferior absoluta do piso
+TARGET_FLOOR_ABS_MAX = 600.0   # borna superior (não inflar em regime caótico)
+
 # Conversão preço → pontos por ativo (espelho de _point_map do autotrader)
 _POINT_VAL = {"WIN": 1.0, "WDO": 0.001, "BIT": 0.01, "WSP": 0.01, "IND": 1.0}
 
@@ -220,7 +234,16 @@ def calibrate_daily_stops(config: dict, trades: list[dict]) -> dict:
     """Stop diário ótimo por símbolo via counterfactual."""
     out = {}
     current = config.get("max_daily_loss_by_symbol", {}) or {}
-    for root in sorted({t["root"] for t in trades} | set(current.keys())):
+    # Wave 892 (Bruno 08/09): só calibra roots presentes no config (symbols).
+    # O root = symbol[:3] arrastava lixo do DB para o relatório — ex. linhas
+    # sintéticas DOLN26N99 (simulações legadas de rollover, magic 555501,
+    # rejeitadas fail-closed em produção) viravam um "Stop DOL: mantém (só 0d
+    # de histórico)" fantasma. DOL (dólar cheio) NUNCA será operado —Bruno.
+    known_roots = {str(s)[:3].upper() for s in (config.get("symbols") or [])}
+    roots = {t["root"] for t in trades} | set(current.keys())
+    if known_roots:
+        roots &= known_roots
+    for root in sorted(roots):
         days: dict[str, list[float]] = {}
         for t in trades:
             if t["root"] != root:
@@ -273,6 +296,18 @@ def calibrate_profit_target(config: dict, trades: list[dict],
     if len(days) < MIN_DAYS:
         return {"status": "dados_insuficientes", "days": len(days), "keep": cur,
                 "shadow_meta": meta}
+    # ── Piso estrutural (Wave 893) — o AGI define o alvo, mas nunca abaixo do
+    # que a própria assimetria da janela sustenta. Ver constantes TARGET_FLOOR_*.
+    neg_totals = [sum(v) for v in days.values() if sum(v) < 0]
+    avg_loss = abs(sum(neg_totals) / len(neg_totals)) if neg_totals else 0.0
+    per_lot = float(config.get("trailing_target_per_lot", 250.0) or 250.0)
+    act_pct = float(config.get("trailing_activation_pct", 0.5) or 0.5)
+    floor_loss = TARGET_FLOOR_LOSS_MULT * avg_loss
+    floor = max(TARGET_FLOOR_ABS_MIN, min(floor_loss, TARGET_FLOOR_ABS_MAX))
+    # trailing (1 lote) precisa engajar ANTES do lock full — senão o ratchet
+    # nunca ativa e a proteção vira truncagem seca (estado do VPS em 08/09).
+    floor = min(max(floor, 1.2 * act_pct * per_lot), TARGET_FLOOR_ABS_MAX)
+    floor_grid = next((t for t in TARGET_GRID if t >= floor), max(TARGET_GRID))
     scores = {}
     for tg in TARGET_GRID:
         scores[tg] = sum(_sim_with_target(v, tg) for v in days.values())
@@ -283,10 +318,17 @@ def calibrate_profit_target(config: dict, trades: list[dict],
     best_clamped = int(min(max(best, round(cur * 0.5)), round(cur * 2.0)))
     if best_clamped not in scores:
         best_clamped = min(TARGET_GRID, key=lambda t: abs(t - best_clamped))
-    best = best_clamped
+    # O piso é GUARDRAIL, não otimização: pode ultrapassar o clamp de
+    # histerese (correção estrutural de teto abaixo do piso não é "salto").
+    below_floor = best_clamped < floor_grid
+    best = max(best_clamped, floor_grid)
     cur_score = scores.get(int(cur)) if cur in TARGET_GRID else None
     gain = scores[best] - (cur_score if cur_score is not None else no_lock)
-    apply = (cur not in TARGET_GRID) or (gain >= MIN_GAIN_R and best != cur)
+    # Aplica por ganho contrafactual OU correção estrutural (alvo atual abaixo
+    # do piso): em janela perdedora o contrafactual NUNCA sobe o alvo — sem
+    # esta cláusula o piso nunca corrige nada (era o bug da Wave de 08/09).
+    apply = ((cur not in TARGET_GRID) or (gain >= MIN_GAIN_R and best != cur)
+             or (cur < floor_grid))
     return {
         "status": "calibrado",
         "days": len(days),
@@ -299,6 +341,13 @@ def calibrate_profit_target(config: dict, trades: list[dict],
         "current": cur,
         "apply": bool(apply and best != cur),
         "shadow_meta": meta,
+        "floor": floor_grid,
+        "floor_basis": {
+            "avg_daily_loss": round(avg_loss, 2),
+            "loss_mult": TARGET_FLOOR_LOSS_MULT,
+            "trailing_act_1lot": round(1.2 * act_pct * per_lot, 2),
+            "clamped_by_floor": bool(below_floor),
+        },
         "grid": {str(k): round(v, 2) for k, v in scores.items()},
     }
 
@@ -452,11 +501,16 @@ def run(ctx: dict) -> dict:
                      f"({r.get('days', 0)} dias) — mantém {r.get('keep')}")
     if target.get("status") == "calibrado":
         sm = target.get("shadow_meta", {}) or {}
+        fb = target.get("floor_basis", {}) or {}
         log.info(f"risk_calibrator: TARGET conta: atual {target['current']} → "
                  f"ótimo {target['best']} (bruto {target.get('best_raw')}, "
                  f"ganho R${target['gain']:+.2f}, {target['days']} dias, "
                  f"shadow ratio {sm.get('ratio')} com "
-                 f"{sm.get('n_reconstructed_days', 0)} dia(s) reconstruído(s)) "
+                 f"{sm.get('n_reconstructed_days', 0)} dia(s) reconstruído(s), "
+                 f"piso estrutural {target.get('floor')} = 1.5×perda média "
+                 f"R${fb.get('avg_daily_loss', 0):.0f} vs trailing "
+                 f"R${fb.get('trailing_act_1lot', 0):.0f}"
+                 f"{' [piso corrigiu teto]' if fb.get('clamped_by_floor') else ''}) "
                  f"{'APLICA' if target['apply'] else 'mantém'}")
     if lock_act.get("status") == "calibrado":
         log.info(f"risk_calibrator: TRAVA lucro: ativação {lock_act['current']:.2f} "

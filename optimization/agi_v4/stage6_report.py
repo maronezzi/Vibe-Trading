@@ -76,8 +76,12 @@ def _write_audit(ctx: dict) -> Path:
         "performance_summary": _summarize_performance(ctx),
         "search_results": ctx.get("search_results", []),
         "generated_strategies": ctx.get("generated_strategies", []),
-        "applied_changes": ctx.get("applied_changes", []),
-        "rejected_changes": ctx.get("rejected_changes", []),
+        "applied_changes": ctx.get("all_applied_changes") or ctx.get("applied_changes", []),
+        # Wave 892 (08/09): o audit gravava só a ÚLTIMA chamada do stage 5
+        # (ctx["rejected_changes"] é REPLACE por chamada — o stage 5 roda
+        # ~6-8x por run), então 15 rejeições do Telegram viravam 1 no audit.
+        # Usa o accumulator do run inteiro (mesma fonte do resumo Telegram).
+        "rejected_changes": ctx.get("all_rejected_changes") or ctx.get("rejected_changes", []),
         "rollover_state": ctx.get("rollover_state", {}),
         "series_sanity": ctx.get("series_sanity", {}),
         "risk_calibration": ctx.get("risk_calibration", {}),

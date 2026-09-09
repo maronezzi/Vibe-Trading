@@ -50,7 +50,6 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     # --- resolve indicadores injetados (não importar nada) ---
     calculate_rsi = utils["calculate_rsi"]
     calculate_ema = utils["calculate_ema"]
-    calculate_atr = utils["calculate_atr"]
     calc_sl = utils["calc_sl"]
 
     # --- fecha da barra atual ---
@@ -65,10 +64,23 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     lower_band = ema_mid - (keltner_mult * atr)
 
     # --- filtro de expansão de ATR (ATR_atual > 1.2x média[20]) ---
-    atr_series = calculate_atr(bars, atr_expansion_period)
-    if atr_series is None or len(atr_series) < atr_expansion_period:
+    # Wave 893 fix: calculate_atr do utils devolve ESCALAR (nunca série) —
+    # len() em float lançava TypeError em TODO combo da simulação (o flood
+    # "BUG DE CÓDIGO" no sandbox). Média de True Range puro sobre a janela,
+    # mesma fórmula do calculate_atr; bars newest-first (prev close de
+    # bars[k] é bars[k+1]).
+    trs = []
+    for k in range(min(atr_expansion_period, len(bars) - 1)):
+        b_now, b_prev = bars[k], bars[k + 1]
+        h = float(b_now.get("high", 0) or 0)
+        lo = float(b_now.get("low", 0) or 0)
+        c_prev = float(b_prev.get("close", 0) or 0)
+        if h <= 0 or lo <= 0 or c_prev <= 0:
+            continue
+        trs.append(max(h - lo, abs(h - c_prev), abs(lo - c_prev)))
+    if len(trs) < atr_expansion_period:
         return None
-    atr_avg = sum(atr_series[-atr_expansion_period:]) / float(atr_expansion_period)
+    atr_avg = sum(trs) / float(len(trs))
     if atr_avg <= 0:
         return None
     atr_expansion_ratio = atr / atr_avg

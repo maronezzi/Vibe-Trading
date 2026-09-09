@@ -534,12 +534,14 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
     # bars_list[i] = lista newest-first no momento i (precisa de pelo menos 50 candles para EMA 30)
     min_window = 60
     closes = df["close"].values
+    opens = df["open"].values
     highs = df["high"].values
     lows = df["low"].values
     volumes = df["tick_volume"].values
     hours = df["hour"].values
     minutes = df["minute"].values
     dates = df["date"].values
+    index = df.index
     n = len(df)
 
     for i in range(n):
@@ -551,14 +553,20 @@ def backtest_combo(df, sym_root, tf, strategy_name, params, *, debug=False):
         minute = int(minutes[i])
 
         # Janela newest-first
+        # Wave 893 fix: adiciona "open" e "time" ao dict — plugins do live
+        # (ex.: ENHANCED_BOLLINGER) leem b["open"]/b["time"] e levavam
+        # KeyError em TODO combo da simulação (o live tem essas chaves,
+        # o sandbox não).
         win_start = max(0, i - min_window)
         bars_nf = []
         for j in range(i, win_start - 1, -1):
             bars_nf.append({
+                "open": opens[j],
                 "high": highs[j],
                 "low": lows[j],
                 "close": closes[j],
                 "volume": volumes[j],
+                "time": index[j].to_pydatetime(),
             })
 
         cur_atr = calculate_atr(bars_nf, 14)

@@ -199,7 +199,14 @@ def run(days: int = 7,
         _run_tune_incumbents(ctx)
         _run_risk_calibrator(ctx)
         _run_live_kill_switch(ctx)
+        # Wave 892 (08/09): ended_at/duration ANTES do stage 6 — o audit JSON
+        # é escrito dentro do stage 6 e saía sempre com ended_at=null /
+        # duration_s=0 (o Telegram mostrava "0min" num run de ~27min).
+        ctx["ended_at"] = datetime.now().isoformat()
+        ctx["duration_s"] = time.time() - start_ts
         _safe_run_stage(ctx, 6, "report", "stage6_report")
+        # Atualiza após o stage 6 para o retorno refletir o run completo
+        # (o audit guarda o snapshot pré-report, que já tem duration real).
         ctx["ended_at"] = datetime.now().isoformat()
         ctx["duration_s"] = time.time() - start_ts
         log.info(f"[{TAG}] AGI v4 pipeline finalizado (sem failing pairs) — "
@@ -383,6 +390,11 @@ def run(days: int = 7,
     _run_backfill_intel(ctx)
 
     # ── Stage 6: Relatório (sempre roda) ──
+    # Wave 892 (08/09): ended_at/duration ANTES do stage 6 — o audit JSON é
+    # escrito dentro do stage 6 e saía sempre com ended_at=null /
+    # duration_s=0 (o Telegram mostrava "0min" num run de ~27min).
+    ctx["ended_at"] = datetime.now().isoformat()
+    ctx["duration_s"] = time.time() - start_ts
     _safe_run_stage(ctx, 6, "report", "stage6_report")
 
     ctx["ended_at"] = datetime.now().isoformat()
