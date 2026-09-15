@@ -573,6 +573,29 @@ def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: d
         return _reject(cand, "must_be_profitable",
                        f"candidato R${cand_pnl:.2f} não é lucrativo — AGI só aplica positivo")
 
+    # ── Wave 894B (Bruno 15/09): GATE SHADOW-FIRST + BLINDAGEM DE
+    # INCUMBÊNCIA. 90d de evidência: a sim +R$30k escolheu estratégias que
+    # somam -R$764 live (família AGI4_* -R$915); HTF_BIAS_LTF_ENTRY (+R$665/
+    # 83t no WIN_M15) foi trocada por candidato só-sim que perdeu -R$503.
+    # Regras (só p/ TROCA de estratégia; params-only passa):
+    #   - sombra negativa no par (n≥20/30d) → rejeita (shadow_negative);
+    #   - incumbente live-positivo (n≥10/30d) + candidato sem sombra positiva
+    #     → rejeita (incumbent_protected);
+    #   - senão segue (soberania; kill-switch/holdout vigiam).
+    # Fail-open: erro interno NUNCA segura a troca. VT_AGI_SHADOW_GATE=0 off.
+    try:
+        from optimization.agi_v4 import shadow_gate
+        _incumbent_now = (config.get("strategy_by_tf", {}) or {}).get(pair) or ""
+        if strategy and _incumbent_now and strategy != _incumbent_now:
+            _sg_ok, _sg_gate, _sg_why = shadow_gate.gate_strategy_swap(
+                config, None, pair, strategy)
+            if not _sg_ok:
+                return _reject(cand, _sg_gate, _sg_why)
+            if _sg_why:
+                log.info(f"[SHADOW-GATE] {pair}→{strategy}: {_sg_why}")
+    except Exception as _sg_err:
+        log.warning(f"shadow_gate falhou em {pair} ({_sg_err}) — fail-open, segue")
+
     # Baseline simulado só pra registro/comparação (não relaxa o gate).
     try:
         from optimization.agi_v4.backtest_evaluator import evaluate_baseline
@@ -653,6 +676,24 @@ def _apply_one(cand: dict, config: dict, thresholds: dict, dry_run: bool, ctx: d
     # Estratégia vigente ANTES da escrita (o config em memória é sincronizado
     # pós-write; capturar aqui garante o from→to correto no journal).
     prev_strategy = (config.get("strategy_by_tf", {}) or {}).get(pair)
+
+    # ── Wave 894B (15/09): HOLDOUT out-of-sample + overlap netting ──
+    # Re-simula o candidato nos últimos VT_AGI_HOLDOUT_DAYS (default 10)
+    # pregões — trecho FORA da janela de seleção do stage3 — e rejeita se
+    # PnL<0 (overfit do grid) ou se >20% das entradas conflitam com direção
+    # oposta de outro TF do mesmo root na sombra (o daemon bloquearia ao
+    # vivo sob NETTING_COHERENCE; a sim que as conta superestima).
+    # 1 simulação por candidato aplicado (custo O(1) vs 600 do stage3).
+    # Fail-open: falha de fetch/MT5 não rejeita. VT_AGI_HOLDOUT_DAYS=0 off.
+    try:
+        from optimization.agi_v4 import holdout_gate
+        _ho_ok, _ho_why = holdout_gate.validate(config, pair, strategy, params)
+        if not _ho_ok:
+            return _reject(cand, "holdout", _ho_why)
+        if _ho_why:
+            log.info(f"[HOLDOUT-GATE] {pair}→{strategy}: {_ho_why}")
+    except Exception as _ho_err:
+        log.warning(f"holdout_gate falhou em {pair} ({_ho_err}) — fail-open, segue")
 
     change = _build_change(pair, strategy, params, cand.get("full", {}))
     change["baseline_simulated_pnl"] = baseline_pnl

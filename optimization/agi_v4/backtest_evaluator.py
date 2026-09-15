@@ -119,13 +119,19 @@ def evaluate_candidate(
 
 def _fetch_30d_bars(sym_root: str, tf: str, config: dict):
     """Busca ~30d de barras do MT5 via Wine. Retorna DataFrame pandas ou None."""
+    return fetch_bars_for_days(sym_root, tf, config, days=30)
+
+
+def fetch_bars_for_days(sym_root: str, tf: str, config: dict, days: int = 30):
+    """Busca ~N dias de barras do MT5 via Wine (Wave 894B: holdout do AGI
+    usa 10d; o padrão 30 mantém o comportamento do evaluate_candidate)."""
     try:
         from backtest import backtest_v944 as bt
     except ImportError:
         log.error("backtest_v944 não importável")
         return None
 
-    n_bars = BARS_FOR_30D.get(tf, 500)
+    n_bars = max(50, int(BARS_FOR_30D.get(tf, 500) * max(days, 1) / 30))
     # Wave perpétua (Bruno 01/08): usa a forma contínua (WIN$/WDO$/WSP$/BIT$)
     # em vez do contrato resolvido (WINQ26). Motivo: pós-rolagem de vencimento,
     # o contrato novo não tem histórico de 30d (BITQ26 tinha só 93 barras M15
@@ -143,6 +149,32 @@ def _fetch_30d_bars(sym_root: str, tf: str, config: dict):
     except Exception as e:
         log.warning(f"fetch {symbol} {tf} falhou: {e}")
         return None
+
+
+def evaluate_holdout(sym_root: str, tf: str, strategy_name: str, params: dict,
+                     config: dict, days: int = 10) -> dict:
+    """Wave 894B (15/09): simula o candidato nos últimos `days` pregões —
+    trecho FORA da janela de seleção do stage3 (holdout verdadeiro).
+
+    Usado pelo holdout_gate no stage5 (1× por candidato a aplicar, não por
+    combo do stage3). Retorna {"total_pnl", "n_trades", "trades",
+    "error"} — "error" vazio significa simulação válida.
+    """
+    out: dict = {"total_pnl": 0.0, "n_trades": 0, "trades": [], "error": ""}
+    try:
+        df = fetch_bars_for_days(sym_root, tf, config, days=days)
+        if df is None or len(df) < 50:
+            out["error"] = f"sem barras p/ holdout {days}d ({len(df) if df is not None else 0} barras)"
+            return out
+        trades = _run_backtest(df, sym_root, tf, strategy_name, params)
+        m = _compute_metrics(trades)
+        out["total_pnl"] = m.get("total_pnl", 0.0)
+        out["n_trades"] = m.get("n_trades", 0)
+        out["trades"] = list(trades or [])
+        return out
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+        return out
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -488,6 +488,15 @@ def _build_telegram_message(ctx: dict) -> str:
                          f"{k.get('n_trades',0)}t/{k.get('days',10)}d "
                          f"(quarentena {k.get('quarantine_days',
                           'VT_AGI_LIVE_QUARANTINE_DAYS')}d sem reativação por sim)")
+        # Wave 894B (15/09): kill por ESTRATÉGIA — desativa TODOS os pares
+        # ativos que a usam (a estratégia sangrada não migra de par).
+        sk = [k for k in (ctx.get("live_kill_switch") or [])
+              if isinstance(k, dict) and k.get("strategy")]
+        for k in sk[:2]:
+            lines.append(f"• 🔴 KILL-STRATEGY: {k['strategy']} DESATIVADA em "
+                         f"{', '.join((k.get('pairs') or [])[:4])} — "
+                         f"R$ {k.get('pnl',0):.0f} em {k.get('n_trades',0)}t/"
+                         f"{k.get('days',10)}d")
     except Exception:
         pass
 

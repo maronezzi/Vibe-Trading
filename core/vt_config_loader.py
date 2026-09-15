@@ -80,7 +80,18 @@ ALLOWED_WRITERS = (
     # (runbook §13) — escrita única em disabled_timeframes/day_trade_intent
     # + journal live_kill p/ quarentena de 10d. Autorização explícita do
     # Bruno em 29/08 ("5 - ok"); one-shot, mantido na lista como registro.
+    # scripts/w883_quarantine_bit_m15_20260829.py (Wave 883 — ver acima)
     "scripts/w883_quarantine_bit_m15_20260829.py",
+    # scripts/w894b_promote_proven_20260915.py (Wave 894B, Bruno 15/09):
+    # promove o comprovado e rebaixa o crônico com base em 90d de dados
+    # live+sombra: WIN_M15→HTF_BIAS_LTF_ENTRY (+R$665/83t live, removida
+    # pelo AGI em 11/08), WDO_M5→EMA_SLOPE_MOMENTUM (+R$96/156t sombra —
+    # reativa par live-killed por decisão HUMANA com evidência de sombra,
+    # sobressaída consciente da quarentena §13), desativa BIT_M5/BIT_H1
+    # (ADX_TREND crônico; sombra também negativa). Params históricos
+    # recuperados de snapshot 10/08 (WIN_M15) e v1344 (WDO_M5). One-shot.
+    # Rodar com autotrader PAUSADO (fora do pregão).
+    "scripts/w894b_promote_proven_20260915.py",
     # scripts de manutenção (devem rodar com autotrader PAUSADO)
     "scripts/vt_meio_dia_tuning.py",
     "scripts/migrate_today_trades_w13_2.py",

@@ -103,6 +103,20 @@ def _isolate_vt_config(request, monkeypatch, tmp_path):
 # close() também fica protegido automaticamente.
 
 
+# ─── Isolamento dos gates do stage5 (Wave 894B, 15/09) ────────────────────
+# shadow_gate/holdout_gate rodam dentro de _apply_one: sem isolamento, teste
+# algum que exerça o apply tocaria o DB real (leitura) e tentaria o fetch
+# Wine/MT5 do holdout. Cada gate tem suíte própria hermética
+# (tests/test_wave894b_shadow_holdout.py), que REATIVA os envs por teste.
+
+
+@pytest.fixture(autouse=True)
+def _isolate_agi_gates(monkeypatch):
+    """Desliga shadow/holdout gates por default; a suíte própria os liga."""
+    monkeypatch.setenv("VT_AGI_SHADOW_GATE", "0")
+    monkeypatch.setenv("VT_AGI_HOLDOUT_DAYS", "0")
+
+
 @pytest.fixture(autouse=True)
 def _isolate_trades_db(request, monkeypatch, tmp_path):
     """Redireciona mt5_orchestrator.TRADES_DB para tmp por padrão (fail-safe)."""

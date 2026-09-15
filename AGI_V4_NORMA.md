@@ -968,3 +968,67 @@ coerência são config-overridable, keys ausentes = defaults Wave 894).
 **Dívida conhecida:** `tests/test_agi_guardrails.py` (3) e
 `tests/test_today_weighting.py` (2) falham PRÉ-EXISTENTES (confirmado em
 stash da árvore limpa em 15/09) — não são da Wave 894.
+
+---
+
+## 22. Wave 894B — estratégias: promover o comprovado, gate shadow-first, blindagem de incumbência e holdout out-of-sample (15/09/2026)
+
+**Pergunta do Bruno:** "as estratégias no passado estão mesmo sendo
+lucrativas?" **Resposta (dado live 90d até 14/09): NÃO.** Total live do
+sistema: **-R$764 (628 trades)**. Só 4 estratégias são live-positivas com
+amostra: HTF_BIAS_LTF_ENTRY (+R$328/119t — **+R$665/83t no WIN_M15**),
+TRIPLE_EMA (+R$283/13t, WDO_H1), AGI4_BIT_171647 (+R$104/29t) e
+AGI4_WSP_134734 (+R$100/62t, marginal). A família AGI4_* soma **-R$915**.
+A sombra (forward walker) confirma: AGI4_WIN_121815 −R$443,
+DIVERGENCE_RSI **−R$5.739/80t** no BIT_M15. E o churn: WIN_M5/BIT_M5
+tiveram 7 estratégias em 90d.
+
+### Mudanças aplicadas (4, aprovadas pelo Bruno 15/09)
+
+1. **Config (v1398, `scripts/w894b_promote_proven_20260915.py`)** —
+   promote/demote com evidência live+sombra: WIN_M15→**HTF_BIAS_LTF_ENTRY**
+   (volta do melhor par live da história; params do snapshot 10/08);
+   WDO_M5→**EMA_SLOPE_MOMENTUM** (sombra +R$96/156t; params v1344; reativa
+   par live-killed 14/09 — **sobressaída CONSCIENTE da quarentena §13**: a
+   evidência é sombra em mercado real, não sim de grid; kill recalibrado
+   pega em n=4 se sangrar); BIT_M5/BIT_H1 desativados (ADX_TREND −R$410/90d
+   live + sombra negativa). WSP_H1 (EMA_PULLBACK −R$408) já estava off.
+   Base = config VPS v1397 (espelho), NÃO o v1344 local — deploy exige
+   `20_sync_code_to_vps.sh --with-config` e, se o AGI já rodou no dia,
+   re-basear no espelho da noite antes.
+2. **`optimization/agi_v4/shadow_gate.py`** (puro) + wire em `_apply_one`
+   — só para TROCA de estratégia (params-only passa): sombra negativa no
+   par (n≥`VT_AGI_SHADOW_GATE_MIN_TRADES`=20/30d, PnL≤0) → rejeita
+   (`shadow_negative`); sombra positiva (PF≥1.1) → passa; sem evidência +
+   incumbente live-positivo (n≥`VT_AGI_LIVE_PROTECT_MIN_TRADES`=10/30d) →
+   rejeita (`incumbent_protected` — o caso HTF_BIAS→AGI4_WIN de 11/08);
+   sem evidência + par sem dono comprovado → passa (soberania; deadlock
+   evitado: o walker só sombreia designadas, então exigir sombra SEMPRE
+   travaria a entrada de estratégias novas). Fail-open; env
+   `VT_AGI_SHADOW_GATE=0` off. Validado no real: DIVERGENCE_RSI→BIT_M15
+   bloqueada (−R$5.739/80t); AGI4_WIN não toma o WDO_H1 do TRIPLE_EMA.
+3. **Blindagem de incumbência** — faz parte do shadow_gate (regra acima).
+   Complementa o `_incumbent_live_bleeding` (Wave 893, que só relaxava o
+   better_baseline para sangradores): agora o lado POSITIVO também conta.
+4. **`optimization/agi_v4/holdout_gate.py`** + `evaluate_holdout` no
+   backtest_evaluator — revalidação OUT-OF-SAMPLE no stage5 (1 sim por
+   candidato a aplicar, custo O(1) vs 600 do stage3): re-simula nos
+   últimos `VT_AGI_HOLDOUT_DAYS`=10 pregões (fora da janela de seleção —
+   as janelas do walk-forward eram in-sample) e rejeita PnL<0; +
+   **fração de overlap netting**: entradas do holdout que caem dentro de
+   trade de sombra OPPOSTO de outro TF do mesmo root (o daemon bloquearia
+   ao vivo sob NETTING_COHERENCE; a sim que as conta superestima) —
+   >`VT_AGI_NETTING_OVERLAP_MAX`=20% rejeita. Fail-open (erro de fetch
+   não rejeita); `VT_AGI_HOLDOUT_DAYS=0` off.
+
+Ainda em aberto (Wave futura): o stage3 continua selecionando em 30d
+in-sample; o holdout do apply atenua mas não substitui uma seleção com
+out-of-sample nativo. Janela de seleção maior (45-60d) ficou de fora por
+custo computacional (VPS 2 vCPU).
+
+### Testes/isolamento
+`tests/test_wave894b_shadow_holdout.py` (18 casos herméticos);
+`tests/conftest.py` desliga `VT_AGI_SHADOW_GATE`/`VT_AGI_HOLDOUT_DAYS`
+por default (suíte própria reativa) — sem isto, `_apply_one` em teste
+tocaria DB real e tentaria fetch Wine do holdout. stage6_report renderiza
+kills de ESTRATÉGIA (`live_strategy_bleed`) no Telegram.
