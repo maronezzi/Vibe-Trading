@@ -1,8 +1,8 @@
 {
-  "_version": 1398,
-  "_updated_at": "2026-09-15T14:19:24.093842",
-  "_updated_by": "bruno_human_decision_wave894b_promote_proven",
-  "_notes": "auto-resolve vencimento: WIN: WINV26 → WINZ26 | Wave 894B 15/09: WIN_M15→HTF_BIAS_LTF_ENTRY (+R$665/83t live; params snapshot 10/08); WDO_M5→EMA_SLOPE_MOMENTUM (+R$96/156t sombra; params v1344; reativa par live-killed 14/09 por decisão humana com evidência de sombra — quarentena §13 sobressaída consciente); BIT_M5/BIT_H1 desativados (ADX_TREND −R$410/90d live, sombra negativa)",
+  "_version": 1399,
+  "_updated_at": "2026-09-15T15:57:02.593021",
+  "_updated_by": "bruno_human_decision_wave894c_retrigger_profits",
+  "_notes": "auto-resolve vencimento: WIN: WINV26 → WINZ26 | Wave 894B 15/09: WIN_M15→HTF_BIAS_LTF_ENTRY (+R$665/83t live; params snapshot 10/08); WDO_M5→EMA_SLOPE_MOMENTUM (+R$96/156t sombra; params v1344; reativa par live-killed 14/09 por decisão humana com evidência de sombra — quarentena §13 sobressaída consciente); BIT_M5/BIT_H1 desativados (ADX_TREND −R$410/90d live, sombra negativa) | Wave 894C 15/09: gatilhos de lucro no meio termo — alvo 400→200, per_lot 250→200 (ratchet alinhado ao lock full), ativação 0.5→0.3 (ratchet acorda em R$60), soft_daily_loss −150 explícito. Piso do calibrador agora referencia a perda LIMITADA (anti-pró-ciclo).",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
   "start_minute": 5,
@@ -583,14 +583,14 @@
     "degrade_disable_breakouts": true
   },
   "profit_lock_enabled": true,
-  "profit_lock_min_target": 400.0,
+  "profit_lock_min_target": 200.0,
   "profit_lock_target_mult": 1.0,
   "profit_lock_lookback_days": 7,
   "trailing_profit_lock_enabled": true,
-  "trailing_activation_pct": 0.5,
+  "trailing_activation_pct": 0.3,
   "trailing_floor_pct": 0.5,
   "_note_trailing_profit_lock": "Wave 1110 (23/07): Trailing Profit Lock — ratchet progressivo. Ativa em trailing_activation_pct do target, floor sobe linearmente de trailing_floor_pct×pico até 1.0×pico no target. Breach → fecha tudo + arma profit lock. Config: trailing_profit_lock_enabled, trailing_activation_pct, trailing_floor_pct.",
-  "trailing_target_per_lot": 250.0,
+  "trailing_target_per_lot": 200.0,
   "_note_trailing_target_per_lot": "Target do trailing profit lock = R$250 x volume total das posicoes abertas. Ativa em 50% (R$125/lot), floor sobe ate 100% no target. Bruno 27/07.",
   "trailing_fast_interval": 5,
   "simulated_stop_level": {
@@ -624,5 +624,6 @@
       "changed_at": "2026-08-24T08:55:07",
       "changed_by": "calendar_resolve"
     }
-  }
+  },
+  "soft_daily_loss": -150.0
 }

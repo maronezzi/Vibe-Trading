@@ -1032,3 +1032,66 @@ custo computacional (VPS 2 vCPU).
 por default (suíte própria reativa) — sem isto, `_apply_one` em teste
 tocaria DB real e tentaria fetch Wine do holdout. stage6_report renderiza
 kills de ESTRATÉGIA (`live_strategy_bleed`) no Telegram.
+
+---
+
+## 23. Wave 894C — meio termo dos gatilhos de lucro: piso anti-pró-ciclo, banda de ativação e alinhamento ratchet×lock (15/09/2026)
+
+**Pedido do Bruno:** "os gatilhos de lucro estão muito altos; um lucro acima
+de R$60 já é satisfatório — mas limitar o lucro num valor assim fez o
+prejuízo correr para os 300. Precisamos um meio termo."
+
+**Diagnóstico (dados ago→set/2026):**
+- O piso estrutural da §19 (1.5× perda média dos dias negativos) é
+  **PRÓ-CÍCLICO**: dia ruim → piso sobe → alvo inalcançável → trava nunca
+  arma. O alvo escalou 100 (início de ago) → 250 (08/09) → **400**
+  (setembro, via calibrador).
+- Efeito: **20 travas de lucro em agosto (alvo ~150, único mês positivo,
+  +R$587) vs 2 em setembro (alvo 400, −R$802)**.
+- Simulação da matriz teto×stop sobre 90d: teto duro R$60 com perda livre é
+  a PIOR célula (−R$1.839) — a memória do "60/300" do Bruno. O lado perda é
+  a alavanca dominante (soft stop −150 da §21 vale ~+R$760/trimestre).
+- Desalinhamento estrutural: o ratchet usava `trailing_target_per_lot` 250
+  enquanto o lock full usava `profit_lock_min_target` 400 — alvos diferentes
+  para a mesma conta.
+
+### Mudanças
+
+1. **Piso anti-pró-ciclo** (`risk_calibrator.calibrate_profit_target`) —
+   `floor = min(1.5×perda média, 1.2×|soft_daily_loss|)`; soft=0 restaura o
+   piso antigo. A perda de referência passa a ser a LIMITADA pelo soft stop.
+   `floor_basis` carrega `soft_daily_loss_cap`. Validado com dado real
+   (janela 21d, perda média 153): piso 230→**180** (grid 200); o código
+   antigo daria 250.
+2. **Banda absoluta da ativação** (`calibrate_lock_activation`) — valor
+   FINAL clampado em `[0.30, 0.50]×alvo` (`ACTIVATION_ABS_MIN/MAX`;
+   `band_clamped` no audit). Grid ganhou 0.3. Guardrail de risco como o piso
+   (decisão do operador prevalece sobre o contrafactual em dia de tendência).
+   A histerese de passo ([0.7×, 1.3×]) continua valendo ANTES da banda.
+3. **Config v1399** (`scripts/w894c_retrigger_profits_20260915.py`) —
+   `profit_lock_min_target` 400→**200**, `trailing_target_per_lot` 250→**200**
+   (ratchet alinhado ao lock full), `trailing_activation_pct` 0.5→**0.3**
+   (ratchet acorda em R$60), `soft_daily_loss` **−150** explícito,
+   `trailing_floor_pct` 0.5 (mantido).
+4. Mecânica resultante (alvo 200): ratchet bloqueia novas entradas em +R$60
+   e garante ≥50% do pico (floor sobe até 100% no alvo); lock full fecha o
+   dia em +R$200; soft stop trava novas entradas em −R$150. Ganho corre com
+   ratchet (não é teto duro); perda é limitada — o meio termo pedido.
+
+### Verificação com dado real (15/09, janela 21d + shadow)
+`calibrate_profit_target`: best 200 = atual, **apply=False** (estável, sem
+churn; bruto queria 100, piso segura). `calibrate_lock_activation`: bruto
+**0.3 = R$60 por conta própria** (a própria janela perdedora prefere o
+gatilho do Bruno), banda nem clampou, apply=False.
+
+### Invariantes
+- (a) §19 mantida: piso é dados-derivado (agora também soft-derivado); Bruno
+  NÃO seta o alvo direto no dia a dia — a decisão de 15/09 fixou a ZONA
+  (alvo 200, ativação 0.3) e o calibrador segue governando dentro dela;
+- (b) banda da ativação é clamp no valor FINAL (não no bruto) — o audit
+  mostra `best_raw` (o que o contrafactual queria) e `band_clamped`;
+- (c) histerese de passo preservada (nenhuma variável de risco salta);
+- testes: `tests/test_wave894c_trigger_calibration.py` (8) + 3 casos da
+  banda atualizados em `test_agi_v4_non_regression.py` (comportamento novo
+  é o objetivo). `test_profit_lock_attempted_persistence` falha PRÉ-EXISTENTE
+  (confirmado em stash 15/09).

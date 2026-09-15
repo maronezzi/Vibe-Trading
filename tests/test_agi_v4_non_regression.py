@@ -246,39 +246,47 @@ class TestCalibrateLockActivation:
     def test_dia_de_devolucao_prefere_travar_cedo(self):
         # per_lot=200, dia: cum 60→120→140 (pico) → devolve até +20.
         # Ativação 0.7 arma exatamente no pico (140) → 140/dia; 0.8+ nunca
-        # arma → +20/dia; 0.4-0.6 travam em 120. Ótimo: 0.7.
+        # arma → +20/dia; 0.4-0.6 travam em 120. Ótimo bruto: 0.7.
+        # Wave 894C: banda absoluta [0.30, 0.50] clampou o valor FINAL para
+        # 0.5 (nível 100) — o gatilho de lucro tem que ficar na zona
+        # satisfatória do operador (decisão 15/09), mesmo com o
+        # contrafactual preferindo mais tarde.
         cfg = {"trailing_target_per_lot": 200.0, "trailing_activation_pct": 1.0}
         r = rc.calibrate_lock_activation(cfg, self._dias_devolucao(), None)
         assert r["status"] == "calibrado"
         assert r["best_raw"] == 0.7
-        assert r["best"] == 0.7          # dentro do clamp [0.7, 1.3] de 1.0
+        assert r["best"] == 0.5           # banda 0.30-0.50 (Wave 894C)
+        assert r["band_clamped"] is True
         assert r["apply"] is True
-        assert r["gain"] == pytest.approx(720.0)   # (140-20)×6 dias
+        assert r["gain"] == pytest.approx(600.0)   # (120-20)×6 dias
 
     def test_histerese_limita_passo(self):
-        # dia: cum 50→100→110 → devolve até -10. Níveis 80/100 truncam em
-        # +100/dia (empate → menor=0.4); atual 1.0 → clamp 0.7× limita o
-        # passo único a 0.7 (variável sem salto)
+        # dia: cum 50→100→110 → devolve até -10. Níveis 60/80/100 truncam
+        # todos em +100/dia (empate → menor, trava cedo); com 0.3 no grid
+        # (Wave 894C) o bruto vira 0.3. Atual 1.0 → histerese 0.7× e banda
+        # absoluta [0.30, 0.50] dominam o final → 0.5.
         seq = (50.0, 50.0, 10.0, -40.0, -40.0, -40.0)
         live = [{"root": "WIN", "tf": "M15", "pnl": p, "day": f"h{i}"}
                 for i in range(6) for p in seq]
         cfg = {"trailing_target_per_lot": 200.0, "trailing_activation_pct": 1.0}
         r = rc.calibrate_lock_activation(cfg, live, None)
-        assert r["best_raw"] == 0.4
-        assert r["best"] == 0.7
+        assert r["best_raw"] == 0.3
+        assert r["best"] == 0.5
 
     def test_dia_de_tendencia_nao_aptado_a_travar_cedo(self):
-        # dia que só sobe: travar cedo CORTA ganho → ótimo = ativação alta
+        # dia que só sobe: travar cedo CORTA ganho → ótimo bruto = ativação
+        # alta. Wave 894C: a banda absoluta [0.30, 0.50] limita o valor FINAL
+        # a 0.5 — decisão do operador (gatilho na zona satisfatória) prevalece
+        # sobre o contrafactual em dia de tendência.
         seq = (20.0, 20.0, 20.0, 20.0, 20.0, 20.0)
         live = [{"root": "WIN", "tf": "M15", "pnl": p, "day": f"u{i}"}
                 for i in range(6) for p in seq]
         cfg = {"trailing_target_per_lot": 100.0, "trailing_activation_pct": 0.5}
         r = rc.calibrate_lock_activation(cfg, live, None)
-        # com per_lot 100: níveis 40..100; dia soma 120 → só trava em 100
-        # (ou nunca); score de 0.4=80 < 1.0=100 → ótimo 1.0, mas clamp
-        # 1.3× de 0.5 = 0.65 → melhor célula do grid dentro do clamp
         assert r["status"] == "calibrado"
-        assert r["best"] >= 0.6
+        assert r["best_raw"] >= 0.6      # contrafactual queria ativação alta
+        assert r["best"] == 0.5          # banda Wave 894C
+        assert r["band_clamped"] is True
 
     def test_dados_insuficientes_mantem(self):
         r = rc.calibrate_lock_activation(

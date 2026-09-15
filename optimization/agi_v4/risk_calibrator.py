@@ -48,7 +48,13 @@ TARGET_GRID = [100, 150, 200, 250, 300, 400, 500, 650, 800, 1000]
 # lucrava de manhã e devolvia tudo (Bruno 29/08: "mantemos, mas o AGI sintoniza,
 # número sem chute"). O grid é a fração do trailing_target_per_lot em que a
 # trava arma e bloqueia novas entradas do dia.
-ACTIVATION_GRID = [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+ACTIVATION_GRID = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+# Wave 894C (Bruno 15/09): banda ABSOLUTA da trava — o gatilho de lucro tem
+# que ficar na zona "satisfatória" (R$60 num alvo de 150-200). Sem a banda,
+# janela de tendência empurra a ativação de volta para cima e a trava dorme
+# o dia inteiro (set/2026: alvo 400 × ativação 0.5 = só acordava com +R$200).
+ACTIVATION_ABS_MIN = 0.30
+ACTIVATION_ABS_MAX = 0.50
 MIN_DAYS = 5          # dias mínimos de histórico p/ calibrar
 MIN_TRADES_DAY = 3    # dias com menos trades não contam
 MIN_GAIN_R = 15.0     # ganho mínimo acumulado (R$) p/ trocar o valor
@@ -67,6 +73,13 @@ LOOKBACK_DAYS = 21    # janela de calibração (3 semanas)
 TARGET_FLOOR_LOSS_MULT = 1.5   # alvo ≥ 1.5× perda média diária (teto ≥ piso)
 TARGET_FLOOR_ABS_MIN = 100.0   # borna inferior absoluta do piso
 TARGET_FLOOR_ABS_MAX = 600.0   # borna superior (não inflar em regime caótico)
+# ── Wave 894C (Bruno 15/09): piso ANTI-PRÓ-CÍCLICO — a perda que alimenta o
+# piso é a LIMITADA pelo soft stop (|soft_daily_loss|), não a realizada
+# desamarrada. Sem isto a espiral é: dia ruim → piso sobe → alvo inalcançável
+# → trava nunca arma → mais dia ruim. Set/2026: alvo escalou 100→400 e o mês
+# teve 2 travas de lucro vs 20 em agosto (alvo ~150). O piso passa a ser
+# min(1.5×perda média, 1.2×|soft|); soft=0 (off) restaura o piso antigo.
+TARGET_FLOOR_SOFT_MULT = 1.2
 
 # Conversão preço → pontos por ativo (espelho de _point_map do autotrader)
 _POINT_VAL = {"WIN": 1.0, "WDO": 0.001, "BIT": 0.01, "WSP": 0.01, "IND": 1.0}
@@ -296,13 +309,19 @@ def calibrate_profit_target(config: dict, trades: list[dict],
     if len(days) < MIN_DAYS:
         return {"status": "dados_insuficientes", "days": len(days), "keep": cur,
                 "shadow_meta": meta}
-    # ── Piso estrutural (Wave 893) — o AGI define o alvo, mas nunca abaixo do
-    # que a própria assimetria da janela sustenta. Ver constantes TARGET_FLOOR_*.
+    # ── Piso estrutural (Wave 893, anti-pró-ciclo Wave 894C) — o AGI define
+    # o alvo, mas nunca abaixo do que a própria assimetria da janela sustenta.
+    # A perda de referência é a LIMITADA pelo soft stop (|soft_daily_loss|):
+    # ver TARGET_FLOOR_SOFT_MULT. Ver constantes TARGET_FLOOR_*.
     neg_totals = [sum(v) for v in days.values() if sum(v) < 0]
     avg_loss = abs(sum(neg_totals) / len(neg_totals)) if neg_totals else 0.0
     per_lot = float(config.get("trailing_target_per_lot", 250.0) or 250.0)
     act_pct = float(config.get("trailing_activation_pct", 0.5) or 0.5)
+    soft_loss = abs(float(config.get("soft_daily_loss", -150.0) or 0))
+    floor_soft = TARGET_FLOOR_SOFT_MULT * soft_loss if soft_loss > 0 else None
     floor_loss = TARGET_FLOOR_LOSS_MULT * avg_loss
+    if floor_soft is not None:
+        floor_loss = min(floor_loss, floor_soft)
     floor = max(TARGET_FLOOR_ABS_MIN, min(floor_loss, TARGET_FLOOR_ABS_MAX))
     # trailing (1 lote) precisa engajar ANTES do lock full — senão o ratchet
     # nunca ativa e a proteção vira truncagem seca (estado do VPS em 08/09).
@@ -345,6 +364,7 @@ def calibrate_profit_target(config: dict, trades: list[dict],
         "floor_basis": {
             "avg_daily_loss": round(avg_loss, 2),
             "loss_mult": TARGET_FLOOR_LOSS_MULT,
+            "soft_daily_loss_cap": round(floor_soft, 2) if floor_soft is not None else None,
             "trailing_act_1lot": round(1.2 * act_pct * per_lot, 2),
             "clamped_by_floor": bool(below_floor),
         },
@@ -385,6 +405,13 @@ def calibrate_lock_activation(config: dict, trades: list[dict],
     # régua W880 de blast-battery (variável sem salto, anti-churn).
     best = min(max(best_raw, round(cur_pct * 0.7, 2)), round(cur_pct * 1.3, 2))
     best = min(ACTIVATION_GRID, key=lambda a: abs(a - best))
+    # Wave 894C (Bruno 15/09): banda ABSOLUTA no valor FINAL — o gatilho de
+    # lucro efetivo tem que ficar em [0.30, 0.50]×alvo (R$60 num alvo de 200;
+    # "lucro acima de R$60 satisfatório"). Guardrail de risco como o piso do
+    # alvo: não é o contrafactual mandando, é a zona que o operador validou.
+    band_clamped = not (ACTIVATION_ABS_MIN <= best <= ACTIVATION_ABS_MAX)
+    best = min(max(best, ACTIVATION_ABS_MIN), ACTIVATION_ABS_MAX)
+    best = min(ACTIVATION_GRID, key=lambda a: abs(a - best))
     cur_in_grid = any(abs(a - cur_pct) < 1e-9 for a in ACTIVATION_GRID)
     cur_score = scores.get(cur_pct) if cur_in_grid else None
     gain = scores[best] - (cur_score if cur_score is not None else no_lock)
@@ -402,6 +429,8 @@ def calibrate_lock_activation(config: dict, trades: list[dict],
         "gain": round(gain, 2),
         "current": cur_pct,
         "apply": bool(apply and best != cur_pct),
+        "band_clamped": bool(band_clamped),
+        "band": [ACTIVATION_ABS_MIN, ACTIVATION_ABS_MAX],
         "shadow_meta": meta,
         "grid": {str(k): round(v, 2) for k, v in scores.items()},
     }
@@ -502,21 +531,25 @@ def run(ctx: dict) -> dict:
     if target.get("status") == "calibrado":
         sm = target.get("shadow_meta", {}) or {}
         fb = target.get("floor_basis", {}) or {}
+        _soft_cap = fb.get("soft_daily_loss_cap")
+        _floor_txt = (f"piso estrutural {target.get('floor')} = "
+                      f"min(1.5×perda média R${fb.get('avg_daily_loss', 0):.0f}"
+                      + (f", 1.2×soft R${_soft_cap:.0f}" if _soft_cap else "")
+                      + f") vs trailing R${fb.get('trailing_act_1lot', 0):.0f}")
         log.info(f"risk_calibrator: TARGET conta: atual {target['current']} → "
                  f"ótimo {target['best']} (bruto {target.get('best_raw')}, "
                  f"ganho R${target['gain']:+.2f}, {target['days']} dias, "
                  f"shadow ratio {sm.get('ratio')} com "
                  f"{sm.get('n_reconstructed_days', 0)} dia(s) reconstruído(s), "
-                 f"piso estrutural {target.get('floor')} = 1.5×perda média "
-                 f"R${fb.get('avg_daily_loss', 0):.0f} vs trailing "
-                 f"R${fb.get('trailing_act_1lot', 0):.0f}"
+                 f"{_floor_txt}"
                  f"{' [piso corrigiu teto]' if fb.get('clamped_by_floor') else ''}) "
                  f"{'APLICA' if target['apply'] else 'mantém'}")
     if lock_act.get("status") == "calibrado":
         log.info(f"risk_calibrator: TRAVA lucro: ativação {lock_act['current']:.2f} "
                  f"→ {lock_act['best']:.2f} (nível R${lock_act['level_current']:.0f}→"
                  f"R${lock_act['level_best']:.0f}, ganho R${lock_act['gain']:+.2f}, "
-                 f"{lock_act['days']} dias) "
+                 f"{lock_act['days']} dias"
+                 f"{', banda 0.30-0.50 clampou' if lock_act.get('band_clamped') else ''}) "
                  f"{'APLICA' if lock_act['apply'] else 'mantém'}")
     else:
         log.info(f"risk_calibrator: TRAVA lucro: {lock_act.get('status')} "

@@ -92,6 +92,13 @@ ALLOWED_WRITERS = (
     # recuperados de snapshot 10/08 (WIN_M15) e v1344 (WDO_M5). One-shot.
     # Rodar com autotrader PAUSADO (fora do pregão).
     "scripts/w894b_promote_proven_20260915.py",
+    # scripts/w894c_retrigger_profits_20260915.py (Wave 894C, Bruno 15/09):
+    # meio termo dos gatilhos de lucro — alvo 400→200, per_lot 250→200
+    # (ratchet alinhado ao lock full), ativação 0.5→0.3 (acorda em R$60),
+    # soft_daily_loss −150 explícito. Decisão do Bruno sobre dados ago→set
+    # (piso pró-ciclo escalou o alvo; setembro teve 2 travas vs 20 em ago).
+    # One-shot. Rodar com autotrader PAUSADO (fora do pregão).
+    "scripts/w894c_retrigger_profits_20260915.py",
     # scripts de manutenção (devem rodar com autotrader PAUSADO)
     "scripts/vt_meio_dia_tuning.py",
     "scripts/migrate_today_trades_w13_2.py",
