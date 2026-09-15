@@ -15,7 +15,14 @@ BLOQUEADA.
 
 Regras:
 - Só conta posições do bot (magic 555501 + comment VibeTrading) do mesmo root.
-- Entrada na direção OPOSTA à exposição líquida REDUZ risco — não é bloqueada.
+- COERÊNCIA DIRECIONAL (Wave 894, 15/09): entrada na direção OPOSTA à
+  exposição líquida do root com sub-entradas do bot em aberto é BLOQUEADA.
+  Sob netting ela não é hedge — fecha/desloca a posição consolidada e o SL
+  único (last-writer-wins), deixando filhos netting-hold que o reconcile
+  precisa fantasiar. Em set/2026 esse padrão gerou ~-R$357 de churn
+  (WSP M5 BUY + M15 SELL simultâneos = exposição zero, custos pagos).
+  Opt-out: execution_guards.netting_coherence_enabled=false (voltando ao
+  comportamento pré-Wave 894 de "hedge liberado").
 - Posição sem SL conta como orçamento inteiro consumido (conservador).
 - Fail-open: qualquer erro interno NÃO bloqueia a entrada (o governador é
   defesa extra, não caminho crítico). Erros são reportados no retorno.
@@ -176,10 +183,26 @@ def check_entry_risk_budget(symbol: str, direction: str, sl_pts: float,
         net = net_exposure(open_positions, root)
         out["net_exp"] = net
         dir_sign = 1.0 if str(direction).upper() == "BUY" else -1.0
-        # Entrada que REDUZ a exposição líquida é hedge sob netting — libera.
+        # Wave 894 (15/09): entrada CONTRA a exposição líquida do root com
+        # sub-entradas do bot em aberto é BLOQUEADA. Sob netting isso não é
+        # hedge: a ordem oposta fecha/reduz a posição consolidada e desloca o
+        # SL único, e os dois TFs ficam brigando (churn de ~-R$357 em set/2026:
+        # WSP M5 BUY + M15 SELL simultâneos = exposição zero, custos pagos).
+        # A saída continua sendo dos caminhos de close/trailing — nunca de
+        # entrada contrária. Opt-out: netting_coherence_enabled=false.
         if mine and net != 0 and (dir_sign * net) < 0:
-            out["detail"] = (f"entrada {direction} reduz exposição líquida "
-                             f"{net:+.1f} contratos — liberada")
+            if guards.get("netting_coherence_enabled") is False:
+                out["detail"] = (f"entrada {direction} reduz exposição líquida "
+                                 f"{net:+.1f} contratos — liberada "
+                                 f"(netting_coherence_enabled=false)")
+                return out
+            out["ok"] = False
+            out["reason"] = "NETTING_COHERENCE"
+            out["detail"] = (
+                f"entrada {direction} contra exposição líquida {net:+.1f} "
+                f"contratos do root com {len(mine)} sub-entrada(s) em aberto — "
+                f"sob netting fecha/desloca o SL único; aguarda zerar"
+            )
             return out
 
         mult = _mult_for(root, config)

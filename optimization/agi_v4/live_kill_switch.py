@@ -15,6 +15,19 @@ Este módulo é o lado "sangramento real" da soberania:
 - Regra CHURN: n ≥ VT_AGI_LIVE_CHURN_MIN_TRADES e PnL ≤
   VT_AGI_LIVE_CHURN_PNL (morte por comissão — ex: BIT_M15/DIVERGENCE_RSI
   com 39 trades e -R$40 em 14d) → DESATIVA.
+- Regra STRATEGY-BLEED (Wave 894, 15/09): ESTRATÉGIA com n ≥
+  VT_AGI_LIVE_STRAT_MIN_TRADES e PnL ≤ VT_AGI_LIVE_STRAT_PNL na janela
+  → desativa TODOS os pares ativos que a usam. Motivação set/2026:
+  AGI4_BIT_121102 sangrou -R$301 no WDO_M5 e migrou para WIN_M15/BIT_M30
+  com "ficha limpa" — o kill por par não acompanha a estratégia (a
+  granularidade errada já apontada no incidente 08/09 do WIN_M15).
+
+Wave 894 (15/09) — calibração mais rápida (set/2026: setembro fechou
+-R$802 com 7/9 pregões negativos; WDO_M5 sangrou 6 pregões antes do kill
+pegar): MIN_TRADES 10→4 e KILL_PNL -200→-120. Com n=4 e -R$120 o
+WDO_M5 teria sido morto em 10/09 (n=4, -R$167), salvando ~-R$164.
+Validado contra setembro: nenhum par positivo teria sido morto
+(DIVERGENCE_RSI -R$110/23t e ADX_TREND -R$90/12t ficam abaixo do gate).
 
 NOTA — house rule "nunca treinar com trades passados": kill-switch NÃO é
 treino/otimização — é gestão de risco (mesma natureza do risk_calibrator,
@@ -72,13 +85,23 @@ def _db_path(config: dict) -> Path | None:
 def _load_pair_pnl(db_path: Path | None, days: int) -> dict:
     """PnL live por par (root_tf) na janela — espelho da query do
     risk_calibrator (sem GHOST, só fechados)."""
+    return _load_grouped_pnl(db_path, days, group="pair")
+
+
+def _load_strategy_pnl(db_path: Path | None, days: int) -> dict:
+    """PnL live por ESTRATÉGIA na janela (Wave 894) — a estratégia sangra
+    independentemente do par em que o AGI a reassignou."""
+    return _load_grouped_pnl(db_path, days, group="strategy")
+
+
+def _load_grouped_pnl(db_path: Path | None, days: int, group: str) -> dict:
     if not db_path or not Path(db_path).exists():
         return {}
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         conn = sqlite3.connect(str(db_path))
         rows = conn.execute(
-            """SELECT symbol, timeframe, net_pnl
+            """SELECT symbol, timeframe, strategy, net_pnl
                FROM trades
                WHERE entry_time >= ? AND exit_time IS NOT NULL
                  AND exit_reason != 'GHOST'
@@ -89,22 +112,30 @@ def _load_pair_pnl(db_path: Path | None, days: int) -> dict:
     except Exception:
         return {}
     agg: dict = {}
-    for sym, tf, pnl in rows:
-        if not sym or not tf:
-            continue
-        pair = f"{sym[:3]}_{tf}"
-        a = agg.setdefault(pair, {"n": 0, "pnl": 0.0})
+    for sym, tf, strat, pnl in rows:
+        if group == "pair":
+            if not sym or not tf:
+                continue
+            key = f"{sym[:3]}_{tf}"
+        else:
+            if not strat:
+                continue
+            key = str(strat)
+        a = agg.setdefault(key, {"n": 0, "pnl": 0.0})
         a["n"] += 1
         a["pnl"] += float(pnl or 0)
     return agg
 
 
 def evaluate(config: dict, db_path: Path | None = None) -> list[dict]:
-    """Avalia todos os pares ATIVOS contra as regras live.
+    """Avalia todos os pares ATIVOS (e as estratégias em uso) contra as
+    regras live.
 
     Returns:
-        Lista de decisões {pair, rule, pnl, n_trades, days} — o caller
-        (stage5_apply.live_kill_switch_pass) aplica via save_full_config.
+        Lista de decisões {pair, rule, pnl, n_trades, days} para pares e
+        {strategy, rule="live_strategy_bleed", pairs, pnl, n_trades, days}
+        para estratégias — o caller (stage5_apply.live_kill_switch_pass)
+        aplica via save_full_config.
     """
     if not enabled():
         return []
@@ -115,13 +146,16 @@ def evaluate(config: dict, db_path: Path | None = None) -> list[dict]:
         return []
 
     days = max(_env_int("VT_AGI_LIVE_KILL_DAYS", 10), 1)
-    min_n = max(_env_int("VT_AGI_LIVE_KILL_MIN_TRADES", 10), 1)
-    kill_pnl = _env_float("VT_AGI_LIVE_KILL_PNL", -200.0)
+    min_n = max(_env_int("VT_AGI_LIVE_KILL_MIN_TRADES", 4), 1)
+    kill_pnl = _env_float("VT_AGI_LIVE_KILL_PNL", -120.0)
     churn_n = max(_env_int("VT_AGI_LIVE_CHURN_MIN_TRADES", 30), 1)
     churn_pnl = _env_float("VT_AGI_LIVE_CHURN_PNL", -20.0)
+    strat_min_n = max(_env_int("VT_AGI_LIVE_STRAT_MIN_TRADES", 5), 1)
+    strat_pnl = _env_float("VT_AGI_LIVE_STRAT_PNL", -150.0)
 
     path = db_path if db_path is not None else _db_path(cfg)
     agg = _load_pair_pnl(path, days)
+    quarantine = _env_int("VT_AGI_LIVE_QUARANTINE_DAYS", 10)
 
     decisions = []
     for pair in strategy_by_tf:
@@ -134,15 +168,60 @@ def evaluate(config: dict, db_path: Path | None = None) -> list[dict]:
             decisions.append({
                 "pair": pair, "rule": "live_bleed",
                 "pnl": round(a["pnl"], 2), "n_trades": a["n"], "days": days,
-                "quarantine_days": _env_int("VT_AGI_LIVE_QUARANTINE_DAYS", 10),
+                "quarantine_days": quarantine,
             })
         elif a["n"] >= churn_n and a["pnl"] <= churn_pnl:
             decisions.append({
                 "pair": pair, "rule": "live_churn",
                 "pnl": round(a["pnl"], 2), "n_trades": a["n"], "days": days,
-                "quarantine_days": _env_int("VT_AGI_LIVE_QUARANTINE_DAYS", 10),
+                "quarantine_days": quarantine,
             })
+
+    # ── Wave 894 (15/09): kill por ESTRATÉGIA — o bleed não respeita fronteira
+    # de par; a estratégia que sangrou num par não pode recomeçar "limpa" em
+    # outro. Desativa TODOS os pares ATIVOS que a usam na janela. ──
+    strat_agg = _load_strategy_pnl(path, days)
+    killed_strategies = set()
+    for pair in strategy_by_tf:
+        if pair in disabled:
+            continue
+        strat = strategy_by_tf.get(pair) or ""
+        if not strat or strat in killed_strategies:
+            continue
+        a = strat_agg.get(strat)
+        if not a or a["n"] < strat_min_n or a["pnl"] > strat_pnl:
+            continue
+        killed_strategies.add(strat)
+        decisions.append({
+            "strategy": strat, "rule": "live_strategy_bleed",
+            "pairs": [p for p, s in strategy_by_tf.items()
+                      if s == strat and p not in disabled],
+            "pnl": round(a["pnl"], 2), "n_trades": a["n"], "days": days,
+            "quarantine_days": quarantine,
+        })
     return decisions
+
+
+def blocked_for_entry(config: dict, db_path: Path | None = None) -> dict:
+    """Face do kill-switch para o DAEMON usar intradia (Wave 894).
+
+    Mesmas regras do evaluate() (fonte única), SEM escrever config: retorna
+    os pares e estratégias que o daemon deve recusar até o próximo AGI run
+    formalizar o disable. Fail-open: erro/VAZIO → nada bloqueado.
+
+    Returns:
+        {"pairs": set[str], "strategies": set[str]}
+    """
+    out: dict = {"pairs": set(), "strategies": set()}
+    try:
+        for d in evaluate(config, db_path) or []:
+            if d.get("pair"):
+                out["pairs"].add(d["pair"])
+            elif d.get("strategy"):
+                out["strategies"].add(d["strategy"])
+    except Exception:
+        pass
+    return out
 
 
 def is_quarantined(pair: str, journal_entries: list,

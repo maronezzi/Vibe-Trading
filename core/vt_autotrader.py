@@ -1567,6 +1567,26 @@ def _check_max_trades(params: dict, symbol: str = "") -> bool:
     # no que o MT5 diz, não no que o DB pensa.
     max_daily_loss = CONFIG.get("max_daily_loss", -500)
     pnl_broker_truth = float(_truth.get_daily_pnl())
+
+    # ── SOFT STOP diário (Wave 894, 15/09): o hard -R$500 nunca disparou em
+    # setembro (-R$802, 7/9 pregões ≤ -R$118) — o sangramento é CRÔNICO, não
+    # catastrófico. O soft stop bloqueia NOVAS entradas quando o dia cruza
+    # -R$150 (config "soft_daily_loss"; 0 = off). Posições abertas seguem
+    # geridas por SL/trailing. Simulação em set/2026: cortaria ~R$160 de
+    # cauda sem tocar nenhum dos pregões que fecharam positivos. ──
+    soft_daily_loss = float(CONFIG.get("soft_daily_loss", -150) or 0)
+    if soft_daily_loss < 0 and pnl_broker_truth <= soft_daily_loss:
+        log(f"🛑 SOFT STOP: PnL diário R$ {pnl_broker_truth:.2f} ≤ soft "
+            f"R$ {soft_daily_loss:.2f} — sem novas entradas hoje (broker-truth)")
+        notify_block_activated(
+            CAT_MAX_DAILY_LOSS,
+            reason=(f"SOFT STOP: PnL diário R$ {pnl_broker_truth:.2f} ≤ "
+                    f"R$ {soft_daily_loss:.2f} — novas entradas bloqueadas até "
+                    f"amanhã (posições abertas seguem geridas por SL/trailing)"),
+            severity="warning", cooldown_min=1440,
+        )
+        return False
+
     if pnl_broker_truth <= max_daily_loss:
         log(f"🛑 KILL SWITCH: PnL diário R$ {pnl_broker_truth:.2f} ≤ limite R$ {max_daily_loss:.2f} — TRAVADO (broker-truth)")
         # Wave N+block_notify: notifica 1x/dia (cooldown 1440min). Re-fires
@@ -2637,6 +2657,50 @@ def validate_order_pre_send(symbol: str, tf: str = "", direction: str = "", magi
     return _truth.validate_order_pre_send(symbol=symbol, tf=tf, direction=direction, magic=magic)
 
 
+# ─── Wave 894 (15/09): KILL-SWITCH LIVE INTRADIA ─────────────────────
+# Setembro (-R$802, 7/9 pregões negativos): o kill-switch só agia nos runs
+# do AGI (12:00/17:10) e via config — o WDO_M5 sangrou pregões inteiros
+# antes do gate pegar (kill só às 17:25 de 14/09). Agora o daemon consulta
+# as MESMAS regras do kill-switch (optimization.agi_v4.live_kill_switch,
+# fonte única — nada de segunda opinião) a cada 30min e recusa entradas de
+# pares/estratégias sangrando, em memória e SEM escrever config (o write
+# formal continua sendo do stage5). VT_AGI_LIVE_KILL=0 desativa. Fail-open.
+_LIVE_KILL_STATE = {"ts": 0.0, "pairs": frozenset(), "strategies": frozenset()}
+_LIVE_KILL_REFRESH_SECS = 30 * 60
+
+
+def _live_kill_block_reason(pair: str, strategy: str) -> str:
+    """Motivo de bloqueio live-kill do par/estratégia ("" = livre).
+
+    Cache de 30min: a query é sobre a tabela `trades` (barata), mas não
+    precisa correr a cada loop de 30s. Erro NUNCA bloqueia (fail-open).
+    """
+    import time as _time
+    now = _time.time()
+    if now - _LIVE_KILL_STATE["ts"] > _LIVE_KILL_REFRESH_SECS:
+        try:
+            from optimization.agi_v4 import live_kill_switch as _lks
+            _db = None
+            try:
+                from core.vt_trade_log import DB_PATH as _db
+            except Exception:
+                pass
+            _blk = _lks.blocked_for_entry(CONFIG, _db)
+            _LIVE_KILL_STATE.update({
+                "ts": now,
+                "pairs": frozenset(_blk.get("pairs") or ()),
+                "strategies": frozenset(_blk.get("strategies") or ()),
+            })
+        except Exception as _lk_err:
+            log(f"[LIVE-KILL] falha ao avaliar ({_lk_err}) — fail-open segue")
+            _LIVE_KILL_STATE["ts"] = now  # não re-tenta a cada loop
+    if pair and pair in _LIVE_KILL_STATE["pairs"]:
+        return "LIVE_KILL_PAIR"
+    if strategy and strategy in _LIVE_KILL_STATE["strategies"]:
+        return "LIVE_KILL_STRATEGY"
+    return ""
+
+
 def _execute_entry(symbol: str, tf: str, direction: str, price: float,
                    sl_pts: int, atr: float, bar_ts, strategy: str = "VWAP", **kwargs):
     """Executa entrada e registra tudo."""
@@ -2715,6 +2779,28 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
     except Exception:
         pass
 
+    # 3) LIVE-KILL INTRADIA (Wave 894): par/estratégia sangrando no real —
+    #    mesmas regras do kill-switch do AGI, consultadas direto pelo daemon.
+    #    Recusa a entrada até o próximo run do AGI formalizar o disable.
+    try:
+        _lk_reason = _live_kill_block_reason(f"{_root_g}_{tf}", strategy)
+        if _lk_reason:
+            log(f"🔴 [LIVE-KILL] {symbol} {tf} {direction} ({strategy}) "
+                f"BLOQUEADO ({_lk_reason}) — sangramento real persistente "
+                f"na janela do kill-switch")
+            try:
+                from core.vt_signal_journal import log_blocked_signal
+                log_blocked_signal(symbol, tf, strategy, direction=direction,
+                                   block_reason=_lk_reason,
+                                   sl_pts=sl_pts, atr_pts=atr)
+            except Exception:
+                pass
+            return {"status": "BLOCKED", "reason": _lk_reason,
+                    "detail": "par/estratégia com live bleed (kill-switch)",
+                    "symbol": symbol}
+    except Exception as _lk_err:
+        log(f"[LIVE-KILL] falha ({_lk_err}) — fail-open segue")
+
     # Volume (Wave Per-TF, Bruno 2026-07-07): prioridade volume_by_tf >
     # volume_by_symbol > volume. Cada (symbol, tf) pode ter volume proprio
     # via CONFIG["volume_by_tf"]["WDO_M5"] etc.
@@ -2764,11 +2850,12 @@ def _execute_entry(symbol: str, tf: str, direction: str, price: float,
             try:
                 from core.vt_signal_journal import log_blocked_signal
                 log_blocked_signal(symbol, tf, strategy, direction=direction,
-                                   block_reason="RISK_BUDGET",
+                                   block_reason=_gov_res.get("reason") or "RISK_BUDGET",
                                    sl_pts=sl_pts, atr_pts=atr)
             except Exception:
                 pass
-            return {"status": "BLOCKED", "reason": "RISK_BUDGET",
+            return {"status": "BLOCKED",
+                    "reason": _gov_res.get("reason") or "RISK_BUDGET",
                     "detail": _gov_res.get("detail", ""), "symbol": symbol}
         elif _gov_res.get("detail"):
             log(f"[RISK-GOV] {symbol} {tf} {direction}: {_gov_res['detail']}")

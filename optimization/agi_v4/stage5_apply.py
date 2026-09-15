@@ -367,9 +367,14 @@ def live_kill_switch_pass(ctx: dict) -> list[str]:
     """Wave 880.II (26/08): kill-switch LIVE — desativa pares com sangramento
     real persistente (tabela `trades`), independente da simulação.
 
-    Duas regras (ver optimization/agi_v4/live_kill_switch.py):
-      - live_bleed: n≥10 trades e PnL ≤ -R$200 na janela de 10 pregões;
-      - live_churn: n≥30 trades e PnL ≤ -R$20 (morte por comissão).
+    Regras (ver optimization/agi_v4/live_kill_switch.py):
+      - live_bleed: n≥4 trades e PnL ≤ -R$120 na janela de 10 pregões
+        (Wave 894: era n≥10/-R$200 — WDO_M5 sangrou 6 pregões antes do
+        gate pegar; calibrado contra set/2026, sem falso positivo);
+      - live_churn: n≥30 trades e PnL ≤ -R$20 (morte por comissão);
+      - live_strategy_bleed (Wave 894): estratégia com n≥5 trades e
+        PnL ≤ -R$150 na janela → desativa TODOS os pares ativos que a
+        usam (a estratégia sangrada não migra de par com "ficha limpa").
     Env-tunable; VT_AGI_LIVE_KILL=0 desativa. O WRITE mora aqui (stage5 é o
     único writer autorizado); a decisão é módulo puro. Fail-open: erro
     NUNCA derruba o pipeline e NUNCA desativa sem evidência.
@@ -394,16 +399,22 @@ def live_kill_switch_pass(ctx: dict) -> list[str]:
         dti = fresh.setdefault("day_trade_intent", {})
         changed = False
         for d in decisions:
-            pair = d.get("pair", "")
-            if not pair or pair in disabled:
-                continue
-            disabled = disabled + [pair]
-            dti[pair] = False
-            changed = True
-            killed.append(pair)
-            log.info(f"🔴 KILL-SWITCH LIVE: {pair} DESATIVADO — regra "
-                     f"{d['rule']}: R$ {d['pnl']:.2f} em {d['n_trades']} "
-                     f"trades/{d['days']}d (sim não representa a execução)")
+            # Decisão de par → o próprio par; de estratégia (Wave 894) →
+            # todos os pares ativos que a usam.
+            d_pairs = ([d["pair"]] if d.get("pair")
+                       else list(d.get("pairs") or []))
+            for pair in d_pairs:
+                if not pair or pair in disabled:
+                    continue
+                disabled = disabled + [pair]
+                dti[pair] = False
+                changed = True
+                killed.append(pair)
+                log.info(f"🔴 KILL-SWITCH LIVE: {pair} DESATIVADO — regra "
+                         f"{d['rule']}"
+                         + (f" (estratégia {d['strategy']})" if d.get("strategy") else "")
+                         + f": R$ {d['pnl']:.2f} em {d['n_trades']} "
+                         f"trades/{d['days']}d (sim não representa a execução)")
         if changed:
             fresh["disabled_timeframes"] = disabled
             fresh["day_trade_intent"] = dti
@@ -411,13 +422,17 @@ def live_kill_switch_pass(ctx: dict) -> list[str]:
             # Journal (best-effort pós-escrita) — alimenta a quarentena
             try:
                 for d in decisions:
-                    if d.get("pair") in killed:
-                        non_regression.append_journal({
-                            "kind": "live_kill", "pair": d["pair"],
-                            "rule": d.get("rule"),
-                            "pnl": d.get("pnl"),
-                            "n_trades": d.get("n_trades"),
-                            "session": ctx.get("_nr_session", "")})
+                    d_pairs = ([d["pair"]] if d.get("pair")
+                               else list(d.get("pairs") or []))
+                    for pair in d_pairs:
+                        if pair in killed:
+                            non_regression.append_journal({
+                                "kind": "live_kill", "pair": pair,
+                                "rule": d.get("rule"),
+                                "strategy": d.get("strategy", ""),
+                                "pnl": d.get("pnl"),
+                                "n_trades": d.get("n_trades"),
+                                "session": ctx.get("_nr_session", "")})
             except Exception:
                 pass
             # Sincroniza config em memória do ctx
@@ -451,7 +466,7 @@ def _incumbent_live_bleeding(pair: str, config: dict) -> tuple[bool, str]:
     kill-switch por PAR (granularidade errada — o bleed é por ESTRATÉGIA).
 
     Retorna (True, detalhe) se strategy_by_tf[pair] tem live ≤
-    VT_AGI_LIVE_STRAT_PNL (-200) com ≥ VT_AGI_LIVE_STRAT_MIN_TRADES (10)
+    VT_AGI_LIVE_STRAT_PNL (-150) com ≥ VT_AGI_LIVE_STRAT_MIN_TRADES (5)
     trades fechados nos últimos 30d. Qualquer erro → (False, "") — nunca
     derruba o gate padrão.
     """
@@ -487,8 +502,10 @@ def _incumbent_live_bleeding(pair: str, config: dict) -> tuple[bool, str]:
         finally:
             con.close()
         n, pnl = int(row[0] or 0), float(row[1] or 0)
-        min_n = int(float(_os.environ.get("VT_AGI_LIVE_STRAT_MIN_TRADES", "10")))
-        thr = float(_os.environ.get("VT_AGI_LIVE_STRAT_PNL", "-200"))
+        # Wave 894: defaults alinhados ao kill por estratégia do
+        # live_kill_switch (mesmos envs, mesma régua — era -200/10).
+        min_n = int(float(_os.environ.get("VT_AGI_LIVE_STRAT_MIN_TRADES", "5")))
+        thr = float(_os.environ.get("VT_AGI_LIVE_STRAT_PNL", "-150"))
         if n >= min_n and pnl <= thr:
             return True, (f"incumbente {strat} live {n}t R${pnl:+.0f}/30d "
                           f"≤ R${thr:.0f}")

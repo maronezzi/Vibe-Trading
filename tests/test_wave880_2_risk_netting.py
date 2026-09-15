@@ -6,8 +6,8 @@ empilhados por M15/M30/H1 numa única posição netting, SL last-writer-wins,
 -R$285 num stop, perda inteira numa linha e 3 trades reais a zero):
 
 1. core/vt_risk_governor.py — orçamento de risco por símbolo-root
-   (pior caso em aberto + nova entrada ≤ stop diário, hedge liberado,
-   fail-open, tightest-SL-wins).
+   (pior caso em aberto + nova entrada ≤ stop diário, coerência direcional
+   sob netting [Wave 894], fail-open, tightest-SL-wins).
 2. core/vt_netting.py — repartição exata do PnL do deal OUT entre as
    sub-entradas (soma das linhas == broker truth).
 3. optimization/agi_v4/live_kill_switch.py — regras live_bleed/live_churn
@@ -116,12 +116,43 @@ class TestRiskGovernor:
         assert r["open_risk"] == pytest.approx(50.0)
         assert r["new_risk"] == pytest.approx(50.0)
 
-    def test_hedge_direcao_oposta_liberado(self):
+    def test_hedge_direcao_oposta_bloqueado_w894(self):
+        """Wave 894 (15/09): entrada contra a exposição líquida do root é
+        BLOQUEADA — sob netting não é hedge, é churn (set/2026: ~-R$357 em
+        entradas opostas simultâneas, exposição zero, custos pagos)."""
         aberto = [_pos("WDOU26", "SELL", 2.0, 5149.0, 5157.5)]
         r = gov.check_entry_risk_budget(
             "WDOU26", "BUY", sl_pts=5000, volume=1.0,
             config=CONFIG_RISCO, open_positions=aberto)
-        assert r["ok"] is True  # reduz exposição líquida sob netting
+        assert r["ok"] is False
+        assert r["reason"] == "NETTING_COHERENCE"
+
+    def test_coerencia_opt_out_libera_hedge(self):
+        # netting_coherence_enabled=false volta ao comportamento pré-Wave 894
+        cfg = dict(CONFIG_RISCO, execution_guards={
+            "risk_buffer": 0.0, "netting_coherence_enabled": False})
+        aberto = [_pos("WDOU26", "SELL", 2.0, 5149.0, 5157.5)]
+        r = gov.check_entry_risk_budget(
+            "WDOU26", "BUY", sl_pts=5000, volume=1.0,
+            config=cfg, open_positions=aberto)
+        assert r["ok"] is True and "liberada" in r["detail"]
+
+    def test_coerencia_sem_posicao_aberta_na_bloqueia(self):
+        # Sem sub-entradas do bot no root → guard de coerência não se aplica
+        r = gov.check_entry_risk_budget(
+            "WDOU26", "SELL", sl_pts=5000, volume=1.0,
+            config=CONFIG_RISCO, open_positions=[])
+        assert r["ok"] is True
+
+    def test_coerencia_mesma_direcao_segue_orcamento(self):
+        # Entrada na MESMA direção da exposição não é churn — segue o fluxo
+        # normal de orçamento (2 × R$50 = R$100 ≤ 250 → ok)
+        aberto = [_pos("WDOU26", "SELL", 1.0, 5149.0, 5154.0)]
+        r = gov.check_entry_risk_budget(
+            "WDOU26", "SELL", sl_pts=5000, volume=1.0,
+            config=CONFIG_RISCO, open_positions=aberto)
+        assert r["ok"] is True
+        assert r["reason"] == ""
 
     def test_posicao_sem_sl_consome_orcamento_inteiro(self):
         aberto = [_pos("WDOU26", "SELL", 1.0, 5149.0, 0.0)]
@@ -274,15 +305,17 @@ def _seed_db(tmp_path, rows):
     db = tmp_path / "trades.db"
     conn = sqlite3.connect(str(db))
     conn.execute("""CREATE TABLE trades (
-        id INTEGER PRIMARY KEY, symbol TEXT, timeframe TEXT, net_pnl REAL,
-        entry_time TEXT, exit_time TEXT, exit_reason TEXT)""")
+        id INTEGER PRIMARY KEY, symbol TEXT, timeframe TEXT, strategy TEXT,
+        net_pnl REAL, entry_time TEXT, exit_time TEXT, exit_reason TEXT)""")
     agora = datetime.now()
-    for i, (sym, tf, pnl) in enumerate(rows):
+    for i, row in enumerate(rows):
+        sym, tf, pnl = row[0], row[1], row[2]
+        strat = row[3] if len(row) > 3 else f"S_{tf}_{i % 97}"
         ts = (agora - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute(
-            "INSERT INTO trades (symbol, timeframe, net_pnl, entry_time, "
-            "exit_time, exit_reason) VALUES (?,?,?,?,?,?)",
-            (sym, tf, pnl, ts, ts, "SL_SERVIDOR"))
+            "INSERT INTO trades (symbol, timeframe, strategy, net_pnl, "
+            "entry_time, exit_time, exit_reason) VALUES (?,?,?,?,?,?,?)",
+            (sym, tf, strat, pnl, ts, ts, "SL_SERVIDOR"))
     conn.commit()
     conn.close()
     return db
@@ -295,31 +328,32 @@ class TestLiveKillSwitch:
 
     def test_bleed_e_churn_detectados(self, tmp_path):
         rows = (
-            [("WDOU26", "M15", -25.0)] * 12            # -300 → live_bleed
-            + [("BITQ26", "M15", -1.0)] * 30            # -30 → live_churn
-            + [("WINZ26", "M15", 10.0)] * 12            # +120 → nada
+            [("WDOU26", "M15", -25.0, "ADX_TREND")] * 12      # -300 → live_bleed
+            + [("BITQ26", "M15", -1.0, "DIVERGENCE_RSI")] * 30  # -30 → live_churn
+            + [("WINZ26", "M15", 10.0, "AGI4_WIN_121815")] * 12  # +120 → nada
         )
         db = _seed_db(tmp_path, rows)
-        dec = {d["pair"]: d for d in lks.evaluate(self.CFG, db_path=db)}
+        dec = {d["pair"]: d for d in lks.evaluate(self.CFG, db_path=db)
+               if d.get("pair")}
         assert dec["WDO_M15"]["rule"] == "live_bleed"
         assert dec["WDO_M15"]["pnl"] == pytest.approx(-300.0)
         assert dec["BIT_M15"]["rule"] == "live_churn"
         assert "WIN_M15" not in dec
 
     def test_poucos_trades_nao_mata(self, tmp_path):
-        rows = [("WDOU26", "M15", -285.0)] * 2  # incidente real: n=2 < 10
+        rows = [("WDOU26", "M15", -285.0, "ADX_TREND")] * 2  # incidente real: n=2 < min
         db = _seed_db(tmp_path, rows)
         assert lks.evaluate(self.CFG, db_path=db) == []
 
     def test_par_ja_desativado_ignorado(self, tmp_path):
-        rows = [("WDOU26", "M15", -25.0)] * 12
+        rows = [("WDOU26", "M15", -25.0, "ADX_TREND")] * 12
         db = _seed_db(tmp_path, rows)
         cfg = dict(self.CFG, disabled_timeframes=["WIN_M5", "WDO_M15"])
         assert lks.evaluate(cfg, db_path=db) == []
 
     def test_env_desliga(self, tmp_path, monkeypatch):
         monkeypatch.setenv("VT_AGI_LIVE_KILL", "0")
-        rows = [("WDOU26", "M15", -25.0)] * 12
+        rows = [("WDOU26", "M15", -25.0, "ADX_TREND")] * 12
         db = _seed_db(tmp_path, rows)
         assert lks.evaluate(self.CFG, db_path=db) == []
 
@@ -337,3 +371,74 @@ class TestLiveKillSwitch:
 
         ok3, _ = lks.is_quarantined("WIN_M15", journal, now=agora)
         assert ok3 is False  # outro par não é afetado
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 4. Wave 894 (15/09) — kill mais rápido + kill por ESTRATÉGIA + face
+#    intradia (blocked_for_entry). Motivação: setembro -R$802 (7/9 pregões
+#    negativos); WDO_M5 sangrou 6 pregões antes do gate n≥10/-R$200 pegar;
+#    AGI4_BIT_121102 migrou de par com "ficha limpa".
+# ─────────────────────────────────────────────────────────────────────
+
+class TestLiveKillWave894:
+    CFG_WDO = {"strategy_by_tf": {"WDO_M5": "AGI4_BIT_121102",
+                                  "WIN_M15": "AGI4_BIT_121102",
+                                  "BIT_M30": "AGI4_BIT_121102",
+                                  "BIT_M15": "DIVERGENCE_RSI"},
+               "disabled_timeframes": ["WDO_M5"]}
+
+    def test_defaults_mais_rapidos_n4_m120(self, tmp_path):
+        # Sequência real do WDO_M5 em 09-10/09: 4 trades, -R$167 — o gate
+        # antigo (n≥10, -R$200) não pegava; o novo (n≥4, -R$120) pega.
+        rows = [("WDOV26", "M5", -42.0, "AGI4_BIT_121102")] * 4
+        db = _seed_db(tmp_path, rows)
+        cfg = dict(self.CFG_WDO, disabled_timeframes=[])
+        dec = [d for d in lks.evaluate(cfg, db_path=db) if d.get("pair")]
+        assert dec and dec[0]["pair"] == "WDO_M5"
+        assert dec[0]["rule"] == "live_bleed"
+
+    def test_sem_falso_positivo_churn_pequeno(self, tmp_path):
+        # DIVERGENCE_RSI set/2026: 23 trades, -R$110 — acima de -R$120, vive
+        rows = [("BITQ26", "M15", -4.8, "DIVERGENCE_RSI")] * 23
+        db = _seed_db(tmp_path, rows)
+        assert lks.evaluate(self.CFG_WDO, db_path=db) == []
+
+    def test_strategy_bleed_apanha_migracao_de_par(self, tmp_path):
+        # AGI4_BIT_121102 sangrou -R$160/6t (n≥5, ≤-R$150) — WDO_M5 já está
+        # disabled, mas a estratégia RODA em WIN_M15/BIT_M30 → os dois pares
+        # ativos que a usam entram na decisão (a estratégia não recomeça
+        # "limpa" em outro par).
+        rows = ([("WDOV26", "M5", -30.0, "AGI4_BIT_121102")] * 5
+                + [("BITQ26", "M30", -10.0, "AGI4_BIT_121102")])
+        db = _seed_db(tmp_path, rows)
+        dec = [d for d in lks.evaluate(self.CFG_WDO, db_path=db)
+               if d.get("strategy")]
+        assert len(dec) == 1
+        assert dec[0]["rule"] == "live_strategy_bleed"
+        assert dec[0]["strategy"] == "AGI4_BIT_121102"
+        assert set(dec[0]["pairs"]) == {"WIN_M15", "BIT_M30"}
+        assert dec[0]["pnl"] == pytest.approx(-160.0)
+
+    def test_strategy_saudavel_nao_morre(self, tmp_path):
+        rows = ([("BITQ26", "M15", 5.0, "DIVERGENCE_RSI")] * 10
+                + [("BITQ26", "M15", -5.0, "DIVERGENCE_RSI")] * 10)  # 0.0
+        db = _seed_db(tmp_path, rows)
+        assert lks.evaluate(self.CFG_WDO, db_path=db) == []
+
+    def test_blocked_for_entry_face_do_daemon(self, tmp_path):
+        rows = ([("WDOV26", "M5", -42.0, "AGI4_BIT_121102")] * 4
+                + [("BITQ26", "M15", -4.8, "DIVERGENCE_RSI")] * 23)
+        db = _seed_db(tmp_path, rows)
+        cfg = dict(self.CFG_WDO,
+                   strategy_by_tf={"WDO_M5": "AGI4_BIT_121102",
+                                   "BIT_M15": "DIVERGENCE_RSI"},
+                   disabled_timeframes=[])
+        blk = lks.blocked_for_entry(cfg, db_path=db)
+        # WDO_M5: live_bleed (par) — BIT_M15: -110 > -120 no gate de par,
+        # mas o churn n≥30/-R$20 não bate (n=23) → só o par sangrado.
+        assert blk["pairs"] == {"WDO_M5"}
+        # AGI4_BIT_121102: n=4 < 5 → estratégia ainda não morre
+        assert "AGI4_BIT_121102" not in blk["strategies"]
+        # Fail-open com banco inexistente
+        assert lks.blocked_for_entry(cfg, db_path=tmp_path / "nada.db") == {
+            "pairs": set(), "strategies": set()}

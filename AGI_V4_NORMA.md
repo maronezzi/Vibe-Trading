@@ -427,8 +427,9 @@ Primeira calibração real (19/08): ótimo bruto 300, clamp leva 100→200
   passar do orçamento (`|max_daily_loss_by_symbol[root]|` com buffer de
   slippage `execution_guards.risk_buffer`, default 25%), BLOQUEIA
   (`reason=RISK_BUDGET`, sinal vai pro `signal_blocked_log`). Entrada que
-  REDUZ exposição líquida (hedge) é liberada. Posição sem SL = orçamento
-  inteiro consumido. **Fail-open** (erro nunca segura entrada).
+  REDUZ exposição líquida era liberada como hedge — **SUPERSEDIDO pela Wave
+  894 (§21): agora é BLOQUEADA (`NETTING_COHERENCE`)**. Posição sem SL =
+  orçamento inteiro consumido. **Fail-open** (erro nunca segura entrada).
   Kill-switch: env `VT_RISK_GOVERNOR=0` ou
   `execution_guards.risk_budget_enabled=false`.
   Também exporta `should_restore_prev_sl` (tightest-SL-wins).
@@ -438,7 +439,9 @@ Primeira calibração real (19/08): ótimo bruto 300, clamp leva 100→200
   Σ linhas == broker truth. Testes reproduzem o incidente (4 SELLs
   5149/5149.5/5150.5/5152.5 fechados @5157.5 = −85/−80/−70/−50).
 - **`optimization/agi_v4/live_kill_switch.py`** (puro) — decisões do
-  kill-switch live: **live_bleed** (n≥10 E PnL ≤ −R$200 em 10 pregões) e
+  kill-switch live: **live_bleed** (n≥10 E PnL ≤ −R$200 em 10 pregões;
+  **recalibrado pela Wave 894 (§21) para n≥4 E ≤ −R$120**, + regra nova
+  `live_strategy_bleed` e face intradia `blocked_for_entry`) e
   **live_churn** (n≥30 E PnL ≤ −R$20 — morte por comissão). Lê a tabela
   `trades` (sem GHOSTs, espelho do risk_calibrator). Env: `VT_AGI_LIVE_KILL`
   (default 1), `VT_AGI_LIVE_KILL_DAYS/_MIN_TRADES/_PNL`,
@@ -896,3 +899,72 @@ Efeito: essas estratégias eram rejeitadas em 100% dos combos com 0 trades —
 ciclos queimados e alpha real escondido. Pós-fix: os 3 culpados rodaram os
 grids completos sem nenhuma exceção (fuzz dirigido; o fuzz do catálogo
 inteiro foi cortado por tempo — estratégias saudáveis simulam caro).
+
+---
+
+## 21. Wave 894 — reverter o sangramento crônico: coerência netting, kill por estratégia, kill intradia e soft stop (15/09/2026)
+
+**Motivação (dado real, espelho VPS):** setembro fechando **-R$801,91 até
+14/09 com 7/9 pregões negativos** — sangramento CRÔNICO (-R$118 a -R$231/dia),
+não catastrófico (o hard stop -R$500 nunca disparou). Três causas-raiz:
+
+1. **Churn de direções opostas sob netting (~-R$357 atribuídos em set):**
+   TFs do mesmo root entrando em direções opostas simultâneas (14/09 13:33:
+   WSP M5 BUY + M15 SELL) — exposição líquida zero, custos pagos, SL único
+   deslocado, filhos netting-hold para o reconcile fantasmar.
+2. **Kill-switch reativo demais:** WDO_M5/AGI4_BIT_121102 sangrou -R$301 em
+   6 pregões; o gate antigo (n≥10 E ≤-R$200/10d) só matou às 17:25 de 14/09.
+3. **Bleed por ESTRATÉGIA migra de par:** o AGI4_BIT_121102 morto no WDO_M5
+   rodava "limpo" no WIN_M15/BIT_M30 — o kill POR PAR não acompanha a
+   estratégia (granularidade já apontada no incidente 08/09 do WIN_M15).
+
+### Mudanças (todas fail-open, env/config desligáveis)
+
+1. **Coerência direcional netting** (`core/vt_risk_governor.py`) — a entrada
+   na direção OPOSTA à exposição líquida do root com sub-entradas do bot em
+   aberto agora é **BLOQUEADA** (`reason=NETTING_COHERENCE`; era "hedge
+   liberado" — sob netting isso nunca foi hedge, era churn + deslocamento do
+   SL único). A saída de posição continua só pelos caminhos de close/trailing.
+   Opt-out: `execution_guards.netting_coherence_enabled=false`.
+2. **Kill-switch recalibrado** (`live_kill_switch.py`) — `live_bleed` agora
+   **n≥4 E ≤-R$120** em 10 pregões (era n≥10/-R$200). Com o dado de set o
+   WDO_M5 teria morrido em 10/09 (n=4, -R$167). Validado contra setembro:
+   nenhum par/estratégia positivo morre (DIVERGENCE_RSI -R$110/23t e
+   ADX_TREND -R$90/12t ficam vivos).
+3. **Kill por ESTRATÉGIA** (`live_kill_switch.py` + `stage5_apply`) — regra
+   `live_strategy_bleed`: estratégia com **n≥5 E ≤-R$150** na janela → o
+   stage5 desativa TODOS os pares ativos que a usam (journal `live_kill` por
+   par, quarentena normal). Env: `VT_AGI_LIVE_STRAT_MIN_TRADES/_PNL`
+   (mesmos knobs do `_incumbent_live_bleeding`, defaults alinhados 5/-150).
+4. **Kill intradia no daemon** (`vt_autotrader._live_kill_block_reason`) —
+   o daemon consulta `live_kill_switch.blocked_for_entry()` (fonte única de
+   regras) a cada 30min e recusa entradas de pares/estratégias sangrando,
+   EM MEMÓRIA, sem escrever config (o write formal continua no stage5).
+   Mesma env `VT_AGI_LIVE_KILL=0` desliga ambos.
+5. **Soft stop diário** (`_check_max_trades`) — novas entradas bloqueadas
+   quando o PnL diário broker-truth cruza **-R$150** (config
+   `soft_daily_loss`, 0=off; posições abertas seguem geridas por SL/trailing).
+   Simulado em set/2026: ~R$160 de cauda cortada, nenhum dia positivo tocado.
+
+### Verificação com dado real (15/09)
+`evaluate()` sobre o espelho da VPS: dispara **exatamente 1 decisão** —
+`live_strategy_bleed AGI4_BIT_121102 (-R$331, 10t/10d) → desativa WIN_M15`
+(o par onde a estratégia migrou "limpa"). Zero falsos positivos.
+
+### Invariantes preservados
+- Fail-open em tudo (governador, kill, soft stop): erro interno NUNCA
+  segura entrada nem derruba pipeline/daemon;
+- house rule intacta: kill/soft stop continuam GESTÃO DE RISCO lendo
+  `trades`, não treino — nenhuma decisão de estratégia/params nasce deles;
+- stage5 segue o único writer do AGI; o daemon NÃO escreve config;
+- `NETTING_COHERENCE` e `LIVE_KILL_PAIR`/`LIVE_KILL_STRATEGY` entram no
+  `signal_blocked_log` (alimentam edge-decay).
+
+**Deploy:** desenvolvimento no local; produção (VPS) recebe via
+`bash scripts/vps/20_sync_code_to_vps.sh` (fora do pregão). Sem mudança de
+config obrigatória — todos os defaults novos são code-level (soft stop e
+coerência são config-overridable, keys ausentes = defaults Wave 894).
+
+**Dívida conhecida:** `tests/test_agi_guardrails.py` (3) e
+`tests/test_today_weighting.py` (2) falham PRÉ-EXISTENTES (confirmado em
+stash da árvore limpa em 15/09) — não são da Wave 894.
