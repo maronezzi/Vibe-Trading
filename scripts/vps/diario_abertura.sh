@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================================
-# diario_abertura.sh — checagem de abertura (roda NA VPS, cron 09:20 seg-sex)
+# diario_abertura.sh — checagem de abertura (roda no PC pós-retorno 70, cron 09:20 seg-sex)
 # Verifica pre-flight/daemon/MT5/walker/gateway e envia resumo ao Telegram.
 # Read-only: não opera, não muda config. Reinicia o walker apenas se houver
 # traceback no código novo de cooldown.
@@ -9,7 +9,7 @@ set -u
 PROJECT=/home/bruno/Projects/Vibe-Trading
 TARGET="telegram:-1004284773048"
 HERMES="$HOME/.local/bin/hermes"
-MSG="🌅 ABERTURA VPS $(date '+%d/%m %H:%M')\n"
+MSG="🌅 ABERTURA PC $(date '+%d/%m %H:%M')\n"
 
 # 1. Pre-flight
 PF=$(tail -8 /tmp/vt_pre_flight.log 2>/dev/null | grep -c "PRE-FLIGHT OK")

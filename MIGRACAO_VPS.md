@@ -189,3 +189,69 @@ bash scripts/vps/40_cutover_to_vps.sh --execute
 bash scripts/vps/45_rollback_to_local.sh --execute   # emergência
 bash scripts/vps/50_mirror_pull_from_vps.sh          # espelho (cron 19:40)
 ```
+
+---
+
+> **§1–§7 acima descrevem a ERA VPS (2026-09-03 → 2026-09-24), preservada como
+> memória institucional. A partir daqui, quem manda é o §8: o sistema voltou
+> ao PC e a VPS virou cold standby + destino de backup.**
+
+---
+
+## 8. RETORNO ao local (2026-09-24) — VPS → PC, o reverso oficial
+
+> O `45` era aborto de emergência do dia do cutover — NÃO serve como retorno
+> definitivo. O retorno oficial é o **`70_cutover_to_local.sh`**, reverso
+> espelhado do 40, executado em 2026-09-24 (pós-pregão).
+
+### 8.1 Por que o 45 não bastava (lições incorporadas no 70)
+
+1. **Restaurava o crontab errado**: pegava o backup *mais novo* de
+   `~/Backups/crontab.local.pre_cutover.*` — que era o crontab de **dev**
+   (segunda passada do cutover em 03/09 gravou o dev por cima). O 70 instala
+   o `crontab.txt` do REPOSITÓRIO (fonte da verdade), nunca um backup.
+2. **Não desligava a VPS de verdade**: o 60_swap tornou xvfb99/mt5-order/hermes-gateway
+   unidades **permanentes com Restart=always** — pkill ressuscita. O 70 faz
+   `crontab -r` PRIMEIRO (mata agendadores/self-heal/watchdog), depois processos,
+   depois `systemctl stop+disable`, e confere que nada sobreviveu antes de seguir.
+3. **Não trazia o runtime completo**: faltavam as estratégias promovidas pela AGI
+   na VPS (**11 arquivos** entre 08–16/09), relatórios, overrides do copilot, o
+   `.env` do hermes (onde vive o token do Telegram — sem ele `hermes send` quebra,
+   lição do 21) e o estado do gateway (histórico do Telegram de 3 semanas,
+   `state.db` ~1,7 GB).
+4. **Não reativava o gateway local** (o chat ficaria mudo).
+
+### 8.2 O que o 70 faz (ordem)
+
+Backups de segurança → VPS fria (com verificação dura: aborta se algo sobreviver)
+→ delta VPS→local (DB+config+strategies **sem `--delete`**+reports+overrides;
+`git status` mostra o que a VPS trouxe) → hermes com os dois gateways mortos
+(backup do estado local antes) → crontab local ← repo → MT5 local → gateway
+local (`systemctl --user enable --now`, lição 409 do §6) → daemon só no próximo
+pregão via cron 09:00 (ou `--start-now`) → validação dupla + mensagem de teste.
+
+### 8.3 Estado pós-retorno
+
+- **PC = produção**: pre-flight 08:55, daemon 09:00, walker 09:01, diários
+  09:20/13:35/18:35 (rótulos trocados de "VPS" para "PC"), AGI 12:00/17:10,
+  backup→VPS 19:40 (55).
+- **VPS = cold standby**: sem crontab, unidades disabled, nenhum processo;
+  runtime da era VPS preservado lá para auditoria; recebe o backup do PC às
+  19:40 em `~/Backups/local-mirror/` (`55_backup_push_to_vps.sh` — o espelho
+  inverso do 50; DB vai por snapshot sqlite consistente, mesmo com daemon vivo).
+- **MT5 local sem systemd**: o PC não tem sudo sem senha, então nesta passada o
+  Xvfb+MT5 sobem em **modo direto** (réplica inline do ExecStart do mt5-order —
+  o fallback "legado" do `start_mt5linux.sh` está stale: aponta para o wine64
+  inexistente). Para a alavanca systemd-aware do self-heal voltar a valer no PC,
+  com um terminal com sudo — **derrube o modo direto antes** (eles brigam pelo :99):
+  ```bash
+  pkill -f "Xvfb :99"; pkill -f "terminal64.exe"; rm -f /tmp/.X99-lock
+  sudo install -m644 scripts/vps/systemd/xvfb99.service scripts/vps/systemd/mt5-order.service /etc/systemd/system/
+  sudo systemctl daemon-reload && sudo systemctl enable --now xvfb99 mt5-order
+  ```
+
+### 8.4 Se um dia precisar da VPS de novo
+
+O kit 20/30/40/60 segue intacto e comprovado: sincronizar código (`20_sync`),
+validar (`30_validate_vps`), e cortar de volta (`40_cutover_to_vps --execute`) —
+o 70 e o 40 são reversos um do outro pela mesma regra de ouro: exatamente 1 sistema.

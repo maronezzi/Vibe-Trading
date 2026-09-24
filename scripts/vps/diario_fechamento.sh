@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================================
-# diario_fechamento.sh — raio-X pós-pregão (roda NA VPS, cron 18:35 seg-sex)
+# diario_fechamento.sh — raio-X pós-pregão (roda no PC pós-retorno 70, cron 18:35 seg-sex)
 # Confere coletor 17:05, minera as sims do dia (SL-only/MFE/cooldowns),
 # compara forward vs live e envia o resumo ao Telegram.
 # =====================================================================
@@ -10,7 +10,7 @@ TARGET="telegram:-1004284773048"
 HERMES="$HOME/.local/bin/hermes"
 DB="$PROJECT/vt_trades.db"
 D=$(date +%Y-%m-%d)
-MSG="🌙 FECHAMENTO VPS $(date '+%d/%m %H:%M')\n"
+MSG="🌙 FECHAMENTO PC $(date '+%d/%m %H:%M')\n"
 
 # 1. Coletor 17:05 (primeiro dia: 2026-09-04)
 COL="$HOME/.hermes/cron/output/03b055c13731/collect_$(date +%Y%m%d).json"

@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================================
-# diario_meiodia.sh — checagem de meio-dia (roda NA VPS, cron 13:35 seg-sex)
+# diario_meiodia.sh — checagem de meio-dia (roda no PC pós-retorno 70, cron 13:35 seg-sex)
 # Pós-AGI 12:00: confere se o AGI aplicou algo (sanidade de config), saúde do
 # daemon/walker/MT5 e posição corrente. Envia resumo ao Telegram.
 # =====================================================================
@@ -8,7 +8,7 @@ set -u
 PROJECT=/home/bruno/Projects/Vibe-Trading
 TARGET="telegram:-1004284773048"
 HERMES="$HOME/.local/bin/hermes"
-MSG="☀️ MEIO-DIA VPS $(date '+%d/%m %H:%M')\n"
+MSG="☀️ MEIO-DIA PC $(date '+%d/%m %H:%M')\n"
 
 # 1. AGI 12:00 de hoje — aplicou algo?
 AGI_LOG=$(ls -t /tmp/vi_agi_v4_*.log /tmp/vt_agi_v4_1[12]*.log 2>/dev/null | head -1)
