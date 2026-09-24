@@ -134,12 +134,13 @@
 # e entrega relatório via Telegram. Roda após AGI v4 17:10.
 00 19 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/w877_19h_rescan_uncommitted.sh >> /tmp/w877_rescan.log 2>&1
 
-# ─── BACKUP NOTURNO LOCAL → VPS 19:40 (seg-sex) — retorno ao PC (§8 do kit) ──
-#     Reverso do espelho da era VPS: após o retorno (70_cutover_to_local.sh),
-#     o PC manda no runtime e a VPS vira cold standby + destino do backup
-#     (regra do Bruno: cópia na máquina E na nuvem). DB vai por snapshot
-#     sqlite consistente; VPS sem trading.
-40 19 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vps/55_backup_push_to_vps.sh >> /tmp/vt_backup_push.log 2>&1
+# ─── BACKUP NOTURNO LOCAL → GITHUB 19:40 (seg-sex) — Wave 896 ────────────────
+#     Perna "nuvem" da regra do Bruno (cópia na máquina E na nuvem): repo
+#     PRIVADO maronezzi/vibe-trading-backup recebe DB (snapshot sqlite
+#     consistente), config, relatórios e jobs hermes. Segredos (.env/auth)
+#     e o state.db (1,75 GB) ficam de fora. Estratégias vivem no repo
+#     principal. Sucessor do 55 (era VPS) — ver §8 do MIGRACAO_VPS.md.
+40 19 * * 1-5 /home/bruno/Projects/Vibe-Trading/scripts/vps/56_backup_push_to_github.sh >> /tmp/vt_backup_push.log 2>&1
 
 # ─── TRADE EVENT WATCHER watchdog */5min (seg-sex 9-17h) ──────────────────────
 #     Se o watcher (EA → CSV → SQLite) morrer, reinicia em até 5 min.

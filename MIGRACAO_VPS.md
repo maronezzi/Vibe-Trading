@@ -239,6 +239,12 @@ pregão via cron 09:00 (ou `--start-now`) → validação dupla + mensagem de te
   runtime da era VPS preservado lá para auditoria; recebe o backup do PC às
   19:40 em `~/Backups/local-mirror/` (`55_backup_push_to_vps.sh` — o espelho
   inverso do 50; DB vai por snapshot sqlite consistente, mesmo com daemon vivo).
+  **Wave 896 (25/09)**: a perna "nuvem" migrou para o GitHub — repo **privado**
+  [`maronezzi/vibe-trading-backup`](https://github.com/maronezzi/vibe-trading-backup)
+  (`56_backup_push_to_github.sh`, cron 19:40; história compactada acima de 45
+  commits; fora do repo: `.env`/`auth.json` por serem segredos e `state.db` por
+  passar de 100 MB). Com isso a VPS ficou **liberada para cancelamento** — nada
+  do runtime depende mais dela.
 - **MT5 local sem systemd**: o PC não tem sudo sem senha, então nesta passada o
   Xvfb+MT5 sobem em **modo direto** (réplica inline do ExecStart do mt5-order —
   o fallback "legado" do `start_mt5linux.sh` está stale: aponta para o wine64
