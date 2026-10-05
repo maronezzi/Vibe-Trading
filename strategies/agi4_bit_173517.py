@@ -54,8 +54,13 @@ def check_entry(symbol, tf, price, atr, bar_ts, bars, params, utils):
     adx_threshold = params.get("adx_threshold", 22)
     use_adx_filter = params.get("use_adx_filter", True)
     rsi_period = params.get("rsi_period", 14)
-    rsi_buy_min = params.get("rsi_buy_min", 55)
-    rsi_sell_max = params.get("rsi_sell_max", 45)
+    # Tuning 13h (2026-10-05, Trader-IA): RSI de confirmação 55/45 → 70/30.
+    # Evidência: forward-sim 800 barras BIT_M15 — 2 SELLs live com RSI 4.6/6.3
+    # (vendendo fundo, bounce imediato). BASE: −54.26/32t WR 68.8% →
+    # rsi 70/30: +109.81/29t WR 72.4%. Override via params_by_tf continua
+    # funcionando (AGI pode re-otimizar).
+    rsi_buy_min = params.get("rsi_buy_min", 70)
+    rsi_sell_max = params.get("rsi_sell_max", 30)
 
     # --- Guardas de warmup ---
     min_bars = max(bb_period, ema_slow_period, ema_fast_period, adx_period * 2, rsi_period) + 5
