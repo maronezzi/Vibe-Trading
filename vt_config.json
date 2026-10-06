@@ -1,8 +1,8 @@
 {
-  "_version": 1432,
-  "_updated_at": "2026-09-24T17:37:11.008972",
-  "_updated_by": "agi_v4_stage5",
-  "_notes": "auto-resolve vencimento: WIN: WINV26 → WINZ26",
+  "_version": 1462,
+  "_updated_at": "2026-10-06T11:06:14.950645",
+  "_updated_by": "hermes_meio_dia_20261006_w16_release",
+  "_notes": "auto-resolve vencimento: WDO: WDOV26 → WDOX26",
   "_doc_max_daily_trades": "HIERARQUIA DO LIMITE DIARIO DE TRADES — o que vt_autotrader.py REALMENTE usa (ver _resolve_max_daily_trades + _check_max_trades + _global_max_daily_trades). POR SIMBOLO (primeiro valor existente vence): 1) params_by_tf[SYMBOL_TF].max_daily_trades (MAIS ESPECIFICO) — WDO: M5=2, M15=4, M30=4, H1=2; 2) CONFIG[SYMBOL].max_daily_trades (nivel do ativo) — wdo=4; 3) CONFIG.max_daily_trades (raiz) — 999; 4) 15 (default hardcoded de seguranca). TETO GLOBAL SEPARADO e independente da cadeia acima: min(global_max_daily_trades, 50) — aqui 999 vira 50, i.e. o 999 e ignorado e o limite total real e 50 trades/dia. NAO ENTRA NO GATE: risk_management.daily_limits.max_daily_trades_by_symbol — so e lido no LOG de startup (vt_autotrader.py ~L1907, 'Max(x/dia efetivo)'); como a chave risk_management nao existe neste config, sempre cai no fallback CONFIG[SYMBOL].max_daily_trades e nao influi no limite real. Resumo: hierarquia efetiva = by_tf > ativo > raiz(max_daily_trades) > 15, com teto global independente min(global_max_daily_trades, 50) = 50.",
   "start_hour": 9,
   "start_minute": 5,
@@ -103,27 +103,27 @@
   "bars_count": 100,
   "resolved_symbols": {
     "WIN": "WINZ26",
-    "BIT": "BITU26",
+    "BIT": "BITV26",
     "WSP": "WSPZ26",
-    "WDO": "WDOV26"
+    "WDO": "WDOX26"
   },
   "warmup_minutes": 15,
   "winddown_minutes": 15,
   "validate_with_llm": true,
   "strategy_by_tf": {
-    "WIN_M5": "AGI4_BIT_124412",
+    "WIN_M5": "AGI4_BIT_125922",
     "WIN_M15": "AGI4_BIT_121102",
-    "WIN_M30": "AGI4_BIT_121102",
+    "WIN_M30": "W883_DOUBLE_TOUCH",
     "WIN_H1": "ENHANCED_RSI_REVERSION",
-    "BIT_M5": "AGI4_BIT_124412",
-    "BIT_M15": "AGI4_BIT_173517",
-    "BIT_M30": "AGI4_BIT_121102",
+    "BIT_M5": "AGI4_WDO_132248",
+    "BIT_M15": "AGI4_WDO_180944",
+    "BIT_M30": "AGI4_BIT_124449",
     "BIT_H1": "ADX_TREND",
-    "WSP_M5": "AGI4_WSP_140123",
-    "WSP_M15": "AGI4_WSP_123521",
+    "WSP_M5": "AGI4_BIT_175550",
+    "WSP_M15": "AGI4_BIT_123204",
     "WSP_M30": "AGI4_BIT_142457",
     "WSP_H1": "EMA_PULLBACK",
-    "WDO_M5": "AGI4_BIT_121102",
+    "WDO_M5": "AGI4_BIT_172025",
     "WDO_M15": "AGI4_BIT_211142",
     "WDO_M30": "AGI4_WIN_123055",
     "WDO_H1": "TRIPLE_EMA"
@@ -232,13 +232,9 @@
     "IND"
   ],
   "disabled_timeframes": [
-    "BIT_M30",
     "WSP_H1",
     "BIT_H1",
-    "WDO_M15",
-    "WIN_H1",
-    "WDO_H1",
-    "WIN_M5"
+    "WDO_H1"
   ],
   "max_daily_loss": -500,
   "global_max_daily_trades": 999,
@@ -248,8 +244,11 @@
       "sl_atr_mult": 2.0,
       "trail_activate": 0.8,
       "trail_distance": 0.4,
-      "ema_fast": 5,
-      "ema_slow": 15
+      "bb_period": 10,
+      "bb_std": 1.5,
+      "macd_fast": 15,
+      "macd_slow": 20,
+      "macd_signal": 7
     },
     "WIN_M15": {
       "cooldown_seconds": 60,
@@ -264,9 +263,7 @@
       "cooldown_seconds": 60,
       "sl_atr_mult": 1.5,
       "trail_activate": 0.8,
-      "trail_distance": 0.4,
-      "bb_period": 14,
-      "bb_std": 1.5
+      "trail_distance": 0.4
     },
     "WIN_H1": {
       "rsi_oversold": 20,
@@ -274,42 +271,37 @@
       "trail_distance": 0.4
     },
     "BIT_M5": {
-      "cooldown_seconds": 60,
+      "cooldown_seconds": 300,
       "halt_duration_minutes": 180,
       "max_consecutive_losses": 6,
       "profit_lock_r": 0.5,
       "sl_atr_mult": 0.8,
       "trail_activate": 0.07,
       "trail_distance": 0.035,
-      "ema_fast": 5,
-      "ema_slow": 15,
-      "ema_trend": 30,
-      "atr_period": 10,
-      "atr_avg_period": 10,
-      "max_daily_trades": 8
+      "max_daily_trades": 8,
+      "adx_split": 30.0,
+      "adx_max": 60.0,
+      "slope_min": 0.06,
+      "z_entry": 1.0,
+      "keltner_ema": 24
     },
     "BIT_M15": {
-      "cooldown_seconds": 60,
+      "cooldown_seconds": 300,
       "sl_atr_mult": 0.8,
       "trail_activate": 0.07,
       "trail_distance": 0.035,
-      "bb_period": 20,
-      "bb_std": 1.4,
-      "max_daily_trades": 8,
-      "ema_fast": 14,
-      "ema_slow": 21,
-      "adx_period": 10
+      "max_daily_trades": 4,
+      "ema_fast": 12,
+      "ema_slow": 20,
+      "adx_period": 10,
+      "adx_split": 20.0,
+      "slope_period": 6
     },
     "BIT_M30": {
-      "bb_std": 2.0,
-      "bb_period": 14,
       "cooldown_seconds": 60,
       "sl_atr_mult": 0.8,
       "trail_activate": 0.07,
-      "trail_distance": 0.035,
-      "bw_lookback": 20,
-      "bw_expand_ratio": 2.5,
-      "bw_squeeze_ratio": 0.49
+      "trail_distance": 0.035
     },
     "BIT_H1": {
       "sl_atr_mult": 1.0,
@@ -340,10 +332,10 @@
     "WSP_M15": {
       "bb_period": 15,
       "cooldown_seconds": 1800,
-      "range_period": 20,
-      "adx_min_break": 15.0,
-      "adx_max_revert": 15.0,
-      "zscore_thres": 2.0
+      "ema_fast": 15,
+      "ema_slow": 30,
+      "ema_trend": 30,
+      "bb_std": 3.0
     },
     "WSP_M30": {
       "cooldown_seconds": 300,
@@ -353,8 +345,8 @@
       "sl_atr_mult": 2.0,
       "ema_fast": 15,
       "ema_slow": 21,
-      "ema_trend": 50,
-      "atr_period": 10,
+      "ema_trend": 30,
+      "atr_period": 14,
       "atr_avg_period": 30,
       "max_daily_trades": 5
     },
@@ -376,10 +368,7 @@
     },
     "WDO_M5": {
       "cooldown_seconds": 60,
-      "sl_atr_mult": 0.8,
-      "bb_period": 14,
-      "bb_std": 2.4,
-      "rsi_oversold": 22
+      "sl_atr_mult": 0.8
     },
     "WDO_M15": {
       "sl_atr_mult": 0.8,
@@ -541,20 +530,20 @@
     "check_interval_min": 15
   },
   "day_trade_intent": {
-    "WIN_M5": false,
+    "WIN_M5": true,
     "WIN_M15": true,
     "BIT_M5": true,
     "BIT_M15": true,
     "WIN_M30": true,
-    "WIN_H1": false,
-    "BIT_M30": false,
+    "WIN_H1": true,
+    "BIT_M30": true,
     "BIT_H1": false,
     "WSP_M5": true,
     "WSP_M15": true,
     "WSP_M30": true,
     "WSP_H1": false,
     "WDO_M5": true,
-    "WDO_M15": false,
+    "WDO_M15": true,
     "WDO_M30": true,
     "WDO_H1": false
   },
@@ -575,7 +564,7 @@
   "profit_lock_target_mult": 1.0,
   "profit_lock_lookback_days": 7,
   "trailing_profit_lock_enabled": true,
-  "trailing_activation_pct": 0.5,
+  "trailing_activation_pct": 0.3,
   "trailing_floor_pct": 0.5,
   "_note_trailing_profit_lock": "Wave 1110 (23/07): Trailing Profit Lock — ratchet progressivo. Ativa em trailing_activation_pct do target, floor sobe linearmente de trailing_floor_pct×pico até 1.0×pico no target. Breach → fecha tudo + arma profit lock. Config: trailing_profit_lock_enabled, trailing_activation_pct, trailing_floor_pct.",
   "trailing_target_per_lot": 250.0,
@@ -589,7 +578,7 @@
   },
   "execution_guards": {
     "max_slippage_pts_by_symbol": {
-      "WIN": 125,
+      "WIN": 180,
       "WDO": 2020,
       "WSP": 375,
       "BIT": 51240
@@ -617,6 +606,18 @@
       "to": "WSPZ26",
       "changed_at": "2026-09-23T11:07:22.941983",
       "changed_by": "copilot_11h_wsp_dead_contract"
+    },
+    "BIT": {
+      "from": "BITU26",
+      "to": "BITV26",
+      "changed_at": "2026-09-28T08:55:40",
+      "changed_by": "calendar_resolve"
+    },
+    "WDO": {
+      "from": "WDOV26",
+      "to": "WDOX26",
+      "changed_at": "2026-09-29T08:55:02",
+      "changed_by": "calendar_resolve"
     }
   }
 }

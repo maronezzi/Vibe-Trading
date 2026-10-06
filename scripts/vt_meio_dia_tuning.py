@@ -8,7 +8,21 @@ Para tuning de meio-dia, invoque ESTE arquivo — não crie variantes.
 Uso:
     /usr/bin/python3 scripts/vt_meio_dia_tuning.py [--dry-run]
 
-Wave 15 — 2026-07-22 (meio-dia)
+Wave 16 — 2026-10-06 (meio-dia)
+Estratégias ATIVAS hoje (strategy_by_tf do config v1458):
+  BIT_M15 = AGI4_WDO_180944 | BIT_M5 = AGI4_WDO_132248 | WSP_M5 = AGI4_BIT_175550
+
+Evidência manhã HOJE (11h00):
+  BITV26 M15 AGI4_WDO_180944 → 6 trades, WR=33%, PnL=-R$10,80 ← PROBLEMA
+    (5 SL em ~60s, 4 perdas consecutivas; trail_activate=0.07 ATR + cooldown 60s = churn)
+  BITV26 M5  AGI4_WDO_132248 → 1 trade, SL em ~60s (SL_SERVIDOR)
+  WSPZ26 M5  AGI4_BIT_175550 → 1 trade, WR=100%, PnL=+R$9,38 (OK, não mexe)
+  WIN/WDO    → 0 trades (sem evidência — não mexe)
+
+Mudanças (1 par BIT, conservadoras; sem mexer em estratégia/sl_atr_mult):
+  BIT_M5.cooldown_seconds    60 → 300  (2ª passada — 2 SL em ~60s; paridade Wave 16)
+
+Wave 15 — 2026-07-22 (histórico)
 Estratégias ATIVAS hoje (strategy_by_tf do config v1100):
   WIN_M5  = SMART_EMA          | WIN_M15/M30 = HTF_BIAS_LTF_ENTRY | WIN_H1 = RSI_REVERSION
   BIT_M5  = MACD_MOMENTUM      | BIT_M15    = EMA_PULLBACK      | BIT_M30 = RSI_REVERSION | BIT_H1 = ADX_TREND
@@ -43,14 +57,10 @@ from core.vt_config_loader import load_config, save_full_config  # noqa: E402
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "vt_config.json"
 
 CHANGES = [
-    ("WIN_H1", "rsi_period",      5, 7,
-     "RSI_REVERSION — rsi_period 5→7 suaviza RSI no H1, reduz sinais falsos de overbought (WR=0% manhã)"),
-    ("WIN_H1", "rsi_overbought", 80, 85,
-     "RSI_REVERSION — overbought 80→85 exige extremo mais forte para SELL (2 GHOST + 1 SL de manhã)"),
-    ("BIT_M30", "rsi_period",     5, 7,
-     "RSI_REVERSION — rsi_period 5→7 suaviza RSI em M30, menos ruído (6 trades WR=0% manhã)"),
-    ("BIT_M30", "rsi_oversold",  30, 25,
-     "RSI_REVERSION — oversold 30→25 exige extremo mais forte para BUY, filtra faca-caindo"),
+    # BIT_M5 06/10 (2ª passada): 2 SL em ~60s (10:21 e 11:05). Mesma cura do
+    # M15 (Wave 16): cooldown 60->300s. Sem mexer em estratégia/sl_atr_mult.
+    ("BIT_M5", "cooldown_seconds", 60, 300,
+     "BIT_M5: 2 SL em ~60s (10:21, 11:05) — cooldown 60->300s, paridade com M15 (Wave 16)"),
 ]
 
 PER_ASSET = {}
@@ -85,9 +95,9 @@ def main(dry_run: bool) -> int:
 
     cfg["params_by_tf"] = pbtf
     cfg["halt_new_trades"] = True  # pausa enquanto escreve (defesa em profundidade)
-    cfg["_updated_by"] = "hermes_meio_dia_20260722_w15"
+    cfg["_updated_by"] = "hermes_meio_dia_20261006_w16"
 
-    ok = save_full_config(cfg, updated_by="hermes_meio_dia_20260722_w15")
+    ok = save_full_config(cfg, updated_by="hermes_meio_dia_20261006_w16")
     print(f"\n[WRITE] save_full_config ok={ok}")
 
     # 2) Sanity relido
@@ -99,8 +109,8 @@ def main(dry_run: bool) -> int:
 
     # 3) Liberar autotrader
     cfg2["halt_new_trades"] = False
-    cfg2["_updated_by"] = "hermes_meio_dia_20260722_w15_release"
-    ok2 = save_full_config(cfg2, updated_by="hermes_meio_dia_20260722_w15_release")
+    cfg2["_updated_by"] = "hermes_meio_dia_20261006_w16_release"
+    ok2 = save_full_config(cfg2, updated_by="hermes_meio_dia_20261006_w16_release")
     print(f"\n[RELEASE] halt_new_trades=False, ok={ok2}")
 
     # 4) Notificar via Telegram (reusa helper do autotrader)
