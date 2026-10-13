@@ -63,10 +63,10 @@ from core.vt_starting_balance import (
 )
 
 # GUARD DE CONTA (Bruno 05/08): ÚNICAS contas em que o autotrader pode operar.
-# A conta real 2257579 (XPMT5-PRD) foi REMOVIDA da operação — NÃO adicioná-la
-# de volta sem autorização explícita do Bruno. Para restaurar: relogar a conta
-# no MT5 (senha no portal XP) e incluir o login nesta tupla.
-ALLOWED_ACCOUNT_LOGINS = (52257579,)
+# Migração conta-real (autorização Bruno 12/10): 2257579 (XPMT5-PRD) liberada
+# junto com a demo 52257579 durante a transição. O guard segue bloqueando
+# qualquer outra conta. Para reverter: remover o login da tupla + commit.
+ALLOWED_ACCOUNT_LOGINS = (52257579, 2257579)
 # Fase 2.5 (architecture_proposal_2026_07_01.md, secao 3.2): centraliza acesso
 # MT5 + truth layer. validate_order_pre_send() daqui e re-export da fonte
 # autoritativa em core.vt_truth (toda chamada MT5 sensivel passa por la).
