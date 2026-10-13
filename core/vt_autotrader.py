@@ -63,10 +63,11 @@ from core.vt_starting_balance import (
 )
 
 # GUARD DE CONTA (Bruno 05/08): ÚNICAS contas em que o autotrader pode operar.
-# Migração conta-real (autorização Bruno 12/10): 2257579 (XPMT5-PRD) liberada
-# junto com a demo 52257579 durante a transição. O guard segue bloqueando
-# qualquer outra conta. Para reverter: remover o login da tupla + commit.
-ALLOWED_ACCOUNT_LOGINS = (52257579, 2257579)
+# Migração conta-real concluída 13/10 (login PRD 08:23): só a REAL é permitida —
+# qualquer relog acidental/externo na demo BLOQUEIA o robô (defesa contra o
+# relog fantasma na demo visto 08:45 13/10, autor desconhecido). Para reverter:
+# restaurar o login demo na tupla + commit.
+ALLOWED_ACCOUNT_LOGINS = (2257579,)
 # Fase 2.5 (architecture_proposal_2026_07_01.md, secao 3.2): centraliza acesso
 # MT5 + truth layer. validate_order_pre_send() daqui e re-export da fonte
 # autoritativa em core.vt_truth (toda chamada MT5 sensivel passa por la).
