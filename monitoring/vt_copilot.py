@@ -473,7 +473,7 @@ def reconcile_orphans():
     conn.row_factory = sqlite3.Row
 
     open_trades = conn.execute(
-        "SELECT id, symbol, direction, timeframe, entry_price, entry_ticket "
+        "SELECT id, symbol, direction, timeframe, entry_price, entry_ticket, volume "
         "FROM trades WHERE exit_time IS NULL"
     ).fetchall()
 
@@ -1205,6 +1205,32 @@ def _restore_pauses_if_needed():
     pause_file.write_text("{}")
 
 
+def _profit_locks_engaged() -> str | None:
+    """Wave 1123 (Bruno 2026-09-28): qual lock está engajado agora, se houver.
+
+    Espelha os gates do daemon (vt_autotrader): cada lock só conta se estiver
+    enabled no vt_config.json (state órfão não trava nada — Wave 880.B2).
+    Retorna None se nenhum engajado ou se a checagem falhar (fail-open:
+    erro na checagem nunca derruba o relatório).
+    """
+    try:
+        cfg = load_config()
+        if cfg.get("trailing_profit_lock_enabled", False):
+            from core.vt_trailing_profit_lock import is_active
+
+            if is_active():
+                return "Trailing Profit Lock"
+        if cfg.get("profit_lock_enabled", False):
+            from core.vt_profit_lock import is_locked
+
+            locked, _state = is_locked()
+            if locked:
+                return "Profit Lock diário"
+    except Exception:
+        return None
+    return None
+
+
 def main():
     """Execução principal do Copilot."""
     log("=" * 50)
@@ -1232,6 +1258,27 @@ def main():
         return
 
     elif mode == "--report":
+        # Wave 1123 (Bruno 2026-09-28): com qualquer profit lock engajado
+        # (trailing OU diário), o relatório de 20/20min perde a função
+        # (daemon protegido, sem novas entradas) → suprime o envio e avisa
+        # 1x ao dia no lugar do 1º suprimido.
+        _tpl_sentinel = Path("/tmp/vt_copilot_tpl_notice_sent")
+        _lock_name = _profit_locks_engaged()
+        if _lock_name:
+            if not _tpl_sentinel.exists():
+                _tpl_sentinel.write_text(
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8"
+                )
+                notify_telegram(
+                    f"🔇 *Copilot {datetime.now().strftime('%Hh%M')}*\n\n"
+                    f"🔒 {_lock_name} ATIVO — relatório de 20/20min suprimido "
+                    "pelo resto do dia (daemon protegido, sem novas entradas). "
+                    "Alertas operacionais (health/reconcile) continuam."
+                )
+            log(f"[REPORT] {_lock_name} engajado — relatório suprimido")
+            return
+
+        _tpl_sentinel.unlink(missing_ok=True)  # dia sem lock: sentinel limpo
         report = generate_report()
         notify_telegram(f"🤖 *Copilot {datetime.now().strftime('%Hh%M')}*\n\n{report}")
 
@@ -1295,6 +1342,23 @@ def main():
             actions.append(f"⏸️ Pausado: {', '.join(paused)}")
 
         # 5. Gerar e enviar relatório + gráfico intraday
+        # Wave 1123 (Bruno 2026-09-28): com qualquer profit lock engajado,
+        # suprime relatório+gráfico (mesma regra do --report). Ações de
+        # saúde/reconcíliação (passos 0-4) rodam NORMALMENTE antes disto.
+        _tpl_sentinel = Path("/tmp/vt_copilot_tpl_notice_sent")
+        _lock_name_full = _profit_locks_engaged()
+        if _lock_name_full:
+            if not _tpl_sentinel.exists():
+                _tpl_sentinel.write_text(
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8"
+                )
+            log(f"[FULL] {_lock_name_full} engajado — relatório/gráfico suprimidos")
+            log("=" * 50)
+            log(f"Copilot finalizado. {len(actions)} ações tomadas (report off).")
+            log("=" * 50)
+            return
+
+        _tpl_sentinel.unlink(missing_ok=True)  # dia sem lock: sentinel limpo
         report = generate_report()
         stats = check_intraday_stats()
         today_str = datetime.now().strftime("%Y-%m-%d")
